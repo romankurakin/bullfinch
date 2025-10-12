@@ -107,20 +107,19 @@ Follow Conventional Commits:
 [optional body explaining why]
 ```
 
-```text
-feat(mem): implement Sv39 paging for RISC-V
-
-Add page table setup and TLB management with sfence.vma sync.
-
+``` text
 **Types:** feat, fix, perf, refactor, docs, test, build, chore, ci
 **Scopes:** boot, mem, sched, cap, arm64, riscv, hal (more as needed)
+```
 
-**Examples:**
+Example:
 
 ```text
-feat(mem): implement Sv39 paging for RISC-V
-
-Add page table setup and TLB management with sfence.vma sync.
+feat: initial kernel bootstrap with ARM64/RISC-V support
+    
+- ARM64 UART (PL011) and RISC-V SBI console drivers
+- QEMU virt platform with linker scripts
+- Build system with just commands and Nix flake
 
 ```
 
@@ -238,7 +237,7 @@ src/kernel/
 
 ## References
 
-Zig: ziglang.org/documentation/master
-Architectures: ARM, RISC-V official docs
-OS: pages.cs.wisc.edu/~remzi/OSTEP
-Cap: fuchsia.dev/fuchsia-src/concepts/kernel
+- Zig: ziglang.org/documentation/master
+- Architectures: ARM, RISC-V official docs
+- OS: pages.cs.wisc.edu/~remzi/OSTEP
+- Cap: fuchsia.dev/fuchsia-src/concepts/kernel

@@ -19,6 +19,14 @@ jobs:
         with:
           nix_path: nixpkgs=channel:nixos-unstable
 
+      - name: Cache Zig build cache
+        uses: actions/cache@v3
+        with:
+          path: zig-cache
+          key: ${{ runner.os }}-zig-${{ hashFiles('build.zig', 'src/**/*.zig') }}
+          restore-keys: |
+            ${{ runner.os }}-zig-
+
       - name: Check formatting
         run: nix develop -c find . -name "*.zig" -not -path "./zig-cache/*" -not -path "./zig-out/*" -exec zig fmt --check {} \;
 
@@ -28,5 +36,8 @@ jobs:
       - name: Build RISC-V64
         run: nix develop -c just build-riscv64
 
-      - name: Run tests
-        run: nix develop -c just test
+      - name: Run ARM64 tests
+        run: nix develop -c just test-arm64
+
+      - name: Run RISC-V tests
+        run: nix develop -c just test-riscv64
