@@ -1,7 +1,7 @@
 //! PL011 UART driver for ARM64 platforms.
 //! Documentation can be found at: https://developer.arm.com/documentation/ddi0183/latest/
 //! Provides direct MMIO access to UART hardware for output. Callers supply base address.
-//! Peripheral powers up disabled - must configure baud divisors and enable TX/RX.
+//! Peripheral powers up disabled - must configure baud divisors and enable TX.
 
 const UART_DR_OFFSET = 0x00;
 const UART_FR_OFFSET = 0x18;
@@ -15,14 +15,12 @@ const UART_FR_TXFF = 1 << 5;
 const UART_FR_BUSY = 1 << 3;
 const UART_CR_UARTEN = 1 << 0;
 const UART_CR_TXE = 1 << 8;
-const UART_CR_RXE = 1 << 9;
 const UART_LCRH_FEN = 1 << 4;
 const UART_LCRH_WLEN_8 = 0b11 << 5;
 
 pub const InitConfig = struct {
     uartclk_hz: u32 = 24_000_000,
     baud: u32 = 115_200,
-    enable_rx: bool = true,
 };
 
 pub const State = struct {
@@ -56,7 +54,7 @@ fn setBaud(base: usize, uartclk_hz: u32, baud: u32) void {
 }
 
 // Initialize PL011 UART with config. Disables during setup to avoid glitches.
-// Waits for TX drain, clears interrupts, sets baud/8N1, enables TX/RX.
+// Waits for TX drain, clears interrupts, sets baud/8N1, enables TX only.
 pub fn init(base: usize, state: *State, config: InitConfig) void {
     // Drain TX before disabling to prevent data loss. Safety critical.
     while ((reg32(base, UART_FR_OFFSET).* & UART_FR_BUSY) != 0) {}
@@ -70,9 +68,8 @@ pub fn init(base: usize, state: *State, config: InitConfig) void {
     // 8-bit words, FIFO enabled for buffering.
     reg32(base, UART_LCRH_OFFSET).* = UART_LCRH_WLEN_8 | UART_LCRH_FEN;
 
-    var cr: u32 = UART_CR_UARTEN | UART_CR_TXE;
-    if (config.enable_rx) cr |= UART_CR_RXE;
-    reg32(base, UART_CR_OFFSET).* = cr;
+    // Enable UART and TX only
+    reg32(base, UART_CR_OFFSET).* = UART_CR_UARTEN | UART_CR_TXE;
     // Readback ensures write completed on weakly ordered ARM64.
     _ = reg32(base, UART_CR_OFFSET).*;
 
@@ -86,6 +83,12 @@ pub fn initDefault(base: usize, state: *State) void {
 // Print string to UART. Requires explicit initialization.
 pub fn print(base: usize, state: *State, s: []const u8) void {
     if (!state.initialized) @panic("UART not initialized");
+
+    // Verify UART is actually enabled in hardware
+    const cr = reg32(base, UART_CR_OFFSET).*;
+    if ((cr & (UART_CR_UARTEN | UART_CR_TXE)) != (UART_CR_UARTEN | UART_CR_TXE)) {
+        @panic("UART disabled in hardware");
+    }
 
     for (s) |byte| {
         while ((reg32(base, UART_FR_OFFSET).* & UART_FR_TXFF) != 0) {} // Wait for space
