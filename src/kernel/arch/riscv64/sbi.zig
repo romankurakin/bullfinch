@@ -1,5 +1,4 @@
 //! Thin wrappers for issuing SBI ecalls from the kernel.
-//! Documentation can be found at: https://github.com/riscv-non-isa/riscv-sbi-doc/releases/latest/download/riscv-sbi.pdf
 
 const std = @import("std");
 
