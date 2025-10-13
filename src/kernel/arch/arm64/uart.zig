@@ -45,6 +45,16 @@ inline fn reg8(base: usize, comptime offset: usize) *volatile u8 {
     return @as(*volatile u8, @ptrFromInt(base + offset));
 }
 
+/// Wait until there is space in the TX FIFO (transmit buffer).
+inline fn waitTxFifo(base: usize) void {
+    while ((reg32(base, UART_FR_OFFSET).* & UART_FR_TXFF) != 0) {}
+}
+
+/// Write a byte of data to the UART's Data Register for transmission.
+inline fn writeData(base: usize, byte: u8) void {
+    reg8(base, UART_DR_OFFSET).* = byte;
+}
+
 // Compute baud rate divisors per PL011 spec. Uses u64 to prevent overflow.
 // The PL011 uses a 16x oversampling clock, so the baud divisor is:
 // divisor = uartclk_hz / (16 * baud)
@@ -53,11 +63,17 @@ pub fn computeDivisors(uartclk_hz: u32, baud: u32) struct { ibrd: u32, fbrd: u32
     // Avoid division by zero
     if (baud == 0) @panic("baud must be non-zero");
 
-    const denom = @as(u64, 16) * @as(u64, baud); // 16 * baud 
+    const denom = @as(u64, 16) * @as(u64, baud); // 16 * baud
     const clk = @as(u64, uartclk_hz); // Clock frequency
     const ibrd = clk / denom; // Integer part of baud rate divisor
     const remainder = clk - denom * ibrd; // Remainder for fractional part
     const fbrd = (remainder * 64 + denom / 2) / denom; // Rounding for fractional part
+
+    // Validate divisor ranges per PL011 specification
+    // IBRD must be 1-65535, FBRD must be 0-63
+    if (ibrd < 1 or ibrd > 65535) @panic("IBRD out of valid range 1-65535");
+    if (fbrd > 63) @panic("FBRD out of valid range 0-63");
+
     return .{ .ibrd = @intCast(ibrd), .fbrd = @intCast(fbrd) };
 }
 
@@ -94,10 +110,10 @@ pub fn init(base: usize, state: *State, config: InitConfig) void {
     const cr: u32 = UART_CR_UARTEN | UART_CR_TXE;
     reg32(base, UART_CR_OFFSET).* = cr;
 
-    // Memory barrier - read back to ensure write completed
-    // ARM has weakly-ordered memory, so this ensures the enable
-    // write has actually reached the hardware before we continue
-    _ = reg32(base, UART_CR_OFFSET).*;
+    // Data Synchronization Barrier - ensure UART enable write completes
+    // ARM has weakly-ordered memory, so this guarantees the enable
+    // write has reached the hardware before we continue
+    asm volatile ("dsb ish");
 
     state.initialized = true;
 }
@@ -120,8 +136,15 @@ pub fn print(base: usize, state: *State, s: []const u8) void {
     for (s) |byte| {
         // Wait for space in TX FIFO
         // The FIFO can hold 16 bytes, but we check before each byte
-        while ((reg32(base, UART_FR_OFFSET).* & UART_FR_TXFF) != 0) {}
-        reg8(base, UART_DR_OFFSET).* = byte;
+        waitTxFifo(base);
+
+        if (byte == '\n') {
+            // Some terminals expect CR+LF for newlines
+            writeData(base, '\r');
+            waitTxFifo(base);
+        }
+
+        writeData(base, byte);
     }
 }
 
