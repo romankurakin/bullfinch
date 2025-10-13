@@ -10,6 +10,11 @@ pub fn init() void {}
 // Loops byte-by-byte; SBI may buffer or drop if host can't keep up.
 pub fn print(s: []const u8) void {
     for (s) |byte| {
+        if (byte == '\n') {
+            // Some terminals expect CR+LF for newlines
+            sbi.legacyConsolePutchar('\r');
+        }
+
         sbi.legacyConsolePutchar(byte); // SBI call ensures privilege separation
     }
 }
