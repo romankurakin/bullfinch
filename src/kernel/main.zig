@@ -22,9 +22,9 @@ pub export fn main() callconv(.c) void {
         .riscv64 => "RISC-V",
         else => "Unknown",
     };
-    hal.print("Hello from Bullfinch on ");
-    hal.print(arch_str);
-    hal.print("!\n");
+
+    const msg = "Hello from Bullfinch kernel on " ++ arch_str ++ "!\n";
+    hal.print(msg);
 
     while (true) {
         asm volatile ("wfi"); // ARM64 and RISC-V idle instruction - safe infinite wait for interrupts
