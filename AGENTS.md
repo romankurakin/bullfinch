@@ -39,6 +39,7 @@ Single `build.zig` orchestrates entire system:
 1. **Kernel:** Compile as freestanding executable for target architecture
 2. **Userspace:** Compile each program and dependency as separate executables (may have own build.zig)
 3. **Packaging:** Assemble userspace into initramfs (simple file archive for modularity and license compliance)
+4. **Boards:** Support multiple target boards via `-Dboard=<board_name>`, with board-specific files in `src/kernel/arch/{arm64,riscv64}/boards/{board}/`
 
 `qemu-*` commands automatically package and run kernel + initramfs.
 
@@ -67,7 +68,7 @@ Run `zig fmt` automatically (no permission needed).
 **Project conventions:**
 
 - Use `@panic()` for unrecoverable kernel errors
-- Keep arch-specific code in `src/arch/{arm64,riscv64}/`
+- Keep arch-specific code in `src/kernel/arch/{arm64,riscv64}/`
 - Use HAL abstractions for portable kernel code
 
 **Comments - for learning:**  
