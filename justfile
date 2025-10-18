@@ -11,12 +11,20 @@ build-riscv64:
     zig build -Dtarget=riscv64-freestanding
 
 # Run in QEMU (ARM64)
-run-arm64:
-    zig build qemu-arm64 -Dtarget=aarch64-freestanding
+qemu-arm64: build-arm64
+    qemu-system-aarch64 -machine virt -cpu cortex-a76 -m 128M -nographic -kernel zig-out/bin/kernel-arm64
 
 # Run in QEMU (RISC-V)
-run-riscv64:
-    zig build qemu-riscv64 -Dtarget=riscv64-freestanding
+qemu-riscv64: build-riscv64
+    qemu-system-riscv64 -machine virt -m 128M -nographic -bios default -kernel zig-out/bin/kernel-riscv64
+
+# Smoke test ARM64 - build and run briefly to check boot
+smoke-arm64: build-arm64
+    bash -c 'output=$(qemu-system-aarch64 -machine virt -cpu cortex-a76 -m 128M -nographic -kernel zig-out/bin/kernel-arm64 2>&1 & pid=$!; sleep 3; kill $pid; wait $pid 2>/dev/null); echo "$output"'
+
+# Smoke test RISC-V - build and run briefly to check boot
+smoke-riscv64: build-riscv64
+    bash -c 'output=$(qemu-system-riscv64 -machine virt -m 128M -nographic -bios default -kernel zig-out/bin/kernel-riscv64 2>&1 & pid=$!; sleep 3; kill $pid; wait $pid 2>/dev/null); echo "$output"'
 
 # Format code
 fmt:
