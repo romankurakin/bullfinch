@@ -8,6 +8,12 @@ pub fn build(b: *std.Build) void {
 
     const test_filter = b.option([]const u8, "test-filter", "Filter tests by name") orelse null;
 
+    const arch_dir = switch (target.result.cpu.arch) {
+        .aarch64 => "arm64",
+        .riscv64 => "riscv64",
+        else => @panic("Unsupported architecture"),
+    };
+
     if (!std.mem.eql(u8, board, "qemu_virt")) {
         @panic("Unsupported board");
     }
@@ -19,7 +25,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    const board_module_path = b.pathJoin(&.{ "src", "kernel", "platform", board, "board.zig" });
+    const board_module_path = b.pathJoin(&.{ "src", "kernel", "arch", arch_dir, "boards", board, "board.zig" });
     // Board module provides HAL abstraction for the target platform.
     const board_module = b.createModule(.{
         .root_source_file = b.path(board_module_path),
@@ -60,13 +66,8 @@ pub fn build(b: *std.Build) void {
         .root_module = kernel_module,
     });
 
-    const arch_dir = switch (target.result.cpu.arch) {
-        .aarch64 => "arm64",
-        .riscv64 => "riscv64",
-        else => @panic("Unsupported architecture"),
-    };
     // Custom linker script defines memory layout, stack, BSS, and entry point.
-    const linker_script_path = b.pathJoin(&.{ "src", "kernel", "platform", board, arch_dir, "kernel.ld" });
+    const linker_script_path = b.pathJoin(&.{ "src", "kernel", "arch", arch_dir, "boards", board, "kernel.ld" });
     kernel.setLinkerScript(b.path(linker_script_path));
     if (target.result.cpu.arch == .riscv64) {
         // RISC-V kernels typically run at high addresses (≥0x8000_0000), which
