@@ -79,22 +79,6 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(kernel);
 
-    const qemu_arm64 = b.addSystemCommand(&.{
-        "qemu-system-aarch64", "-machine",   "virt",
-        "-cpu",                "cortex-a76", "-m",
-        "128M",                "-nographic", "-kernel",
-    });
-    qemu_arm64.addArtifactArg(kernel);
-    b.step("qemu-arm64", "Run ARM64").dependOn(&qemu_arm64.step);
-
-    const qemu_riscv = b.addSystemCommand(&.{
-        "qemu-system-riscv64", "-machine", "virt",
-        "-m",                  "128M",     "-nographic",
-        "-bios",               "default",  "-kernel",
-    });
-    qemu_riscv.addArtifactArg(kernel);
-    b.step("qemu-riscv64", "Run RISC-V").dependOn(&qemu_riscv.step);
-
     const test_step = b.step("test", "Run all tests");
 
     // Run centralized test suite through kernel root that imports all modules with inline tests
