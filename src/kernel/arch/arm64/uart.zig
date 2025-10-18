@@ -160,6 +160,13 @@ test "computeDivisors typical baud rates" {
         .{ .uartclk = 24_000_000, .baud = 115_200, .ibrd = 13, .fbrd = 1 },
         .{ .uartclk = 24_000_000, .baud = 9_600, .ibrd = 156, .fbrd = 16 },
         .{ .uartclk = 3_000_000, .baud = 115_200, .ibrd = 1, .fbrd = 40 },
+        .{ .uartclk = 48_000_000, .baud = 115_200, .ibrd = 26, .fbrd = 3 },
+        .{ .uartclk = 12_000_000, .baud = 9_600, .ibrd = 78, .fbrd = 8 },
+        .{ .uartclk = 1_843_200, .baud = 115_200, .ibrd = 1, .fbrd = 0 },
+        .{ .uartclk = 24_000_000, .baud = 230_400, .ibrd = 6, .fbrd = 33 },
+        .{ .uartclk = 16_000_000, .baud = 57_600, .ibrd = 17, .fbrd = 23 },
+        .{ .uartclk = 7_372_800, .baud = 115_200, .ibrd = 4, .fbrd = 0 },
+        .{ .uartclk = 26_000_000, .baud = 115_200, .ibrd = 14, .fbrd = 7 },
     };
 
     for (cases) |case| {
