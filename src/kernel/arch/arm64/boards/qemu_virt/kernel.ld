@@ -16,6 +16,15 @@ SECTIONS {
         *(.text*) /* All executable code */
     }
 
+    /* Exception vector table - ARM64 VBAR_EL1 requires 2KB alignment.
+       Table is 0x800 bytes (16 entries × 128 bytes each).
+       Extracted to separate section for clarity and alignment requirements. */
+    .vectors : ALIGN(2048) {
+        __vectors_start = .;
+        KEEP(*(.vectors))
+        __vectors_end = .;
+    }
+
     .rodata : {
         *(.rodata*) /* Read-only data (constants, strings) */
     }

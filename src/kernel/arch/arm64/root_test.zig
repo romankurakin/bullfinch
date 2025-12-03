@@ -1,8 +1,8 @@
 //! ARM64 architecture root - imports all ARM64 modules for testing.
 
 const uart = @import("uart.zig");
+// trap.zig: excluded (ELF linksection incompatible with macOS)
 
-// Ensure all ARM64 modules are imported so their inline tests run
 comptime {
     _ = uart;
 }
