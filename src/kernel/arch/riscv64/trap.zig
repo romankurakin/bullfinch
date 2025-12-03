@@ -53,9 +53,16 @@ pub const TrapCause = enum(u64) {
     store_access_fault = 7,
     ecall_from_u = 8,
     ecall_from_s = 9,
+    ecall_from_vs = 10,
+    ecall_from_m = 11,
     instruction_page_fault = 12,
     load_page_fault = 13,
+    reserved_14 = 14,
     store_page_fault = 15,
+    instruction_guest_page_fault = 20,
+    load_guest_page_fault = 21,
+    virtual_instruction = 22,
+    store_guest_page_fault = 23,
 
     supervisor_software_interrupt = 0x8000000000000001, // Interrupts have bit 63 set
     supervisor_timer_interrupt = 0x8000000000000005,
@@ -73,23 +80,29 @@ pub const TrapCause = enum(u64) {
 
     pub fn name(self: TrapCause) []const u8 {
         return switch (self) {
-            .instruction_misaligned => "Instruction address misaligned",
-            .instruction_access_fault => "Instruction access fault",
-            .illegal_instruction => "Illegal instruction",
-            .breakpoint => "Breakpoint",
-            .load_misaligned => "Load address misaligned",
-            .load_access_fault => "Load access fault",
-            .store_misaligned => "Store address misaligned",
-            .store_access_fault => "Store access fault",
-            .ecall_from_u => "Environment call from U-mode",
-            .ecall_from_s => "Environment call from S-mode",
-            .instruction_page_fault => "Instruction page fault",
-            .load_page_fault => "Load page fault",
-            .store_page_fault => "Store page fault",
-            .supervisor_software_interrupt => "Supervisor software interrupt",
-            .supervisor_timer_interrupt => "Supervisor timer interrupt",
-            .supervisor_external_interrupt => "Supervisor external interrupt",
-            else => "Unknown trap",
+            .instruction_misaligned => "instruction address misaligned",
+            .instruction_access_fault => "instruction access fault",
+            .illegal_instruction => "illegal instruction",
+            .breakpoint => "breakpoint",
+            .load_misaligned => "load address misaligned",
+            .load_access_fault => "load access fault",
+            .store_misaligned => "store address misaligned",
+            .store_access_fault => "store access fault",
+            .ecall_from_u => "environment call from u-mode",
+            .ecall_from_s => "environment call from s-mode",
+            .ecall_from_vs => "environment call from vs-mode",
+            .ecall_from_m => "environment call from m-mode",
+            .instruction_page_fault => "instruction page fault",
+            .load_page_fault => "load page fault",
+            .store_page_fault => "store page fault",
+            .instruction_guest_page_fault => "instruction guest page fault",
+            .load_guest_page_fault => "load guest page fault",
+            .virtual_instruction => "virtual instruction",
+            .store_guest_page_fault => "store guest page fault",
+            .supervisor_software_interrupt => "supervisor software interrupt",
+            .supervisor_timer_interrupt => "supervisor timer interrupt",
+            .supervisor_external_interrupt => "supervisor external interrupt",
+            else => "unknown trap",
         };
     }
 };
@@ -221,40 +234,68 @@ export fn handleTrap(ctx: *TrapContext) void {
 }
 
 fn dumpTrap(ctx: *const TrapContext, cause: TrapCause) void {
-    hal.print("TRAP: ");
+    hal.print("trap: ");
     hal.print(cause.name());
-    hal.print("\nsepc=0x");
+    hal.print("\n");
+
+    hal.print("sepc   =0x");
     printHex(ctx.sepc);
-    hal.print(" sp=0x");
+    hal.print(" sp     =0x");
     printHex(ctx.sp);
-    hal.print(" scause=0x");
+    hal.print(" scause =0x");
     printHex(ctx.scause);
-    hal.print(" stval=0x");
+    hal.print(" stval  =0x");
     printHex(ctx.stval);
     hal.print("\n");
 
     const reg_names = [_][]const u8{
-        "ra", "sp", "gp", "tp", "t0", "t1", "t2", "s0",
-        "s1", "a0", "a1", "a2", "a3", "a4", "a5", "a6",
-        "a7", "s2", "s3", "s4", "s5", "s6", "s7", "s8",
+        "ra", "sp",  "gp",  "tp", "t0", "t1", "t2", "s0",
+        "s1", "a0",  "a1",  "a2", "a3", "a4", "a5", "a6",
+        "a7", "s2",  "s3",  "s4", "s5", "s6", "s7", "s8",
         "s9", "s10", "s11", "t3", "t4", "t5", "t6",
     };
 
     var i: usize = 0;
-    while (i < 31) : (i += 2) {
-        hal.print(reg_names[i]);
-        if (reg_names[i].len < 3) hal.print(" ");
+    while (i < 31) : (i += 4) {
+        // Register 1
+        printRegName(reg_names[i]);
         hal.print("=0x");
         printHex(ctx.regs[i]);
 
+        // Register 2
         if (i + 1 < 31) {
             hal.print(" ");
-            hal.print(reg_names[i + 1]);
-            if (reg_names[i + 1].len < 3) hal.print(" ");
+            printRegName(reg_names[i + 1]);
             hal.print("=0x");
             printHex(ctx.regs[i + 1]);
         }
+
+        // Register 3
+        if (i + 2 < 31) {
+            hal.print(" ");
+            printRegName(reg_names[i + 2]);
+            hal.print("=0x");
+            printHex(ctx.regs[i + 2]);
+        }
+
+        // Register 4
+        if (i + 3 < 31) {
+            hal.print(" ");
+            printRegName(reg_names[i + 3]);
+            hal.print("=0x");
+            printHex(ctx.regs[i + 3]);
+        }
+
         hal.print("\n");
+    }
+}
+
+fn printRegName(name: []const u8) void {
+    hal.print(name);
+    // Pad to 7 characters for consistent alignment
+    var padding = 7 - name.len;
+    while (padding > 0) : (padding -= 1) {
+        hal.print(" ");
     }
 }
 

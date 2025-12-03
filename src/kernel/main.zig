@@ -35,13 +35,11 @@ pub export fn main() callconv(.c) void {
     hal.print(" architecture\n");
     trap.init();
 
-    hal.print("Trap handlers initialized.\n");
+    hal.print("Trap handlers initialized\n");
     
-    hal.print("Testing trap (breakpoint)...\n\n");
-
     trap.testTriggerBreakpoint();
 
-    hal.print("ERROR: Returned from trap!\n");
+    hal.print("error: Returned from trap!\n");
     while (true) {
         asm volatile ("wfi");
     }
@@ -53,7 +51,7 @@ pub fn panic(msg: []const u8, _: ?*@import("std").builtin.StackTrace, _: ?usize)
     if (panicking) trap.halt(); // Double panic - halt immediately
     panicking = true;
 
-    hal.print("\nPANIC: ");
+    hal.print("\npanic: ");
     hal.print(msg);
     hal.print("\n");
     trap.halt();
