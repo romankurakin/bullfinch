@@ -51,7 +51,7 @@ pub fn panic(msg: []const u8, _: ?*@import("std").builtin.StackTrace, _: ?usize)
     if (panicking) trap.halt(); // Double panic - halt immediately
     panicking = true;
 
-    hal.print("\npanic: ");
+    hal.print("\nPanic: ");
     hal.print(msg);
     hal.print("\n");
     trap.halt();
