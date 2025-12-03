@@ -261,7 +261,7 @@ export fn handleTrap(ctx: *TrapContext) void {
 
 /// Print trap information and register dump for debugging.
 fn dumpTrap(ctx: *const TrapContext, ec: TrapClass) void {
-    hal.print("trap: ");
+    hal.print("Trap: ");
     hal.print(ec.name());
     hal.print("\n");
 

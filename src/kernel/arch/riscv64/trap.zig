@@ -234,7 +234,7 @@ export fn handleTrap(ctx: *TrapContext) void {
 }
 
 fn dumpTrap(ctx: *const TrapContext, cause: TrapCause) void {
-    hal.print("trap: ");
+    hal.print("Trap: ");
     hal.print(cause.name());
     hal.print("\n");
 
