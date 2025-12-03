@@ -44,25 +44,33 @@ pub const TrapClass = enum(u6) {
     cp14_mcr_mrc = 0x05,
     cp14_ldc_stc = 0x06,
     simd_fp = 0x07,
+    cp10_id = 0x08,
     ptrauth = 0x09,
     ld64b_st64b = 0x0A,
     cp14_mrrc = 0x0C,
     branch_target = 0x0D,
     illegal_state = 0x0E,
     svc_aarch32 = 0x11,
+    hvc_aarch64 = 0x16,
+    smc_aarch64 = 0x17,
     svc_aarch64 = 0x15,
     msr_mrs_sys = 0x18,
     sve = 0x19,
     eret = 0x1A,
+    tstart_fail = 0x1B,
     pac_fail = 0x1C,
+    sme = 0x1D,
+    imp_def = 0x1F,
     inst_abort_lower = 0x20,
     inst_abort_same = 0x21,
     pc_align = 0x22,
     data_abort_lower = 0x24,
     data_abort_same = 0x25,
     sp_align = 0x26,
+    mops = 0x27,
     fp_aarch32 = 0x28,
     fp_aarch64 = 0x2C,
+    gcs = 0x2D,
     serror = 0x2F,
     breakpoint_lower = 0x30,
     breakpoint_same = 0x31,
@@ -71,27 +79,31 @@ pub const TrapClass = enum(u6) {
     watchpoint_lower = 0x34,
     watchpoint_same = 0x35,
     bkpt_aarch32 = 0x38,
+    vector32 = 0x3A,
     brk_aarch64 = 0x3C,
     _,
 
     pub fn name(self: TrapClass) []const u8 {
         return switch (self) {
-            .unknown => "Unknown exception",
-            .wfi_wfe => "WFI/WFE trapped",
-            .simd_fp => "SIMD/FP access",
-            .svc_aarch64 => "SVC (syscall)",
-            .msr_mrs_sys => "MSR/MRS/SYS trapped",
-            .inst_abort_lower => "Instruction abort (lower EL)",
-            .inst_abort_same => "Instruction abort (same EL)",
-            .pc_align => "PC alignment fault",
-            .data_abort_lower => "Data abort (lower EL)",
-            .data_abort_same => "Data abort (same EL)",
-            .sp_align => "SP alignment fault",
-            .serror => "SError",
-            .breakpoint_lower => "Breakpoint (lower EL)",
-            .breakpoint_same => "Breakpoint (same EL)",
-            .brk_aarch64 => "BRK instruction",
-            else => "Other exception",
+            .unknown => "unknown exception",
+            .wfi_wfe => "wfi/wfe trapped",
+            .simd_fp => "simd/fp access",
+            .svc_aarch64 => "svc (syscall)",
+            .hvc_aarch64 => "hvc (hypervisor call)",
+            .smc_aarch64 => "smc (secure monitor call)",
+            .msr_mrs_sys => "msr/mrs/sys trapped",
+            .tstart_fail => "tstart failure",
+            .inst_abort_lower => "instruction abort (lower el)",
+            .inst_abort_same => "instruction abort (same el)",
+            .pc_align => "pc alignment fault",
+            .data_abort_lower => "data abort (lower el)",
+            .data_abort_same => "data abort (same el)",
+            .sp_align => "sp alignment fault",
+            .serror => "serror",
+            .breakpoint_lower => "breakpoint (lower el)",
+            .breakpoint_same => "breakpoint (same el)",
+            .brk_aarch64 => "brk instruction",
+            else => "other exception",
         };
     }
 };
@@ -249,34 +261,64 @@ export fn handleTrap(ctx: *TrapContext) void {
 
 /// Print trap information and register dump for debugging.
 fn dumpTrap(ctx: *const TrapContext, ec: TrapClass) void {
-    hal.print("TRAP: ");
+    hal.print("trap: ");
     hal.print(ec.name());
-    hal.print("\nELR=0x");
+    hal.print("\n");
+
+    hal.print("elr    =0x");
     printHex(ctx.elr);
-    hal.print(" SP=0x");
+    hal.print(" sp     =0x");
     printHex(ctx.sp);
-    hal.print(" ESR=0x");
+    hal.print(" esr    =0x");
     printHex(ctx.esr);
-    hal.print(" FAR=0x");
+    hal.print(" far    =0x");
     printHex(ctx.far);
     hal.print("\n");
 
     var i: usize = 0;
-    while (i < 31) : (i += 2) {
-        hal.print("x");
-        printDecimal(i);
-        if (i < 10) hal.print(" ");
+    while (i < 31) : (i += 4) {
+        // Register 1
+        printRegName(i);
         hal.print("=0x");
         printHex(ctx.regs[i]);
 
+        // Register 2
         if (i + 1 < 31) {
-            hal.print(" x");
-            printDecimal(i + 1);
-            if (i + 1 < 10) hal.print(" ");
+            hal.print(" ");
+            printRegName(i + 1);
             hal.print("=0x");
             printHex(ctx.regs[i + 1]);
         }
+
+        // Register 3
+        if (i + 2 < 31) {
+            hal.print(" ");
+            printRegName(i + 2);
+            hal.print("=0x");
+            printHex(ctx.regs[i + 2]);
+        }
+
+        // Register 4
+        if (i + 3 < 31) {
+            hal.print(" ");
+            printRegName(i + 3);
+            hal.print("=0x");
+            printHex(ctx.regs[i + 3]);
+        }
+
         hal.print("\n");
+    }
+}
+
+/// Print register name with fixed-width padding.
+fn printRegName(idx: usize) void {
+    hal.print("x");
+    printDecimal(idx);
+    // Pad to 7 characters total for consistent alignment
+    if (idx < 10) {
+        hal.print("     "); // x0-x9: 2 chars + 5 spaces = 7
+    } else {
+        hal.print("    "); // x10-x30: 3 chars + 4 spaces = 7
     }
 }
 
