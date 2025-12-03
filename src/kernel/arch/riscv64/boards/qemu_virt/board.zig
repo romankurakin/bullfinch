@@ -1,11 +1,9 @@
 //! Board description for QEMU's "virt" machine on RISC-V.
 
 pub const riscv64 = struct {
-    // RISC-V uses SBI firmware for console; no kernel MMIO needed for isolation.
-    pub const uart_base: ?usize = null;
+    pub const uart_base: ?usize = null; // SBI firmware console (no kernel MMIO)
 };
 
-// HAL for RISC-V. Provides uniform init/print interface.
 pub const hal = struct {
     const sbi_uart = @import("riscv_uart");
 

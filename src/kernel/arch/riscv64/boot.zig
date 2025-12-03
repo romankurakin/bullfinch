@@ -1,18 +1,11 @@
-//! Boot shim that clears BSS and transfers control to main.
-//! Runs in early boot with no stack or memory management. Must initialize stack and zero BSS
-//! to prevent undefined global state. Failure risks kernel corruption.
-//! RISC-V: OpenSBI leaves us in M-mode with undefined stack. Naked function avoids Zig prologue.
+//! RISC-V boot shim - clears BSS and transfers to main().
+//! OpenSBI leaves us in S-mode. Must set SP and zero BSS before main().
 
-// Linker-defined symbols marking BSS boundaries. Must zero before main() per C ABI.
 extern const __bss_start: u8;
 extern const __bss_end: u8;
-
-// Architecture-independent kernel entry point.
 extern fn main() callconv(.c) void;
 
 export fn _start() linksection(".text.boot") callconv(.naked) noreturn {
-    // Set stack pointer to linker-defined __stack_top to avoid corrupting code/data.
-    // Critical for safety: early operations must not overwrite kernel sections.
     asm volatile (
         \\ la sp, __stack_top
         \\ la t0, __bss_start

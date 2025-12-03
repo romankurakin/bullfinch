@@ -10,8 +10,15 @@ const boot = switch (@import("builtin").target.cpu.arch) {
 const board = @import("board");
 const hal = board.hal;
 
+// Architecture-specific trap handling (exceptions + interrupts)
+const trap = switch (@import("builtin").target.cpu.arch) {
+    .aarch64 => @import("arch/arm64/trap.zig"),
+    .riscv64 => @import("arch/riscv64/trap.zig"),
+    else => @compileError("Unsupported architecture"),
+};
+
 comptime {
-    _ = boot; // Ensure boot code is linked in despite no runtime references
+    _ = boot;
 }
 
 pub export fn main() callconv(.c) void {
@@ -23,16 +30,31 @@ pub export fn main() callconv(.c) void {
         else => "Unknown",
     };
 
-    const msg = "Hello from Bullfinch kernel on " ++ arch_str ++ "!\n";
-    hal.print(msg);
+    hal.print("Bullfinch on ");
+    hal.print(arch_str);
+    hal.print(" architecture\n");
+    trap.init();
 
-    while (true) {
-        asm volatile ("wfi"); // ARM64 and RISC-V idle instruction - safe infinite wait for interrupts
-    }
-}
+    hal.print("Trap handlers initialized.\n");
+    
+    hal.print("Testing trap (breakpoint)...\n\n");
 
-pub fn panic(_: []const u8, _: ?*@import("std").builtin.StackTrace, _: ?usize) noreturn {
+    trap.testTriggerBreakpoint();
+
+    hal.print("ERROR: Returned from trap!\n");
     while (true) {
         asm volatile ("wfi");
     }
+}
+
+var panicking = false;
+
+pub fn panic(msg: []const u8, _: ?*@import("std").builtin.StackTrace, _: ?usize) noreturn {
+    if (panicking) trap.halt(); // Double panic - halt immediately
+    panicking = true;
+
+    hal.print("\nPANIC: ");
+    hal.print(msg);
+    hal.print("\n");
+    trap.halt();
 }

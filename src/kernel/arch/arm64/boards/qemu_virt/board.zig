@@ -1,11 +1,9 @@
 //! Board description for QEMU's "virt" machine on ARM64.
 
 pub const arm64 = struct {
-    // PL011 UART MMIO base address for QEMU virt. Direct hardware access.
-    pub const uart_base: usize = 0x0900_0000;
+    pub const uart_base: usize = 0x0900_0000; // PL011 UART MMIO base
 };
 
-// HAL for ARM64. Provides uniform init/print interface.
 pub const hal = struct {
     const pl011 = @import("arm64_uart");
     var state = pl011.State{};
