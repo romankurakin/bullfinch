@@ -2,11 +2,16 @@
 //!
 //! We run in S-mode (kernel). OpenSBI (M-mode) delegates traps to us via stvec.
 //! On trap: hardware saves sepc, sstatus, scause, stval and jumps to stvec.
-//! We use Direct mode (all traps → same handler, reads scause to dispatch).
+//! We use Vectored mode:
+//! - Exceptions jump to Base Address (trapVector)
+//! - Interrupts jump to Base Address + 4 * Cause
 //!
 //! Reference: RISC-V Privileged Specification Chapter 4 "Supervisor-Level ISA"
 
 const builtin = @import("builtin");
+
+// Common trap utilities shared between architectures
+const trap_common = @import("../../trap_common.zig");
 
 // HAL stub in test mode (register dump needs hal.print, but `zig test` doesn't resolve modules).
 const hal = if (builtin.is_test)
@@ -19,8 +24,8 @@ else
 /// Saved register context during trap. Layout must match assembly save/restore order
 /// (extern struct guarantees field order). RISC-V ABI: a0-a7 args, s0-s11 callee-saved, ra return addr.
 pub const TrapContext = extern struct {
-    regs: [31]u64, // x1-x31 (x0 hardwired to 0, not saved)
-    sp: u64, // Stack pointer
+    regs: [31]u64, // x1-x31 (x0 hardwired to 0, not saved; regs[1]=x2 is modified SP)
+    sp: u64, // Original stack pointer (before trap frame allocation)
     sepc: u64, // Supervisor Exception PC (return address)
     sstatus: u64, // Supervisor Status (privilege, interrupt enable)
     scause: u64, // Supervisor Cause (bit 63: interrupt, lower: code)
@@ -34,8 +39,11 @@ pub const TrapContext = extern struct {
         }
     }
 
+    /// Get register value by index (x0-x31).
+    /// Returns the original SP for x2, not the modified stack pointer in regs[1].
     pub fn getReg(self: *const TrapContext, idx: usize) u64 {
         if (idx == 0) return 0; // x0 is always zero
+        if (idx == 2) return self.sp; // x2/sp: return original, not modified
         return self.regs[idx - 1];
     }
 };
@@ -107,8 +115,50 @@ pub const TrapCause = enum(u64) {
     }
 };
 
-/// Trap entry point (naked function, linksection for 4-byte alignment).
+// stvec alignment requirements (RISC-V Privileged Spec 4.1.2)
+const STVEC_ALIGNMENT = 256; // Vectored mode requires 256-byte alignment (4 bytes × 64 causes)
+const STVEC_ALIGNMENT_MASK = STVEC_ALIGNMENT - 1;
+
+/// Trap vector table. Aligned to 256 bytes as per spec.
+/// Contains jumps to the common trap handler for exceptions and interrupts.
+export fn trapVector() align(256) linksection(".trap") callconv(.naked) void {
+    asm volatile (
+    // Base + 0: Exceptions (Cause < 16)
+        \\ j trapEntry
+        // Base + 4: Supervisor Software Interrupt (Cause 1)
+        \\ j trapEntry
+        // Base + 8: Reserved (Cause 2)
+        \\ j trapEntry
+        // Base + 12: Reserved (Cause 3)
+        \\ j trapEntry
+        // Base + 16: Reserved (Cause 4)
+        \\ j trapEntry
+        // Base + 20: Supervisor Timer Interrupt (Cause 5)
+        \\ j trapEntry
+        // Base + 24: Reserved (Cause 6)
+        \\ j trapEntry
+        // Base + 28: Reserved (Cause 7)
+        \\ j trapEntry
+        // Base + 32: Reserved (Cause 8)
+        \\ j trapEntry
+        // Base + 36: Supervisor External Interrupt (Cause 9)
+        \\ j trapEntry
+        // Fill up to 16 entries to be safe (up to Cause 15)
+        \\ j trapEntry
+        \\ j trapEntry
+        \\ j trapEntry
+        \\ j trapEntry
+        \\ j trapEntry
+        \\ j trapEntry
+    );
+}
+
+/// Common trap handler entry point.
 /// Stack frame: 288 bytes (x1-x31, sp, sepc, sstatus, scause, stval).
+///
+/// NOTE: On trap entry, hardware automatically clears sstatus.SIE (saving old value
+/// to sstatus.SPIE). This prevents interrupt nesting without explicit action.
+/// We restore sstatus on sret, which restores SIE from SPIE.
 export fn trapEntry() linksection(".trap") callconv(.naked) noreturn {
     // Save all general-purpose registers except x0 (hardwired zero).
     // We use x5 (t0) as scratch after saving it.
@@ -234,18 +284,15 @@ export fn handleTrap(ctx: *TrapContext) void {
 }
 
 fn dumpTrap(ctx: *const TrapContext, cause: TrapCause) void {
-    hal.print("Trap: ");
-    hal.print(cause.name());
-    hal.print("\n");
+    trap_common.printTrapHeader(cause.name());
 
-    hal.print("sepc   =0x");
-    printHex(ctx.sepc);
-    hal.print(" sp     =0x");
-    printHex(ctx.sp);
-    hal.print(" scause =0x");
-    printHex(ctx.scause);
-    hal.print(" stval  =0x");
-    printHex(ctx.stval);
+    trap_common.printKeyRegister("sepc", ctx.sepc);
+    hal.print(" ");
+    trap_common.printKeyRegister("sp", ctx.sp);
+    hal.print(" ");
+    trap_common.printKeyRegister("scause", ctx.scause);
+    hal.print(" ");
+    trap_common.printKeyRegister("stval", ctx.stval);
     hal.print("\n");
 
     const reg_names = [_][]const u8{
@@ -255,84 +302,18 @@ fn dumpTrap(ctx: *const TrapContext, cause: TrapCause) void {
         "s9", "s10", "s11", "t3", "t4", "t5", "t6",
     };
 
-    var i: usize = 0;
-    while (i < 31) : (i += 4) {
-        // Register 1
-        printRegName(reg_names[i]);
-        hal.print("=0x");
-        printHex(ctx.regs[i]);
-
-        // Register 2
-        if (i + 1 < 31) {
-            hal.print(" ");
-            printRegName(reg_names[i + 1]);
-            hal.print("=0x");
-            printHex(ctx.regs[i + 1]);
-        }
-
-        // Register 3
-        if (i + 2 < 31) {
-            hal.print(" ");
-            printRegName(reg_names[i + 2]);
-            hal.print("=0x");
-            printHex(ctx.regs[i + 2]);
-        }
-
-        // Register 4
-        if (i + 3 < 31) {
-            hal.print(" ");
-            printRegName(reg_names[i + 3]);
-            hal.print("=0x");
-            printHex(ctx.regs[i + 3]);
-        }
-
-        hal.print("\n");
-    }
+    trap_common.dumpRegisters(&ctx.regs, &reg_names);
 }
 
-fn printRegName(name: []const u8) void {
-    hal.print(name);
-    // Pad to 7 characters for consistent alignment
-    var padding = 7 - name.len;
-    while (padding > 0) : (padding -= 1) {
-        hal.print(" ");
-    }
-}
-
-fn printHex(val: u64) void {
-    const hex_chars = "0123456789abcdef";
-    var buf: [16]u8 = undefined;
-    var v = val;
-    var i: usize = 16;
-    while (i > 0) {
-        i -= 1;
-        buf[i] = hex_chars[@as(usize, @truncate(v & 0xF))];
-        v >>= 4;
-    }
-    hal.print(&buf);
-}
-
-fn printDecimal(val: usize) void {
-    if (val >= 10) {
-        var buf: [2]u8 = undefined;
-        buf[0] = @as(u8, @truncate('0' + (val / 10)));
-        buf[1] = @as(u8, @truncate('0' + (val % 10)));
-        hal.print(&buf);
-    } else {
-        var buf: [1]u8 = undefined;
-        buf[0] = @as(u8, @truncate('0' + val));
-        hal.print(&buf);
-    }
-}
-
-/// Initialize trap handling by installing stvec (Direct mode).
+/// Initialize trap handling by installing stvec (Vectored mode).
 pub fn init() void {
-    const stvec_val = @intFromPtr(&trapEntry);
-
     // stvec format: [63:2] address, [1:0] mode (00=Direct, 01=Vectored)
-    // Direct mode: all traps → same handler, reads scause to dispatch (simpler, standard for educational kernels).
-    if (stvec_val & 0x3 != 0) {
-        @panic("Trap entry not 4-byte aligned!");
+    // Vectored mode: Exceptions → Base, Interrupts → Base + 4*Cause
+    const stvec_val = @intFromPtr(&trapVector) | 1;
+
+    // Ensure Base Address is 256-byte aligned
+    if (@intFromPtr(&trapVector) & STVEC_ALIGNMENT_MASK != 0) {
+        @panic("Trap vector not 256-byte aligned!");
     }
 
     asm volatile ("csrw stvec, %[stvec]"
@@ -348,7 +329,7 @@ pub fn testTriggerBreakpoint() void {
 }
 
 /// Trigger illegal instruction exception (all-zeros is illegal on RISC-V).
-pub fn testTriggerIllegal() void {
+pub fn testTriggerIllegalInstruction() void {
     asm volatile (".word 0x00000000");
 }
 
@@ -373,9 +354,41 @@ test "TrapCause interrupt detection" {
     try std.testing.expectEqual(@as(u64, 5), TrapCause.code(0x0000000000000005));
 }
 
-test "TrapCause names are defined" {
+test "TrapCause names are defined for known exceptions" {
     const std = @import("std");
+    // Test specific known causes have meaningful names
     try std.testing.expect(TrapCause.breakpoint.name().len > 0);
     try std.testing.expect(TrapCause.ecall_from_u.name().len > 0);
     try std.testing.expect(TrapCause.load_page_fault.name().len > 0);
+    try std.testing.expect(TrapCause.store_page_fault.name().len > 0);
+    try std.testing.expect(TrapCause.illegal_instruction.name().len > 0);
+    try std.testing.expect(TrapCause.supervisor_timer_interrupt.name().len > 0);
+
+    // Test unknown cause returns fallback
+    const unknown: TrapCause = @enumFromInt(0x1234); // Not a defined cause
+    try std.testing.expectEqualStrings("unknown trap", unknown.name());
+}
+
+test "TrapContext.getReg handles special cases" {
+    const std = @import("std");
+    var ctx: TrapContext = undefined;
+
+    // Set up test values
+    for (0..31) |i| {
+        ctx.regs[i] = @as(u64, i) + 100;
+    }
+    ctx.sp = 0xDEADBEEF; // Original SP
+
+    // x0 always returns 0
+    try std.testing.expectEqual(@as(u64, 0), ctx.getReg(0));
+
+    // x1 (ra) comes from regs[0]
+    try std.testing.expectEqual(@as(u64, 100), ctx.getReg(1));
+
+    // x2 (sp) returns original SP, not regs[1]
+    try std.testing.expectEqual(@as(u64, 0xDEADBEEF), ctx.getReg(2));
+
+    // x3+ come from regs array
+    try std.testing.expectEqual(@as(u64, 102), ctx.getReg(3));
+    try std.testing.expectEqual(@as(u64, 130), ctx.getReg(31));
 }

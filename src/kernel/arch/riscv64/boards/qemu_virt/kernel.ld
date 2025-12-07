@@ -16,10 +16,9 @@ SECTIONS {
         *(.text*) /* All executable code */
     }
 
-    /* Trap entry point - RISC-V stvec requires 4-byte alignment.
-       Using Direct mode (all traps go to same handler), alignment is minimal.
+    /* Trap entry point - RISC-V stvec requires 256-byte alignment for Vectored Mode.
        Extracted to separate section for clarity and consistency with ARM64. */
-    .trap : ALIGN(4) {
+    .trap : ALIGN(256) {
         __trap_start = .;
         KEEP(*(.trap))
         __trap_end = .;
