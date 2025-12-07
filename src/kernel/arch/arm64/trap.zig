@@ -16,6 +16,8 @@ const hal = if (builtin.is_test)
 else
     @import("board").hal;
 
+const trap_common = @import("../../trap_common.zig");
+
 /// Saved register context during trap. Layout must match assembly save/restore order
 /// (extern struct guarantees field order). ARM AAPCS64: x0-x7 args, x19-x28 callee-saved, x29 FP, x30 LR.
 pub const TrapContext = extern struct {
@@ -32,6 +34,11 @@ pub const TrapContext = extern struct {
         if (FRAME_SIZE != 288) { // 31 + sp + elr + spsr + esr + far = 36 × 8
             @compileError("TrapContext size mismatch - update assembly!");
         }
+    }
+
+    pub fn getReg(self: *const TrapContext, idx: usize) u64 {
+        if (idx >= 31) return 0;
+        return self.regs[idx];
     }
 };
 
@@ -110,40 +117,54 @@ pub const TrapClass = enum(u6) {
 
 // Trap Vector Table
 
-/// ARM64 vector table offsets. Each entry is 128 bytes (0x80).
-/// Table has 4 groups of 4 vectors = 16 entries total.
-const VectorOffset = struct {
-    // Current EL with SP_EL0 (unusual - kernel using user stack)
-    const CURR_EL_SP0_SYNC: usize = 0x000;
-    const CURR_EL_SP0_IRQ: usize = 0x080;
-    const CURR_EL_SP0_FIQ: usize = 0x100;
-    const CURR_EL_SP0_SERROR: usize = 0x180;
-    // Current EL with SP_ELx (normal kernel operation)
-    const CURR_EL_SPX_SYNC: usize = 0x200;
-    const CURR_EL_SPX_IRQ: usize = 0x280;
-    const CURR_EL_SPX_FIQ: usize = 0x300;
-    const CURR_EL_SPX_SERROR: usize = 0x380;
-    // Lower EL using AArch64 (user → kernel)
-    const LOWER_EL_A64_SYNC: usize = 0x400;
-    const LOWER_EL_A64_IRQ: usize = 0x480;
-    const LOWER_EL_A64_FIQ: usize = 0x500;
-    const LOWER_EL_A64_SERROR: usize = 0x580;
-    // Lower EL using AArch32 (not used in Bullfinch)
-    const LOWER_EL_A32_SYNC: usize = 0x600;
-    const LOWER_EL_A32_IRQ: usize = 0x680;
-    const LOWER_EL_A32_FIQ: usize = 0x700;
-    const LOWER_EL_A32_SERROR: usize = 0x780;
-};
-
-/// Each vector entry gets 128 bytes (32 instructions).
-/// We use a simple branch to shared handler since 128 bytes is tight.
-const VECTOR_ENTRY_SIZE = 128;
-const VECTOR_TABLE_SIZE = 2048; // 16 entries × 128 bytes
+/// VBAR_EL1 requires 2KB alignment (bits [10:0] = 0).
+const VBAR_ALIGNMENT = 2048;
 
 /// Trap vector table - must be 2KB aligned per ARM spec.
-/// Alignment enforced by linker script (.vectors : ALIGN(2048)).
-/// Initialized to zeros at comptime; branch instructions patched at runtime by init().
-export var trap_vectors: [VECTOR_TABLE_SIZE]u8 linksection(".vectors") = [_]u8{0} ** VECTOR_TABLE_SIZE;
+/// 16 entries × 128 bytes each. Each entry branches to trapEntry.
+/// Static assembly - no runtime patching needed, linker resolves offsets.
+export fn trap_vectors() align(VBAR_ALIGNMENT) linksection(".vectors") callconv(.naked) void {
+    // 16 vector entries, each 128 bytes (32 instructions).
+    // We use b (branch) + padding. Assembler/linker handles offset calculation.
+    asm volatile (
+        // Current EL with SP_EL0 (0x000 - 0x1FF)
+        \\ b trapEntry
+        \\ .balign 128
+        \\ b trapEntry
+        \\ .balign 128
+        \\ b trapEntry
+        \\ .balign 128
+        \\ b trapEntry
+        \\ .balign 128
+        // Current EL with SP_ELx (0x200 - 0x3FF)
+        \\ b trapEntry
+        \\ .balign 128
+        \\ b trapEntry
+        \\ .balign 128
+        \\ b trapEntry
+        \\ .balign 128
+        \\ b trapEntry
+        \\ .balign 128
+        // Lower EL using AArch64 (0x400 - 0x5FF)
+        \\ b trapEntry
+        \\ .balign 128
+        \\ b trapEntry
+        \\ .balign 128
+        \\ b trapEntry
+        \\ .balign 128
+        \\ b trapEntry
+        \\ .balign 128
+        // Lower EL using AArch32 (0x600 - 0x7FF)
+        \\ b trapEntry
+        \\ .balign 128
+        \\ b trapEntry
+        \\ .balign 128
+        \\ b trapEntry
+        \\ .balign 128
+        \\ b trapEntry
+        \\ .balign 128
+    );
+}
 
 // Trap Entry Point (naked function)
 
@@ -162,6 +183,9 @@ export var trap_vectors: [VECTOR_TABLE_SIZE]u8 linksection(".vectors") = [_]u8{0
 /// +232: x29
 /// ...
 /// +  0: x0
+///
+/// NOTE: On exception entry, ARM64 automatically masks interrupts (PSTATE.{D,A,I,F}
+/// set per SCTLR_EL1). SPSR saves old PSTATE, restored by ERET.
 export fn trapEntry() callconv(.naked) noreturn {
     // Save all general-purpose registers and system state.
     asm volatile (
@@ -261,93 +285,25 @@ export fn handleTrap(ctx: *TrapContext) void {
 
 /// Print trap information and register dump for debugging.
 fn dumpTrap(ctx: *const TrapContext, ec: TrapClass) void {
-    hal.print("Trap: ");
-    hal.print(ec.name());
+    trap_common.printTrapHeader(ec.name());
+
+    trap_common.printKeyRegister("elr", ctx.elr);
+    hal.print(" ");
+    trap_common.printKeyRegister("sp", ctx.sp);
+    hal.print(" ");
+    trap_common.printKeyRegister("esr", ctx.esr);
+    hal.print(" ");
+    trap_common.printKeyRegister("far", ctx.far);
     hal.print("\n");
 
-    hal.print("elr    =0x");
-    printHex(ctx.elr);
-    hal.print(" sp     =0x");
-    printHex(ctx.sp);
-    hal.print(" esr    =0x");
-    printHex(ctx.esr);
-    hal.print(" far    =0x");
-    printHex(ctx.far);
-    hal.print("\n");
+    const reg_names = [_][]const u8{
+        "x0",  "x1",  "x2",  "x3",  "x4",  "x5",  "x6",  "x7",
+        "x8",  "x9",  "x10", "x11", "x12", "x13", "x14", "x15",
+        "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23",
+        "x24", "x25", "x26", "x27", "x28", "x29", "x30",
+    };
 
-    var i: usize = 0;
-    while (i < 31) : (i += 4) {
-        // Register 1
-        printRegName(i);
-        hal.print("=0x");
-        printHex(ctx.regs[i]);
-
-        // Register 2
-        if (i + 1 < 31) {
-            hal.print(" ");
-            printRegName(i + 1);
-            hal.print("=0x");
-            printHex(ctx.regs[i + 1]);
-        }
-
-        // Register 3
-        if (i + 2 < 31) {
-            hal.print(" ");
-            printRegName(i + 2);
-            hal.print("=0x");
-            printHex(ctx.regs[i + 2]);
-        }
-
-        // Register 4
-        if (i + 3 < 31) {
-            hal.print(" ");
-            printRegName(i + 3);
-            hal.print("=0x");
-            printHex(ctx.regs[i + 3]);
-        }
-
-        hal.print("\n");
-    }
-}
-
-/// Print register name with fixed-width padding.
-fn printRegName(idx: usize) void {
-    hal.print("x");
-    printDecimal(idx);
-    // Pad to 7 characters total for consistent alignment
-    if (idx < 10) {
-        hal.print("     "); // x0-x9: 2 chars + 5 spaces = 7
-    } else {
-        hal.print("    "); // x10-x30: 3 chars + 4 spaces = 7
-    }
-}
-
-/// Print a 64-bit value as hex.
-fn printHex(val: u64) void {
-    const hex_chars = "0123456789abcdef";
-    var buf: [16]u8 = undefined;
-    var v = val;
-    var i: usize = 16;
-    while (i > 0) {
-        i -= 1;
-        buf[i] = hex_chars[@as(usize, @truncate(v & 0xF))];
-        v >>= 4;
-    }
-    hal.print(&buf);
-}
-
-/// Print a decimal number (for register indices).
-fn printDecimal(val: usize) void {
-    if (val >= 10) {
-        var buf: [2]u8 = undefined;
-        buf[0] = @as(u8, @truncate('0' + (val / 10)));
-        buf[1] = @as(u8, @truncate('0' + (val % 10)));
-        hal.print(&buf);
-    } else {
-        var buf: [1]u8 = undefined;
-        buf[0] = @as(u8, @truncate('0' + val));
-        hal.print(&buf);
-    }
+    trap_common.dumpRegisters(&ctx.regs, &reg_names);
 }
 
 // Initialization
@@ -356,55 +312,7 @@ fn printDecimal(val: usize) void {
 /// Must be called early in kernel init, after UART but before anything
 /// that might cause a trap.
 pub fn init() void {
-    // Get vector table address
     const vbar = @intFromPtr(&trap_vectors);
-
-    // Verify alignment - VBAR_EL1 requires bits [10:0] = 0 (2KB alignment)
-    if (vbar & 0x7FF != 0) {
-        @panic("Trap vector table not 2KB aligned!");
-    }
-
-    // Install branch instructions to trapEntry at start of each vector
-    // B instruction: 0x14000000 | (signed_offset_in_instructions & 0x3FFFFFF)
-    const entry_addr = @intFromPtr(&trapEntry);
-
-    inline for (.{
-        VectorOffset.CURR_EL_SP0_SYNC,
-        VectorOffset.CURR_EL_SP0_IRQ,
-        VectorOffset.CURR_EL_SP0_FIQ,
-        VectorOffset.CURR_EL_SP0_SERROR,
-        VectorOffset.CURR_EL_SPX_SYNC,
-        VectorOffset.CURR_EL_SPX_IRQ,
-        VectorOffset.CURR_EL_SPX_FIQ,
-        VectorOffset.CURR_EL_SPX_SERROR,
-        VectorOffset.LOWER_EL_A64_SYNC,
-        VectorOffset.LOWER_EL_A64_IRQ,
-        VectorOffset.LOWER_EL_A64_FIQ,
-        VectorOffset.LOWER_EL_A64_SERROR,
-        VectorOffset.LOWER_EL_A32_SYNC,
-        VectorOffset.LOWER_EL_A32_IRQ,
-        VectorOffset.LOWER_EL_A32_FIQ,
-        VectorOffset.LOWER_EL_A32_SERROR,
-    }) |offset| {
-        const vector_addr = vbar + offset;
-        // Calculate offset from this vector entry to trapEntry
-        // Offset is in bytes, must divide by 4 for instruction count
-        const byte_offset = @as(i64, @intCast(entry_addr)) - @as(i64, @intCast(vector_addr));
-        const insn_offset = @divExact(byte_offset, 4);
-
-        // Verify offset fits in 26-bit signed immediate
-        if (insn_offset < -0x2000000 or insn_offset >= 0x2000000) {
-            @panic("Trap entry too far from vector table!");
-        }
-
-        // Encode B instruction
-        const imm26 = @as(u32, @truncate(@as(u64, @bitCast(insn_offset)) & 0x3FFFFFF));
-        const b_insn: u32 = 0x14000000 | imm26;
-
-        // Write instruction to vector table (little-endian)
-        const ptr: *volatile u32 = @ptrFromInt(vector_addr);
-        ptr.* = b_insn;
-    }
 
     // Write VBAR_EL1 with vector table address
     asm volatile ("msr vbar_el1, %[vbar]"
@@ -413,8 +321,6 @@ pub fn init() void {
     );
 
     // ISB ensures the VBAR write completes before any trap could occur.
-    // Without this barrier, a trap taken immediately after could use
-    // the old (possibly invalid) vector table address.
     asm volatile ("isb");
 }
 
@@ -426,9 +332,9 @@ pub fn testTriggerBreakpoint() void {
     asm volatile ("brk #0");
 }
 
-/// Trigger undefined instruction trap for testing.
+/// Trigger illegal instruction trap for testing.
 /// Uses UDF instruction which is guaranteed undefined on all ARM implementations.
-pub fn testTriggerUndefined() void {
+pub fn testTriggerIllegalInstruction() void {
     asm volatile (".word 0x00000000"); // UDF #0
 }
 
@@ -447,9 +353,37 @@ test "TrapContext size is correct" {
     try std.testing.expectEqual(@as(usize, 288), TrapContext.FRAME_SIZE);
 }
 
-test "TrapClass names are defined" {
+test "TrapClass names are defined for known exceptions" {
     const std = @import("std");
+    // Test specific known classes have meaningful names
     try std.testing.expect(TrapClass.brk_aarch64.name().len > 0);
     try std.testing.expect(TrapClass.svc_aarch64.name().len > 0);
     try std.testing.expect(TrapClass.data_abort_same.name().len > 0);
+    try std.testing.expect(TrapClass.inst_abort_same.name().len > 0);
+    try std.testing.expect(TrapClass.pc_align.name().len > 0);
+    try std.testing.expect(TrapClass.sp_align.name().len > 0);
+    try std.testing.expect(TrapClass.serror.name().len > 0);
+
+    // Test unknown class returns fallback
+    const unknown: TrapClass = @enumFromInt(0x3F); // Not a defined class
+    try std.testing.expectEqualStrings("other exception", unknown.name());
+}
+
+test "TrapContext.getReg returns correct values" {
+    const std = @import("std");
+    var ctx: TrapContext = undefined;
+
+    // Set up test values
+    for (0..31) |i| {
+        ctx.regs[i] = @as(u64, i) + 100;
+    }
+
+    // Verify getReg returns correct values
+    try std.testing.expectEqual(@as(u64, 100), ctx.getReg(0));
+    try std.testing.expectEqual(@as(u64, 101), ctx.getReg(1));
+    try std.testing.expectEqual(@as(u64, 130), ctx.getReg(30));
+
+    // Out of bounds returns 0
+    try std.testing.expectEqual(@as(u64, 0), ctx.getReg(31));
+    try std.testing.expectEqual(@as(u64, 0), ctx.getReg(100));
 }
