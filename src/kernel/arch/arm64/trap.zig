@@ -6,17 +6,8 @@
 //!
 //! Reference: ARM DDI 0487 Chapter D1 "The AArch64 Exception Model"
 
-const builtin = @import("builtin");
-
-// HAL stub in test mode (register dump needs hal.print, but `zig test` doesn't resolve modules).
-const hal = if (builtin.is_test)
-    struct {
-        pub fn print(_: []const u8) void {}
-    }
-else
-    @import("board").hal;
-
 const trap_common = @import("../../trap_common.zig");
+const hal = trap_common.hal;
 
 /// Saved register context during trap. Layout must match assembly save/restore order
 /// (extern struct guarantees field order). ARM AAPCS64: x0-x7 args, x19-x28 callee-saved, x29 FP, x30 LR.
