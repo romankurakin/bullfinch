@@ -2,8 +2,9 @@
 
 const builtin = @import("builtin");
 
-// HAL stub in test mode (zig test doesn't resolve modules).
-const hal = if (builtin.is_test)
+/// HAL stub in test mode (zig test doesn't resolve modules).
+/// Exported so architecture-specific trap handlers can reuse it.
+pub const hal = if (builtin.is_test)
     struct {
         pub fn print(_: []const u8) void {}
     }
@@ -24,18 +25,23 @@ pub fn printHex(val: u64) void {
     hal.print(&buf);
 }
 
-/// Print a decimal number.
+/// Print a decimal number (handles any usize value).
 pub fn printDecimal(val: usize) void {
-    if (val >= 10) {
-        var buf: [2]u8 = undefined;
-        buf[0] = @as(u8, @truncate('0' + (val / 10)));
-        buf[1] = @as(u8, @truncate('0' + (val % 10)));
-        hal.print(&buf);
-    } else {
-        var buf: [1]u8 = undefined;
-        buf[0] = @as(u8, @truncate('0' + val));
-        hal.print(&buf);
+    var buf: [20]u8 = undefined; // Max 20 digits for 64-bit
+    var v = val;
+    var i: usize = buf.len;
+
+    if (v == 0) {
+        hal.print("0");
+        return;
     }
+
+    while (v > 0) : (i -= 1) {
+        buf[i - 1] = @as(u8, @truncate('0' + (v % 10)));
+        v /= 10;
+    }
+
+    hal.print(buf[i..]);
 }
 
 /// Print a register name with padding to 7 characters.
@@ -50,39 +56,18 @@ fn printRegName(name: []const u8) void {
 
 /// Dump general purpose registers in a 4-column layout.
 pub fn dumpRegisters(regs: []const u64, names: []const []const u8) void {
-    var i: usize = 0;
-    while (i < regs.len) : (i += 4) {
-        // Register 1
-        if (i < names.len) {
-            printRegName(names[i]);
-            hal.print("=0x");
-            printHex(regs[i]);
-        }
+    const cols = 4;
+    var row: usize = 0;
+    while (row * cols < regs.len) : (row += 1) {
+        for (0..cols) |col| {
+            const idx = row * cols + col;
+            if (idx >= regs.len or idx >= names.len) break;
 
-        // Register 2
-        if (i + 1 < regs.len and i + 1 < names.len) {
-            hal.print(" ");
-            printRegName(names[i + 1]);
+            if (col > 0) hal.print(" ");
+            printRegName(names[idx]);
             hal.print("=0x");
-            printHex(regs[i + 1]);
+            printHex(regs[idx]);
         }
-
-        // Register 3
-        if (i + 2 < regs.len and i + 2 < names.len) {
-            hal.print(" ");
-            printRegName(names[i + 2]);
-            hal.print("=0x");
-            printHex(regs[i + 2]);
-        }
-
-        // Register 4
-        if (i + 3 < regs.len and i + 3 < names.len) {
-            hal.print(" ");
-            printRegName(names[i + 3]);
-            hal.print("=0x");
-            printHex(regs[i + 3]);
-        }
-
         hal.print("\n");
     }
 }

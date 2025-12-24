@@ -8,18 +8,8 @@
 //!
 //! Reference: RISC-V Privileged Specification Chapter 4 "Supervisor-Level ISA"
 
-const builtin = @import("builtin");
-
-// Common trap utilities shared between architectures
 const trap_common = @import("../../trap_common.zig");
-
-// HAL stub in test mode (register dump needs hal.print, but `zig test` doesn't resolve modules).
-const hal = if (builtin.is_test)
-    struct {
-        pub fn print(_: []const u8) void {}
-    }
-else
-    @import("board").hal;
+const hal = trap_common.hal;
 
 /// Saved register context during trap. Layout must match assembly save/restore order
 /// (extern struct guarantees field order). RISC-V ABI: a0-a7 args, s0-s11 callee-saved, ra return addr.
