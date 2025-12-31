@@ -39,8 +39,10 @@ pub const TrapContext = extern struct {
 };
 
 /// Trap cause from scause CSR. Bit 63: interrupt (1) vs exception (0).
-/// RISC-V Privileged Spec Table 4.2.
+/// RISC-V Privileged Specification v1.12; Table 4.2.
+/// H-extension (ratified) adds codes 20-23 for guest virtualization.
 pub const TrapCause = enum(u64) {
+    // Exceptions (interrupt bit = 0)
     instruction_misaligned = 0,
     instruction_access_fault = 1,
     illegal_instruction = 2,
@@ -51,18 +53,24 @@ pub const TrapCause = enum(u64) {
     store_access_fault = 7,
     ecall_from_u = 8,
     ecall_from_s = 9,
-    ecall_from_vs = 10,
+    reserved_10 = 10,
     ecall_from_m = 11,
     instruction_page_fault = 12,
     load_page_fault = 13,
     reserved_14 = 14,
     store_page_fault = 15,
+    reserved_16 = 16,
+    reserved_17 = 17,
+    reserved_18 = 18,
+    reserved_19 = 19,
+    // H-extension (codes 20-23)
     instruction_guest_page_fault = 20,
     load_guest_page_fault = 21,
     virtual_instruction = 22,
     store_guest_page_fault = 23,
 
-    supervisor_software_interrupt = 0x8000000000000001, // Interrupts have bit 63 set
+    // Interrupts (bit 63 set)
+    supervisor_software_interrupt = 0x8000000000000001,
     supervisor_timer_interrupt = 0x8000000000000005,
     supervisor_external_interrupt = 0x8000000000000009,
 
@@ -88,11 +96,16 @@ pub const TrapCause = enum(u64) {
             .store_access_fault => "store access fault",
             .ecall_from_u => "environment call from u-mode",
             .ecall_from_s => "environment call from s-mode",
-            .ecall_from_vs => "environment call from vs-mode",
+            .reserved_10 => "reserved",
             .ecall_from_m => "environment call from m-mode",
             .instruction_page_fault => "instruction page fault",
             .load_page_fault => "load page fault",
+            .reserved_14 => "reserved",
             .store_page_fault => "store page fault",
+            .reserved_16 => "reserved",
+            .reserved_17 => "reserved",
+            .reserved_18 => "reserved",
+            .reserved_19 => "reserved",
             .instruction_guest_page_fault => "instruction guest page fault",
             .load_guest_page_fault => "load guest page fault",
             .virtual_instruction => "virtual instruction",

@@ -35,7 +35,7 @@ Reading:
 
 #### Rung 2: Exception Handling
 
-Implement trap handlers for both architectures with register dumps. Define syscall ABI (register conventions). Add kernel debug output infrastructure (printf, panic).
+Implement trap handlers for both architectures with register dumps. Add kernel debug output infrastructure (printf, panic).
 
 Reading:
 
@@ -309,9 +309,9 @@ TBD: multi-core, tickless scheduling, real filesystems, network stack, virtio dr
 
 ### Architecture
 
-- RISC-V Privileged Specification
+- RISC-V Privileged Specification v1.12
 - RISC-V SBI Specification
-- ARM Architecture Reference Manual (DDI 0487)
+- ARM Architecture Reference Manual (DDI 0487), ARMv8.2-A
 - ARM GIC Specification (IHI 0069)
 
 ### Capability Systems
