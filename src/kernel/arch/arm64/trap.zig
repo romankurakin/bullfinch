@@ -1,16 +1,24 @@
 //! ARM64 trap handling - exception vector table and handlers.
 //!
-//! ARM64 terminology: "exceptions" (we use "trap" to match RISC-V/OS theory).
-//! Vector table: 16 entries (4 types × 4 sources), 2KB aligned, 128 bytes each.
-//! Types: Synchronous, IRQ, FIQ, SError | Sources: Current/Lower EL, SP0/SPx, A64/A32
+//! ARM64 calls these "exceptions"; we use "trap" to match RISC-V and OS literature.
+//! Vector table has 16 entries (4 exception types × 4 sources), 2KB aligned, 128 bytes each.
+//! Types: Synchronous, IRQ, FIQ, SError.
+//! Sources: current/lower exception level, using SP0/SPx, AArch64/AArch32.
 //!
-//! Reference: ARM Architecture Reference Manual for A-profile (DDI 0487), ARMv8.2-A.
+//! Reference: ARM Architecture Reference Manual for A-profile (DDI 0487).
 
-const trap_common = @import("../../trap_common.zig");
-const hal = trap_common.hal;
+const common = @import("common");
 
-/// Saved register context during trap. Layout must match assembly save/restore order
-/// (extern struct guarantees field order). ARM AAPCS64: x0-x7 args, x19-x28 callee-saved, x29 FP, x30 LR.
+/// Print function type - injected at init to avoid circular deps.
+const PrintFn = *const fn ([]const u8) void;
+var print_fn: ?PrintFn = null;
+
+fn print(s: []const u8) void {
+    if (print_fn) |f| f(s);
+}
+
+/// Saved register context during trap. Layout must match assembly save/restore order.
+/// ARM calling convention: x0-x7 arguments, x19-x28 callee-saved, x29 frame pointer, x30 link register.
 pub const TrapContext = extern struct {
     regs: [31]u64, // x0-x30
     sp: u64, // Stack pointer at time of exception
@@ -27,6 +35,7 @@ pub const TrapContext = extern struct {
         }
     }
 
+    /// Get general-purpose register value by index (x0-x30). Returns 0 for invalid index.
     pub fn getReg(self: *const TrapContext, idx: usize) u64 {
         if (idx >= 31) return 0;
         return self.regs[idx];
@@ -82,6 +91,7 @@ pub const TrapClass = enum(u6) {
     brk_aarch64 = 0x3C,
     _,
 
+    /// Get human-readable name for this exception class.
     pub fn name(self: TrapClass) []const u8 {
         return switch (self) {
             .unknown => "unknown exception",
@@ -94,15 +104,15 @@ pub const TrapClass = enum(u6) {
             .hvc_aarch64 => "hvc (hypervisor call)",
             .smc_aarch64 => "smc (secure monitor call)",
             .msr_mrs_sys => "msr/mrs/sys trapped",
-            .inst_abort_lower => "instruction abort (lower el)",
-            .inst_abort_same => "instruction abort (same el)",
-            .pc_align => "pc alignment fault",
-            .data_abort_lower => "data abort (lower el)",
-            .data_abort_same => "data abort (same el)",
-            .sp_align => "sp alignment fault",
-            .serror => "serror",
-            .breakpoint_lower => "breakpoint (lower el)",
-            .breakpoint_same => "breakpoint (same el)",
+            .inst_abort_lower => "instruction abort (lower level)",
+            .inst_abort_same => "instruction abort (same level)",
+            .pc_align => "program counter alignment fault",
+            .data_abort_lower => "data abort (lower level)",
+            .data_abort_same => "data abort (same level)",
+            .sp_align => "stack pointer alignment fault",
+            .serror => "system error",
+            .breakpoint_lower => "breakpoint (lower level)",
+            .breakpoint_same => "breakpoint (same level)",
             .brk_aarch64 => "brk instruction",
             else => "other exception",
         };
@@ -121,7 +131,7 @@ export fn trap_vectors() align(VBAR_ALIGNMENT) linksection(".vectors") callconv(
     // 16 vector entries, each 128 bytes (32 instructions).
     // We use b (branch) + padding. Assembler/linker handles offset calculation.
     asm volatile (
-        // Current EL with SP_EL0 (0x000 - 0x1FF)
+    // Current EL with SP_EL0 (0x000 - 0x1FF)
         \\ b trapEntry
         \\ .balign 128
         \\ b trapEntry
@@ -279,17 +289,22 @@ export fn handleTrap(ctx: *TrapContext) void {
 
 /// Print trap information and register dump for debugging.
 fn dumpTrap(ctx: *const TrapContext, ec: TrapClass) void {
-    trap_common.printTrapHeader(ec.name());
+    // Print trap header
+    print("\nTrap: ");
+    print(ec.name());
+    print(" \n");
 
-    trap_common.printKeyRegister("elr", ctx.elr);
-    hal.print(" ");
-    trap_common.printKeyRegister("sp", ctx.sp);
-    hal.print(" ");
-    trap_common.printKeyRegister("esr", ctx.esr);
-    hal.print(" ");
-    trap_common.printKeyRegister("far", ctx.far);
-    hal.print("\n");
+    // Print key registers inline
+    printKeyRegister("elr", ctx.elr);
+    print(" ");
+    printKeyRegister("sp", ctx.sp);
+    print(" ");
+    printKeyRegister("esr", ctx.esr);
+    print(" ");
+    printKeyRegister("far", ctx.far);
+    print("\n");
 
+    // Dump all general-purpose registers
     const reg_names = [_][]const u8{
         "x0",  "x1",  "x2",  "x3",  "x4",  "x5",  "x6",  "x7",
         "x8",  "x9",  "x10", "x11", "x12", "x13", "x14", "x15",
@@ -297,15 +312,31 @@ fn dumpTrap(ctx: *const TrapContext, ec: TrapClass) void {
         "x24", "x25", "x26", "x27", "x28", "x29", "x30",
     };
 
-    trap_common.dumpRegisters(&ctx.regs, &reg_names);
+    for (reg_names, 0..) |reg_name, i| {
+        print(&common.trap.formatRegName(reg_name));
+        print("0x");
+        print(&common.trap.formatHex(ctx.regs[i]));
+        if ((i + 1) % 4 == 0) {
+            print("\n");
+        } else {
+            print(" ");
+        }
+    }
+}
+
+fn printKeyRegister(name: []const u8, value: u64) void {
+    print(&common.trap.formatRegName(name));
+    print("0x");
+    print(&common.trap.formatHex(value));
 }
 
 // Initialization
 
 /// Initialize trap handling by installing the vector table.
-/// Must be called early in kernel init, after UART but before anything
-/// that might cause a trap.
-pub fn init() void {
+/// Print function is injected to avoid circular dependencies.
+pub fn init(print_func: PrintFn) void {
+    print_fn = print_func;
+
     const vbar = @intFromPtr(&trap_vectors);
 
     // Write VBAR_EL1 with vector table address
@@ -339,8 +370,6 @@ pub fn halt() noreturn {
         asm volatile ("wfi");
     }
 }
-
-// Unit Tests
 
 test "TrapContext size is correct" {
     const std = @import("std");

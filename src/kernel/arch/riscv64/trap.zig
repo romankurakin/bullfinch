@@ -1,18 +1,23 @@
 //! RISC-V trap handling - trap vector and exception handlers.
 //!
-//! We run in S-mode (kernel). OpenSBI (M-mode) delegates traps to us via stvec.
+//! We run in supervisor mode (kernel). OpenSBI (machine mode) delegates traps via stvec.
 //! On trap: hardware saves sepc, sstatus, scause, stval and jumps to stvec.
-//! We use Vectored mode:
-//! - Exceptions jump to Base Address (trapVector)
-//! - Interrupts jump to Base Address + 4 * Cause
+//! We use Vectored mode: exceptions jump to base, interrupts to base + 4 * cause.
 //!
-//! Reference: RISC-V Privileged Specification Chapter 4 "Supervisor-Level ISA"
+//! Reference: RISC-V Privileged Specification v1.12, Chapter 4 "Supervisor-Level ISA"
 
-const trap_common = @import("../../trap_common.zig");
-const hal = trap_common.hal;
+const common = @import("common");
 
-/// Saved register context during trap. Layout must match assembly save/restore order
-/// (extern struct guarantees field order). RISC-V ABI: a0-a7 args, s0-s11 callee-saved, ra return addr.
+/// Print function type - injected at init to avoid circular deps.
+const PrintFn = *const fn ([]const u8) void;
+var print_fn: ?PrintFn = null;
+
+fn print(s: []const u8) void {
+    if (print_fn) |f| f(s);
+}
+
+/// Saved register context during trap. Layout must match assembly save/restore order.
+/// RISC-V calling convention: a0-a7 arguments, s0-s11 callee-saved, ra return address.
 pub const TrapContext = extern struct {
     regs: [31]u64, // x1-x31 (x0 hardwired to 0, not saved; regs[1]=x2 is modified SP)
     sp: u64, // Original stack pointer (before trap frame allocation)
@@ -31,16 +36,18 @@ pub const TrapContext = extern struct {
 
     /// Get register value by index (x0-x31).
     /// Returns the original SP for x2, not the modified stack pointer in regs[1].
+    /// Returns 0 for out-of-bounds indices.
     pub fn getReg(self: *const TrapContext, idx: usize) u64 {
         if (idx == 0) return 0; // x0 is always zero
+        if (idx > 31) return 0; // out of bounds
         if (idx == 2) return self.sp; // x2/sp: return original, not modified
         return self.regs[idx - 1];
     }
 };
 
-/// Trap cause from scause CSR. Bit 63: interrupt (1) vs exception (0).
-/// RISC-V Privileged Specification v1.12; Table 4.2.
-/// H-extension (ratified) adds codes 20-23 for guest virtualization.
+/// Trap cause from scause register. Bit 63: interrupt (1) vs exception (0).
+/// RISC-V Privileged Specification v1.12, Table 4.2.
+/// Hypervisor extension adds codes 20-23 for guest virtualization.
 pub const TrapCause = enum(u64) {
     // Exceptions (interrupt bit = 0)
     instruction_misaligned = 0,
@@ -76,14 +83,17 @@ pub const TrapCause = enum(u64) {
 
     _,
 
+    /// Check if scause indicates an interrupt (bit 63 set) vs exception.
     pub fn isInterrupt(cause: u64) bool {
         return (cause >> 63) == 1;
     }
 
+    /// Extract the cause code (lower 63 bits) from scause.
     pub fn code(cause: u64) u64 {
         return cause & ~(@as(u64, 1) << 63);
     }
 
+    /// Get human-readable name for this trap cause.
     pub fn name(self: TrapCause) []const u8 {
         return switch (self) {
             .instruction_misaligned => "instruction address misaligned",
@@ -94,10 +104,10 @@ pub const TrapCause = enum(u64) {
             .load_access_fault => "load access fault",
             .store_misaligned => "store address misaligned",
             .store_access_fault => "store access fault",
-            .ecall_from_u => "environment call from u-mode",
-            .ecall_from_s => "environment call from s-mode",
+            .ecall_from_u => "environment call from user mode",
+            .ecall_from_s => "environment call from supervisor mode",
             .reserved_10 => "reserved",
-            .ecall_from_m => "environment call from m-mode",
+            .ecall_from_m => "environment call from machine mode",
             .instruction_page_fault => "instruction page fault",
             .load_page_fault => "load page fault",
             .reserved_14 => "reserved",
@@ -287,17 +297,22 @@ export fn handleTrap(ctx: *TrapContext) void {
 }
 
 fn dumpTrap(ctx: *const TrapContext, cause: TrapCause) void {
-    trap_common.printTrapHeader(cause.name());
+    // Print trap header
+    print("\nTrap: ");
+    print(cause.name());
+    print(" \n");
 
-    trap_common.printKeyRegister("sepc", ctx.sepc);
-    hal.print(" ");
-    trap_common.printKeyRegister("sp", ctx.sp);
-    hal.print(" ");
-    trap_common.printKeyRegister("scause", ctx.scause);
-    hal.print(" ");
-    trap_common.printKeyRegister("stval", ctx.stval);
-    hal.print("\n");
+    // Print key registers inline
+    printKeyRegister("sepc", ctx.sepc);
+    print(" ");
+    printKeyRegister("sp", ctx.sp);
+    print(" ");
+    printKeyRegister("scause", ctx.scause);
+    print(" ");
+    printKeyRegister("stval", ctx.stval);
+    print("\n");
 
+    // Dump all general-purpose registers
     const reg_names = [_][]const u8{
         "ra", "sp",  "gp",  "tp", "t0", "t1", "t2", "s0",
         "s1", "a0",  "a1",  "a2", "a3", "a4", "a5", "a6",
@@ -305,13 +320,31 @@ fn dumpTrap(ctx: *const TrapContext, cause: TrapCause) void {
         "s9", "s10", "s11", "t3", "t4", "t5", "t6",
     };
 
-    trap_common.dumpRegisters(&ctx.regs, &reg_names);
+    for (reg_names, 0..) |name, i| {
+        print(&common.trap.formatRegName(name));
+        print("0x");
+        print(&common.trap.formatHex(ctx.regs[i]));
+        if ((i + 1) % 4 == 0) {
+            print("\n");
+        } else {
+            print(" ");
+        }
+    }
+}
+
+fn printKeyRegister(name: []const u8, value: u64) void {
+    print(&common.trap.formatRegName(name));
+    print("0x");
+    print(&common.trap.formatHex(value));
 }
 
 /// Initialize trap handling by installing stvec (Vectored mode).
-pub fn init() void {
+/// Print function is injected to avoid circular dependencies.
+pub fn init(print_func: PrintFn) void {
+    print_fn = print_func;
+
     // stvec format: [63:2] address, [1:0] mode (00=Direct, 01=Vectored)
-    // Vectored mode: Exceptions → Base, Interrupts → Base + 4*Cause
+    // Vectored mode: Exceptions -> Base, Interrupts -> Base + 4*Cause
     const stvec_val = @intFromPtr(&trapVector) | 1;
 
     // Ensure Base Address is 256-byte aligned
@@ -326,7 +359,7 @@ pub fn init() void {
     asm volatile ("fence.i"); // Ensure icache sees stvec code
 }
 
-/// Trigger breakpoint exception for testing (EBREAK → scause=3).
+/// Trigger breakpoint exception for testing (EBREAK -> scause=3).
 pub fn testTriggerBreakpoint() void {
     asm volatile ("ebreak");
 }

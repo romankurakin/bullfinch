@@ -1,24 +1,30 @@
 /* Linker script for ARM64 kernel on QEMU 'virt' machine.
-   Defines memory layout, entry point, and symbols used by boot code.
-   Ensures proper alignment and zeroing of BSS; stack above kernel sections. */
+   Kernel is linked at higher-half virtual addresses (VMA) but loaded at
+   physical addresses (LMA). Boot code is position-independent until MMU
+   enables the higher-half mapping. */
 
 STACK_SIZE = 16 * 1024; /* 16KB kernel stack - sufficient for early boot without heap */
+
+/* Memory layout constants */
+__dram_base = 0x40000000;              /* DRAM starts here on QEMU virt */
+__kernel_phys_base = 0x40080000;       /* Kernel load address */
+__kernel_virt_base = 0xFFFFFF8040080000; /* Higher-half virtual address */
 
 ENTRY(_start) /* Entry point defined in boot.zig - must be first in .text */
 
 SECTIONS {
-    /* Kernel load address: 0x40080000 (8MB into DRAM on QEMU virt).
-       Standard location for ARM64 kernels; avoids firmware conflicts. */
-    . = 0x40080000;
+    /* Virtual address for linking - all references use higher-half addresses.
+       AT() specifies physical load address for firmware/bootloader. */
+    . = __kernel_virt_base;
 
-    .text : {
-        KEEP(*(.text.boot)) /* Preserve boot code at image start for reset vector */
+    /* Boot code must be position-independent as it runs before MMU enable.
+       Placed first so firmware loads it at correct physical address. */
+    .text : AT(__kernel_phys_base) {
+        KEEP(*(.text.boot)) /* Position-independent boot code */
         *(.text*) /* All executable code */
     }
 
-    /* Exception vector table - ARM64 VBAR_EL1 requires 2KB alignment.
-       Table is 0x800 bytes (16 entries × 128 bytes each).
-       Extracted to separate section for clarity and alignment requirements. */
+    /* Exception vector table - ARM64 VBAR_EL1 requires 2KB alignment. */
     .vectors : ALIGN(2048) {
         __vectors_start = .;
         KEEP(*(.vectors))
@@ -33,17 +39,19 @@ SECTIONS {
         *(.data*) /* Initialized writable data */
     }
 
-    /* BSS: Uninitialized data, zeroed by boot code.
-       Symbols __bss_start/__bss_end used in boot.zig for memset. */
+    /* BSS: Uninitialized data, zeroed by boot code. */
     .bss : {
         __bss_start = .;
         *(.bss*)
-        . = ALIGN(16); /* Align for potential SIMD/vector ops */
+        . = ALIGN(16);
         __bss_end = .;
     }
 
-    . = ALIGN(16); /* Align stack base */
-    __stack_bottom = .; /* Stack grows down from __stack_top */
+    . = ALIGN(16);
+    __stack_bottom = .;
     . = . + STACK_SIZE;
-    __stack_top = .; /* Initial SP set here in boot.zig */
+    __stack_top = .;
+
+    . = ALIGN(4096);
+    __kernel_end = .;
 }

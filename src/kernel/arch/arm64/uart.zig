@@ -87,6 +87,7 @@ pub fn initDefault(base: usize, state: *State) void {
     init(base, state, .{});
 }
 
+/// Print string to UART (only if initialized).
 pub fn print(base: usize, state: *State, s: []const u8) void {
     if (!state.initialized) @panic("UART not initialized");
 

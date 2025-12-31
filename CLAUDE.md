@@ -77,7 +77,7 @@ Run `zig fmt` automatically (no permission needed).
 /// Unmaps a page and synchronizes the TLB.
 pub fn unmapPage(vaddr: usize) void {
     pte.* = 0;
-    // ARM requires DSB->TLBI->DSB->ISB barrier sequence to guarantee all cores
+    // ARM requires DSB -> TLBI -> DSB -> ISB barrier sequence to guarantee all cores
     // observe the page table write before executing code that might depend
     // on the old mapping. Missing any part can cause security vulnerabilities.
     asm volatile ("dsb ish");
@@ -125,7 +125,6 @@ feat: initial kernel bootstrap with ARM64/RISC-V support
 - Skip memory barriers (DSB/ISB on ARM64, fence on RISC-V)
 - Trust userspace input
 - Forget TLB ops after page table modifications
-- Write code that "works in QEMU" without checking real hardware behavior
 - Hold locks across blocking operations or syscall boundaries
 - Use unbounded loops in kernel code (DoS risk)
 - Assume pointer is valid because "it can't be null here"

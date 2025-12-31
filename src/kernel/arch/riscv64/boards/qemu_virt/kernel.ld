@@ -1,23 +1,30 @@
 /* Linker script for RISC-V kernel on QEMU 'virt' machine.
-   Defines memory layout, entry point, and symbols used by boot code.
-   Ensures proper alignment and zeroing of BSS; stack above kernel sections. */
+   Kernel is linked at higher-half virtual addresses (VMA) but loaded at
+   physical addresses (LMA). Boot code is position-independent until MMU
+   enables the higher-half mapping. */
 
 STACK_SIZE = 16 * 1024; /* 16KB kernel stack - sufficient for early boot without heap */
+
+/* Memory layout constants */
+__dram_base = 0x80000000;             /* DRAM starts here on QEMU virt */
+__kernel_phys_base = 0x80200000;      /* Kernel load address (above OpenSBI) */
+__kernel_virt_base = 0xFFFFFFC080200000; /* Higher-half virtual address */
 
 ENTRY(_start) /* Entry point defined in boot.zig - must be first in .text */
 
 SECTIONS {
-    /* Kernel load address: 0x80200000 (2MB into DRAM on QEMU virt).
-       Above OpenSBI (0x80000000) to avoid conflicts; matches QEMU default. */
-    . = 0x80200000;
+    /* Virtual address for linking - all references use higher-half addresses.
+       AT() specifies physical load address for firmware/bootloader. */
+    . = __kernel_virt_base;
 
-    .text : {
-        KEEP(*(.text.boot)) /* Preserve boot code at image start for firmware */
+    /* Boot code must be position-independent as it runs before MMU enable.
+       Placed first so firmware loads it at correct physical address. */
+    .text : AT(__kernel_phys_base) {
+        KEEP(*(.text.boot)) /* Position-independent boot code */
         *(.text*) /* All executable code */
     }
 
-    /* Trap entry point - RISC-V stvec requires 256-byte alignment for Vectored Mode.
-       Extracted to separate section for clarity and consistency with ARM64. */
+    /* Trap entry point - RISC-V stvec requires 256-byte alignment for Vectored Mode. */
     .trap : ALIGN(256) {
         __trap_start = .;
         KEEP(*(.trap))
@@ -32,17 +39,19 @@ SECTIONS {
         *(.data*) /* Initialized writable data */
     }
 
-    /* BSS: Uninitialized data, zeroed by boot code.
-       Symbols __bss_start/__bss_end used in boot.zig for memset. */
+    /* BSS: Uninitialized data, zeroed by boot code. */
     .bss : {
         __bss_start = .;
         *(.bss*)
-        . = ALIGN(16); /* Align for potential SIMD/vector ops */
+        . = ALIGN(16);
         __bss_end = .;
     }
 
-    . = ALIGN(16); /* Align stack base */
-    __stack_bottom = .; /* Stack grows down from __stack_top */
+    . = ALIGN(16);
+    __stack_bottom = .;
     . = . + STACK_SIZE;
-    __stack_top = .; /* Initial SP set here in boot.zig */
+    __stack_top = .;
+
+    . = ALIGN(4096);
+    __kernel_end = .;
 }
