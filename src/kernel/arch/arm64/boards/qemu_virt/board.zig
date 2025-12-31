@@ -1,18 +1,23 @@
-//! Board description for QEMU's "virt" machine on ARM64.
+//! Board-specific operations for QEMU virt ARM64.
+//! Imports config (pure data) and arch.uart (driver).
 
-pub const arm64 = struct {
-    pub const uart_base: usize = 0x0900_0000; // PL011 UART MMIO base
-};
+pub const config = @import("config");
+const uart = @import("arch").uart;
 
+/// Board-level HAL - UART operations.
 pub const hal = struct {
-    const pl011 = @import("arm64_uart");
-    var state = pl011.State{};
+    var state = uart.State{};
+    var uart_base: usize = config.UART_PHYS;
 
     pub fn init() void {
-        pl011.initDefault(arm64.uart_base, &state);
+        uart.initDefault(uart_base, &state);
     }
 
     pub fn print(s: []const u8) void {
-        pl011.print(arm64.uart_base, &state, s);
+        uart.print(uart_base, &state, s);
+    }
+
+    pub fn setUartBase(addr: usize) void {
+        uart_base = addr;
     }
 };

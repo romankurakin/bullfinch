@@ -1,17 +1,19 @@
-//! Board description for QEMU's "virt" machine on RISC-V.
+//! Board-specific operations for QEMU virt RISC-V.
+//! Imports config (pure data) and arch.uart (SBI console).
 
-pub const riscv64 = struct {
-    pub const uart_base: ?usize = null; // SBI firmware console (no kernel MMIO)
-};
+pub const config = @import("config");
+const uart = @import("arch").uart;
 
+/// Board-level HAL - UART operations (via SBI).
 pub const hal = struct {
-    const sbi_uart = @import("riscv_uart");
-
     pub fn init() void {
-        sbi_uart.init();
+        uart.init();
     }
 
     pub fn print(s: []const u8) void {
-        sbi_uart.print(s);
+        uart.print(s);
     }
+
+    /// No-op - SBI console doesn't need address translation.
+    pub fn setUartBase(_: usize) void {}
 };

@@ -46,7 +46,7 @@ Reading:
 
 #### Rung 3: MMU and Abstraction Layer
 
-Enable paging with identity mapping. Introduce HAL isolating architecture-specific code for MMU, interrupts, and timers. Key abstraction points: paging models (Sv39 vs ARM64 tables), interrupt controllers (PLIC vs GIC), boot processes.
+Enable paging with identity mapping. Introduce HAL isolating architecture-specific code for MMU.
 
 Reading:
 
@@ -289,7 +289,7 @@ Reading:
 
 ### Rung 28: First WASM Application
 
-Hello world end-to-end: kernel → init → PM → WASM runtime → .wasm → WASI fd_write → filesystem channel → UART driver → output.
+Hello world end-to-end: kernel -> init -> PM -> WASM runtime -> .wasm -> WASI fd_write -> filesystem channel -> UART driver -> output.
 
 ---
 
