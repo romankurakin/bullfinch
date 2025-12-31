@@ -25,6 +25,14 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Board config - pure data, no dependencies. Breaks circular deps.
+    const config_module_path = b.pathJoin(&.{ "src", "kernel", "arch", arch_dir, "boards", board, "config.zig" });
+    const config_module = b.createModule(.{
+        .root_source_file = b.path(config_module_path),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const board_module_path = b.pathJoin(&.{ "src", "kernel", "arch", arch_dir, "boards", board, "board.zig" });
     // Board module provides HAL abstraction for the target platform.
     const board_module = b.createModule(.{
@@ -33,27 +41,44 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // Conditionally import arch-specific modules to avoid unused dependencies.
-    switch (target.result.cpu.arch) {
-        .aarch64 => {
-            const arm64_uart_module = b.createModule(.{
-                .root_source_file = b.path("src/kernel/arch/arm64/uart.zig"),
-                .target = target,
-                .optimize = optimize,
-            });
-            board_module.addImport("arm64_uart", arm64_uart_module);
-        },
-        .riscv64 => {
-            const riscv_uart_module = b.createModule(.{
-                .root_source_file = b.path("src/kernel/arch/riscv64/uart.zig"),
-                .target = target,
-                .optimize = optimize,
-            });
-            board_module.addImport("riscv_uart", riscv_uart_module);
-        },
-        else => {},
-    }
-    kernel_module.addImport("board", board_module);
+    // Common kernel utilities (pure functions, no dependencies).
+    // Add new common modules to common.zig - no build.zig changes needed.
+    const common_module = b.createModule(.{
+        .root_source_file = b.path("src/kernel/common/common.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // Arch module re-exports all arch-specific code.
+    // Add new arch modules to arch.zig - no build.zig changes needed.
+    const arch_module_path = b.pathJoin(&.{ "src", "kernel", "arch", arch_dir, "arch.zig" });
+    const arch_module = b.createModule(.{
+        .root_source_file = b.path(arch_module_path),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // Unified HAL combines arch and board into single interface for kernel.
+    const hal_module = b.createModule(.{
+        .root_source_file = b.path("src/kernel/hal.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // Wire up module dependencies (no circular deps).
+    // config -> (nothing, pure data)
+    // common -> (nothing, pure functions)
+    // arch -> config, common
+    // board -> arch (for uart driver), config
+    // hal -> arch, board (injects board.hal.print into arch.trap at runtime)
+    // kernel -> hal
+    arch_module.addImport("common", common_module);
+    arch_module.addImport("config", config_module);
+    board_module.addImport("arch", arch_module);
+    board_module.addImport("config", config_module);
+    hal_module.addImport("arch", arch_module);
+    hal_module.addImport("board", board_module);
+    kernel_module.addImport("hal", hal_module);
 
     const kernel_name = switch (target.result.cpu.arch) {
         .aarch64 => "kernel-arm64",
@@ -81,12 +106,29 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run all tests");
 
-    // Run centralized test suite through kernel root that imports all modules with inline tests
-    var kernel_tests: *std.Build.Step.Run = undefined;
-    if (test_filter) |filter| {
-        kernel_tests = b.addSystemCommand(&.{ "zig", "test", "src/kernel/root_test.zig", "--test-filter", filter });
-    } else {
-        kernel_tests = b.addSystemCommand(&.{ "zig", "test", "src/kernel/root_test.zig" });
-    }
-    test_step.dependOn(&kernel_tests.step);
+    // Native target for running tests on host (not the cross-compile target)
+    const native_target = b.resolveTargetQuery(.{});
+
+    // Test module for common utilities (shared between architectures).
+    const test_common_module = b.createModule(.{
+        .root_source_file = b.path("src/kernel/common/common.zig"),
+        .target = native_target,
+    });
+
+    // Create test root module with common dependency
+    const test_root_module = b.createModule(.{
+        .root_source_file = b.path("src/kernel/root_test.zig"),
+        .target = native_target,
+    });
+    test_root_module.addImport("common", test_common_module);
+
+    // Run centralized test suite through kernel root that imports all modules with inline tests.
+    // Uses native target for host testing.
+    const kernel_tests = b.addTest(.{
+        .root_module = test_root_module,
+        .filters = if (test_filter) |f| &.{f} else &.{},
+    });
+
+    const run_tests = b.addRunArtifact(kernel_tests);
+    test_step.dependOn(&run_tests.step);
 }

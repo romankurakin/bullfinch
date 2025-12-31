@@ -18,6 +18,7 @@ pub fn call(eid: usize, fid: usize, arg0: usize, arg1: usize, arg2: usize) !usiz
     return ret;
 }
 
+/// Write a single character to the console using legacy SBI call.
 pub fn legacyConsolePutchar(byte: u8) void {
     _ = call(0x01, 0, byte, 0, 0) catch @panic("SBI console putchar failed");
 }
