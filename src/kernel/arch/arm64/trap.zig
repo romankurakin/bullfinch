@@ -4,7 +4,7 @@
 //! Vector table: 16 entries (4 types × 4 sources), 2KB aligned, 128 bytes each.
 //! Types: Synchronous, IRQ, FIQ, SError | Sources: Current/Lower EL, SP0/SPx, A64/A32
 //!
-//! Reference: ARM DDI 0487 Chapter D1 "The AArch64 Exception Model"
+//! Reference: ARM Architecture Reference Manual for A-profile (DDI 0487), ARMv8.2-A.
 
 const trap_common = @import("../../trap_common.zig");
 const hal = trap_common.hal;
@@ -33,7 +33,8 @@ pub const TrapContext = extern struct {
     }
 };
 
-/// Exception class from ESR_EL1[31:26] (ARM DDI 0487 Table D1-6).
+/// Exception class from ESR_EL1[31:26].
+/// ARM Architecture Reference Manual (DDI 0487), ARMv8.2-A, Table D1-6.
 pub const TrapClass = enum(u6) {
     unknown = 0x00,
     wfi_wfe = 0x01,
@@ -44,18 +45,18 @@ pub const TrapClass = enum(u6) {
     simd_fp = 0x07,
     cp10_id = 0x08,
     ptrauth = 0x09,
-    ld64b_st64b = 0x0A,
     cp14_mrrc = 0x0C,
     branch_target = 0x0D,
     illegal_state = 0x0E,
     svc_aarch32 = 0x11,
+    hvc_aarch32 = 0x12,
+    smc_aarch32 = 0x13,
+    svc_aarch64 = 0x15,
     hvc_aarch64 = 0x16,
     smc_aarch64 = 0x17,
-    svc_aarch64 = 0x15,
     msr_mrs_sys = 0x18,
     sve = 0x19,
     eret = 0x1A,
-    tstart_fail = 0x1B,
     pac_fail = 0x1C,
     sme = 0x1D,
     imp_def = 0x1F,
@@ -77,7 +78,7 @@ pub const TrapClass = enum(u6) {
     watchpoint_lower = 0x34,
     watchpoint_same = 0x35,
     bkpt_aarch32 = 0x38,
-    vector32 = 0x3A,
+    vector_catch = 0x3A,
     brk_aarch64 = 0x3C,
     _,
 
@@ -86,11 +87,13 @@ pub const TrapClass = enum(u6) {
             .unknown => "unknown exception",
             .wfi_wfe => "wfi/wfe trapped",
             .simd_fp => "simd/fp access",
+            .svc_aarch32 => "svc (syscall, aarch32)",
+            .hvc_aarch32 => "hvc (hypervisor call, aarch32)",
+            .smc_aarch32 => "smc (secure monitor call, aarch32)",
             .svc_aarch64 => "svc (syscall)",
             .hvc_aarch64 => "hvc (hypervisor call)",
             .smc_aarch64 => "smc (secure monitor call)",
             .msr_mrs_sys => "msr/mrs/sys trapped",
-            .tstart_fail => "tstart failure",
             .inst_abort_lower => "instruction abort (lower el)",
             .inst_abort_same => "instruction abort (same el)",
             .pc_align => "pc alignment fault",
