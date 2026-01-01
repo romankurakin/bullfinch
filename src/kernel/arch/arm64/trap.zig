@@ -30,9 +30,7 @@ pub const TrapContext = extern struct {
     pub const FRAME_SIZE = @sizeOf(TrapContext);
 
     comptime {
-        if (FRAME_SIZE != 288) { // 31 + sp + elr + spsr + esr + far = 36 × 8
-            @compileError("TrapContext size mismatch - update assembly!");
-        }
+        if (FRAME_SIZE != 288) @compileError("TrapContext size mismatch - update assembly!");
     }
 
     /// Get general-purpose register value by index (x0-x30). Returns 0 for invalid index.
@@ -176,18 +174,6 @@ export fn trap_vectors() align(VBAR_ALIGNMENT) linksection(".vectors") callconv(
 /// This function is naked to give us full control over register usage.
 /// Called from vector table entries.
 ///
-/// Stack frame layout (growing down from high address):
-/// +288: [previous SP]
-/// +280: FAR_EL1 (filled by handler)
-/// +272: ESR_EL1 (filled by handler)
-/// +264: SPSR_EL1
-/// +256: ELR_EL1
-/// +248: SP (original)
-/// +240: x30
-/// +232: x29
-/// ...
-/// +  0: x0
-///
 /// NOTE: On exception entry, ARM64 automatically masks interrupts (PSTATE.{D,A,I,F}
 /// set per SCTLR_EL1). SPSR saves old PSTATE, restored by ERET.
 export fn trapEntry() callconv(.naked) noreturn {
@@ -311,7 +297,6 @@ fn dumpTrap(ctx: *const TrapContext, ec: TrapClass) void {
         "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23",
         "x24", "x25", "x26", "x27", "x28", "x29", "x30",
     };
-
     for (reg_names, 0..) |reg_name, i| {
         print(&common.trap.formatRegName(reg_name));
         print("0x");

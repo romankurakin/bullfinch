@@ -1,5 +1,6 @@
 //! Architecture-independent kernel entry point for Bullfinch.
-//! Runs at physical address until MMU init, then transitions to higher-half.
+//!
+//! Boot sequence is handled by HAL to enforce correct ordering.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -15,33 +16,18 @@ const arch_name = switch (builtin.target.cpu.arch) {
     else => "Unknown",
 };
 
+/// Entry point called from boot (runs at physical addresses).
 pub export fn main() callconv(.c) void {
-    hal.init();
-    hal.print("\nHardware initialized\n");
-    hal.initMmu();
-    hal.print("MMU enabled\n");
-
-    hal.jumpToHigherHalf(kmain, 0);
+    hal.bootPhysical(kmain, 0);
 }
 
-/// Kernel entry point running in higher-half virtual address space.
 fn kmain(_: usize) noreturn {
-    hal.print("Running in higher-half virtual address space\n");
-
-    // Switch MMIO to higher-half addresses before removing identity mapping.
-    // Must happen first so peripherals remain accessible after mapping removal.
-    hal.useHigherHalfAddresses();
-    hal.removeIdentityMapping();
-    hal.print("Identity mapping removed\n");
-
-    hal.initTrap();
-    hal.print("Trap handling initialized\n");
+    hal.bootVirtual();
 
     hal.print("Welcome to Bullfinch on ");
     hal.print(arch_name);
     hal.print(" architecture\n");
 
-    // Test trap handling - triggers breakpoint and displays register dump
     hal.trap.testTriggerBreakpoint();
 
     hal.print("Boot complete. Halting.\n");

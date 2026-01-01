@@ -1,73 +1,125 @@
 //! Unified Hardware Abstraction Layer.
+//!
 //! Combines architecture-specific and board-specific operations into a single interface.
 //! Kernel code imports only this module for all hardware operations.
+//!
+//! Boot sequence has strict ordering due to address space transitions:
+//!   1. Hardware init (UART at physical address)
+//!   2. MMU enable (identity + higher-half mappings active)
+//!   3. Trap init (vector table at higher-half address)
+//!   4. Jump to higher-half
+//!   5. Switch UART to virtual address
+//!   6. Remove identity mapping
+//!
+//! Order is enforced by `bootPhysical()` and `bootVirtual()` structure.
 
+const std = @import("std");
 const arch = @import("arch");
 const board = @import("board");
 
-// Re-export boot for entry point inclusion
-pub const boot = arch.boot;
+// Compile-time verifications.
+comptime {
+    const KERNEL_VIRT_BASE = arch.mmu.KERNEL_VIRT_BASE;
+    const PAGE_SIZE = arch.mmu.PAGE_SIZE;
+    const PAGE_SHIFT = arch.mmu.PAGE_SHIFT;
+    const GB: usize = 1 << 30;
 
-// Re-export trap for test helpers (testTriggerBreakpoint, etc.)
-pub const trap = arch.trap;
+    // Kernel virtual base must be gigabyte-aligned (for 1GB block mappings)
+    if (KERNEL_VIRT_BASE & (GB - 1) != 0) {
+        @compileError("KERNEL_VIRT_BASE must be 1GB aligned");
+    }
 
-// Re-export mmu for direct access when needed
-pub const mmu = arch.mmu;
+    // Kernel virtual base must be in upper half (high bit set)
+    if (KERNEL_VIRT_BASE < (1 << 63)) {
+        @compileError("KERNEL_VIRT_BASE must be in upper address space");
+    }
 
-// Re-export board config for memory layout constants
-pub const config = board.config;
+    // Page size must be power of 2
+    if (@popCount(PAGE_SIZE) != 1) {
+        @compileError("PAGE_SIZE must be a power of 2");
+    }
 
-// ============================================================================
-// Board-specific operations (UART, peripherals)
-// ============================================================================
+    // PAGE_SHIFT must match PAGE_SIZE
+    if (std.math.log2_int(usize, PAGE_SIZE) != PAGE_SHIFT) {
+        @compileError("PAGE_SHIFT doesn't match PAGE_SIZE");
+    }
 
-/// Initialize board hardware (UART, peripherals).
-pub fn init() void {
-    board.hal.init();
+    // Verify kernel physical base if defined
+    if (@hasDecl(board.config, "KERNEL_PHYS_BASE")) {
+        const KERNEL_PHYS_BASE = board.config.KERNEL_PHYS_BASE;
+
+        // Kernel must be page-aligned
+        if (KERNEL_PHYS_BASE & (PAGE_SIZE - 1) != 0) {
+            @compileError("KERNEL_PHYS_BASE must be page-aligned");
+        }
+    }
+
+    // Verify trap context structure
+    const TrapContext = arch.trap.TrapContext;
+
+    // TrapContext must have FRAME_SIZE constant matching actual size
+    if (!@hasDecl(TrapContext, "FRAME_SIZE")) {
+        @compileError("TrapContext must have FRAME_SIZE constant");
+    }
+    if (TrapContext.FRAME_SIZE != @sizeOf(TrapContext)) {
+        @compileError("TrapContext.FRAME_SIZE must match @sizeOf(TrapContext)");
+    }
+
+    // TrapContext must have getReg for register access
+    if (!@hasDecl(TrapContext, "getReg")) {
+        @compileError("TrapContext must have getReg function");
+    }
+
+    // Frame size must be 16-byte aligned
+    if (TrapContext.FRAME_SIZE & 0xF != 0) {
+        @compileError("TrapContext.FRAME_SIZE must be 16-byte aligned");
+    }
+
+    // Struct must be at least 8-byte aligned (for u64 register storage)
+    if (@alignOf(TrapContext) < 8) {
+        @compileError("TrapContext must be at least 8-byte aligned");
+    }
 }
 
-/// Print string to console.
+pub const boot = arch.boot;
+pub const trap = arch.trap;
+pub const mmu = arch.mmu;
+pub const config = board.config;
+
+/// Runs at physical addresses. Initializes hardware, MMU, traps, then jumps to higher-half.
+/// The continuation should call `bootVirtual()` first.
+pub fn bootPhysical(continuation: *const fn (usize) noreturn, arg: usize) noreturn {
+    board.hal.init();
+    print("\nHardware initialized\n");
+
+    arch.hal.initMmu();
+    print("MMU enabled\n");
+
+    arch.hal.initTrap(board.hal.print);
+    print("Trap handling initialized\n");
+
+    arch.hal.jumpToHigherHalf(continuation, arg);
+}
+
+/// Runs at virtual addresses. Finalizes address space transition.
+/// Must be called first in the continuation.
+pub fn bootVirtual() void {
+    print("Running in higher-half virtual address space\n");
+
+    if (@hasDecl(board.config, "UART_PHYS")) {
+        board.hal.setUartBase(arch.hal.physToVirt(board.config.UART_PHYS));
+    }
+
+    arch.hal.removeIdentityMapping();
+    print("Identity mapping removed\n");
+}
+
 pub fn print(s: []const u8) void {
     board.hal.print(s);
 }
 
-/// Switch MMIO peripherals to higher-half virtual addresses.
-/// Call before removeIdentityMapping() to keep peripherals working.
-/// HAL composes board config + arch address translation.
-pub fn useHigherHalfAddresses() void {
-    if (@hasDecl(board.config, "UART_PHYS")) {
-        board.hal.setUartBase(arch.hal.physToVirt(board.config.UART_PHYS));
-    }
-}
-
-// ============================================================================
-// Architecture-specific operations (MMU, trap, CPU)
-// ============================================================================
-
-/// Initialize MMU with identity + higher-half mapping, enable paging.
-pub fn initMmu() void {
-    arch.hal.initMmu();
-}
-
-/// Initialize trap/exception handling.
-/// Injects board's print function into trap handler to break circular dependency.
-pub fn initTrap() void {
-    arch.hal.initTrap(board.hal.print);
-}
-
-/// Halt the CPU (disable interrupts and wait forever).
 pub fn halt() noreturn {
     arch.hal.halt();
-}
-
-/// Transition to running in higher-half address space.
-pub fn jumpToHigherHalf(continuation: *const fn (usize) noreturn, arg: usize) noreturn {
-    arch.hal.jumpToHigherHalf(continuation, arg);
-}
-
-/// Remove identity mapping after transitioning to higher-half.
-pub fn removeIdentityMapping() void {
-    arch.hal.removeIdentityMapping();
 }
 
 /// Flush all TLB entries.
