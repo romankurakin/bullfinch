@@ -19,11 +19,16 @@ pub const PAGE_SHIFT = common_mmu.PAGE_SHIFT;
 pub const ENTRIES_PER_TABLE = common_mmu.ENTRIES_PER_TABLE;
 pub const PageFlags = common_mmu.PageFlags;
 pub const MapError = common_mmu.MapError;
+pub const UnmapError = common_mmu.UnmapError;
 
 /// Kernel virtual base address (Sv39 upper canonical).
 /// Physical addresses are mapped to virtual = physical + KERNEL_VIRT_BASE.
 /// This places kernel in the upper half of the 39-bit address space.
 pub const KERNEL_VIRT_BASE: usize = 0xFFFF_FFC0_0000_0000;
+
+// Offset masks for superpage translation
+const GIGAPAGE_MASK: usize = (1 << 30) - 1; // 1GB offset mask
+const MEGAPAGE_MASK: usize = (1 << 21) - 1; // 2MB offset mask
 
 /// Convert physical address to kernel virtual address.
 pub fn physToVirt(paddr: usize) usize {
@@ -135,7 +140,6 @@ comptime {
     if (@sizeOf(PageTable) != PAGE_SIZE) @compileError("PageTable must be one page");
 }
 
-
 /// Sv39 virtual address parsing into page table indices.
 pub const VirtAddr = struct {
     vpn2: u9, // bits 38:30 (level 2, top level)
@@ -191,7 +195,10 @@ pub const Satp = packed struct(u64) {
 
     /// Write SATP register to change address translation mode.
     pub fn write(self: Satp) void {
-        if (is_riscv64) asm volatile ("csrw satp, %[val]" :: [val] "r" (@as(u64, @bitCast(self))));
+        if (is_riscv64) asm volatile ("csrw satp, %[val]"
+            :
+            : [val] "r" (@as(u64, @bitCast(self))),
+        );
     }
 };
 
@@ -217,17 +224,27 @@ pub const Tlb = struct {
 
     /// Invalidate cached translation for a specific virtual address.
     pub fn flushAddr(vaddr: usize) void {
-        if (is_riscv64) asm volatile ("sfence.vma %[addr], zero" :: [addr] "r" (vaddr));
+        if (is_riscv64) asm volatile ("sfence.vma %[addr], zero"
+            :
+            : [addr] "r" (vaddr),
+        );
     }
 
     /// Invalidate all cached translations for a specific address space.
     pub fn flushAsid(asid: u16) void {
-        if (is_riscv64) asm volatile ("sfence.vma zero, %[asid]" :: [asid] "r" (@as(usize, asid)));
+        if (is_riscv64) asm volatile ("sfence.vma zero, %[asid]"
+            :
+            : [asid] "r" (@as(usize, asid)),
+        );
     }
 
     /// Invalidate cached translation for a specific virtual address and address space.
     pub fn flushAddrAsid(vaddr: usize, asid: u16) void {
-        if (is_riscv64) asm volatile ("sfence.vma %[addr], %[asid]" :: [addr] "r" (vaddr), [asid] "r" (@as(usize, asid)));
+        if (is_riscv64) asm volatile ("sfence.vma %[addr], %[asid]"
+            :
+            : [addr] "r" (vaddr),
+              [asid] "r" (@as(usize, asid)),
+        );
     }
 };
 
@@ -260,7 +277,6 @@ pub fn walk(root: *PageTable, vaddr: usize) ?*Pte {
 /// Translate virtual address to physical address.
 /// Handles superpages at any level as well as regular pages.
 /// Returns null if address is not mapped.
-/// Page tables are accessed via higher-half virtual addresses after MMU enable.
 pub fn translate(root: *PageTable, vaddr: usize) ?usize {
     if (!VirtAddr.isCanonical(vaddr)) return null;
 
@@ -271,7 +287,7 @@ pub fn translate(root: *PageTable, vaddr: usize) ?usize {
     if (!l2_entry.isValid()) return null;
     if (l2_entry.isLeaf()) {
         // 1GB gigapage: PA = page base + offset within 1GB
-        return l2_entry.physAddr() | (vaddr & ((1 << 30) - 1));
+        return l2_entry.physAddr() | (vaddr & GIGAPAGE_MASK);
     }
 
     // Level 1 - convert physical address to virtual for access
@@ -280,7 +296,7 @@ pub fn translate(root: *PageTable, vaddr: usize) ?usize {
     if (!l1_entry.isValid()) return null;
     if (l1_entry.isLeaf()) {
         // 2MB megapage: PA = page base + offset within 2MB
-        return l1_entry.physAddr() | (vaddr & ((1 << 21) - 1));
+        return l1_entry.physAddr() | (vaddr & MEGAPAGE_MASK);
     }
 
     // Level 0 - convert physical address to virtual for access
@@ -297,23 +313,23 @@ pub fn translate(root: *PageTable, vaddr: usize) ?usize {
 /// Does NOT flush TLB - caller must do that after mapping.
 /// Page tables are accessed via higher-half virtual addresses after MMU enable.
 pub fn mapPage(root: *PageTable, vaddr: usize, paddr: usize, flags: PageFlags) MapError!void {
-    // Check alignment
+    // Check alignment and canonical
     if ((vaddr & (PAGE_SIZE - 1)) != 0) return MapError.NotAligned;
     if ((paddr & (PAGE_SIZE - 1)) != 0) return MapError.NotAligned;
-    if (!VirtAddr.isCanonical(vaddr)) return MapError.NotAligned;
+    if (!VirtAddr.isCanonical(vaddr)) return MapError.NotCanonical;
 
     const va = VirtAddr.parse(vaddr);
 
     // Level 2 - must be a branch entry
     const l2_entry = root.entries[va.vpn2];
     if (!l2_entry.isValid()) return MapError.TableNotPresent;
-    if (l2_entry.isLeaf()) return MapError.TableNotPresent; // gigapage, not branch
+    if (l2_entry.isLeaf()) return MapError.SuperpageConflict; // gigapage
 
     // Level 1 - must be a branch entry (convert phys to virt for access)
     const l1_table: *PageTable = @ptrFromInt(physToVirt(l2_entry.physAddr()));
     const l1_entry = l1_table.entries[va.vpn1];
     if (!l1_entry.isValid()) return MapError.TableNotPresent;
-    if (l1_entry.isLeaf()) return MapError.TableNotPresent; // megapage, not branch
+    if (l1_entry.isLeaf()) return MapError.SuperpageConflict; // megapage
 
     // Level 0 - the actual page entry (convert phys to virt for access)
     const l0_table: *PageTable = @ptrFromInt(physToVirt(l1_entry.physAddr()));
@@ -376,16 +392,27 @@ pub fn init() void {
     const end_gb = (kernel_end + (1 << 30) - 1) >> 30;
 
     // Identity mapping (for boot continuation after MMU enable)
+    // MMIO first - ensures it's not overwritten if kernel happens to start in first GB
+    // (e.g., on boards where KERNEL_PHYS_BASE < 0x40000000)
+    root_table.entries[0] = Pte.kernelLeaf(0, true, false); // MMIO (first GB, non-executable)
+
     var gb: usize = start_gb;
     while (gb < end_gb) : (gb += 1) {
+        // Skip index 0 if kernel overlaps MMIO region - MMIO takes precedence
+        if (gb == 0) continue;
         root_table.entries[gb] = Pte.kernelLeaf(gb << 30, true, true);
     }
-    root_table.entries[0] = Pte.kernelLeaf(0, true, false); // MMIO
 
     // Higher-half mapping: physical GB N maps to VPN2 index (high_base + N)
+    // VPN2 = bits 38:30 of virtual address (9 bits, range 0-511)
+    //
     // For KERNEL_VIRT_BASE = 0xFFFF_FFC0_0000_0000:
-    //   VPN2 base = (0xFFFF_FFC0_0000_0000 >> 30) & 0x1FF = 256
-    // Physical 0x8000_0000 (GB 2) maps to VPN2 index 258
+    //   Bits 38:30 = (0xFFFF_FFC0_0000_0000 >> 30) & 0x1FF = 256
+    //   This is the start of Sv39 upper canonical range (VPN2 >= 256)
+    //
+    // Physical 0x8000_0000 (GB 2) maps to:
+    //   VPN2 index = 256 + 2 = 258
+    //   Virtual addr = 0xFFFF_FFC0_8000_0000
     const high_base_vpn2: usize = (KERNEL_VIRT_BASE >> 30) & 0x1FF;
 
     gb = start_gb;
@@ -538,6 +565,14 @@ test "translate handles gigapage mappings" {
     try std.testing.expectEqual(@as(?usize, null), translate(&root, 0x40000000));
 }
 
+test "translate returns null for non-canonical addresses" {
+    var root = PageTable.EMPTY;
+    root.entries[2] = Pte.kernelLeaf(0x80000000, true, true);
+
+    // Non-canonical address
+    try std.testing.expectEqual(@as(?usize, null), translate(&root, 0x4000000000));
+}
+
 test "mapPage returns NotAligned for misaligned addresses" {
     var root = PageTable.EMPTY;
 
@@ -546,6 +581,21 @@ test "mapPage returns NotAligned for misaligned addresses" {
 
     // Misaligned physical address
     try std.testing.expectError(MapError.NotAligned, mapPage(&root, 0x1000, 0x2001, .{}));
+}
+
+test "mapPage returns NotCanonical for non-canonical addresses" {
+    var root = PageTable.EMPTY;
+
+    // Address in the non-canonical hole (bits 63:39 not sign-extension of bit 38)
+    try std.testing.expectError(MapError.NotCanonical, mapPage(&root, 0x4000000000, 0x1000, .{}));
+}
+
+test "mapPage returns SuperpageConflict for gigapage mappings" {
+    var root = PageTable.EMPTY;
+    root.entries[2] = Pte.kernelLeaf(0x80000000, true, true); // 1GB gigapage
+
+    // Trying to map a page inside a gigapage should fail
+    try std.testing.expectError(MapError.SuperpageConflict, mapPage(&root, 0x80001000, 0x90001000, .{}));
 }
 
 test "mapPage returns TableNotPresent without intermediate tables" {
