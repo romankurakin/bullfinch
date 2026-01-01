@@ -89,18 +89,22 @@ pub fn unmapPage(vaddr: usize) void {
 
 ## Commits
 
-Follow Conventional Commits: `<type>(<scope>): <description>`
+Follow Conventional Commits: `<type>(<scope>): <subject>`
 
 **Types:** feat, fix, perf, refactor, docs, test, build, chore, ci
 
-**Scopes:** boot, mem, cap, arm64, riscv, hal
+**Scopes:** boot, mem, mmu, cap, arm64, riscv, arch, kernel, hal, ci, build
+
+**Format:** Subject line + blank line + 3-4 sentence body explaining what and why. Use prose, not bullet points.
 
 ```text
-feat: initial kernel bootstrap with ARM64/RISC-V support
+feat(mmu): implement virtual memory with higher-half kernel mapping
 
-- ARM64 UART (PL011) and RISC-V SBI console drivers
-- QEMU virt platform with linker scripts
-- Build system with just commands and Nix flake
+Add MMU support for both architectures using Sv39 (RISC-V) and 39-bit
+VA (ARM64) with 4KB pages. Boot sequence identity-maps kernel at physical
+address, enables paging, jumps to higher-half virtual address, then
+removes identity mapping. Implement modular HAL that wires arch, board,
+and common modules without circular dependencies.
 ```
 
 ## Safety Checklist
