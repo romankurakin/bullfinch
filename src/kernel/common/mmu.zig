@@ -19,10 +19,24 @@ pub const PageFlags = struct {
 pub const MapError = error{
     /// Virtual or physical address not page-aligned
     NotAligned,
+    /// Address is not in valid canonical range
+    NotCanonical,
     /// Intermediate page table not present (caller must allocate)
     TableNotPresent,
     /// Entry already contains a valid mapping
     AlreadyMapped,
+    /// Attempted to map over a superpage (1GB/2MB block)
+    SuperpageConflict,
+};
+
+/// Errors that can occur during page unmapping operations.
+pub const UnmapError = error{
+    /// Address is not in valid canonical range
+    NotCanonical,
+    /// Page is not mapped
+    NotMapped,
+    /// Cannot unmap individual page from superpage
+    SuperpageConflict,
 };
 
 test "PAGE_SIZE is 4KB" {

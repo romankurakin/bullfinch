@@ -29,9 +29,7 @@ pub const TrapContext = extern struct {
     pub const FRAME_SIZE = @sizeOf(TrapContext);
 
     comptime {
-        if (FRAME_SIZE != 288) { // 31 + sp + sepc + sstatus + scause + stval = 36 × 8
-            @compileError("TrapContext size mismatch - update assembly!");
-        }
+        if (FRAME_SIZE != 288) @compileError("TrapContext size mismatch - update assembly!");
     }
 
     /// Get register value by index (x0-x31).
@@ -127,10 +125,6 @@ pub const TrapCause = enum(u64) {
         };
     }
 };
-
-// stvec alignment requirements (RISC-V Privileged Spec 4.1.2)
-const STVEC_ALIGNMENT = 256; // Vectored mode requires 256-byte alignment (4 bytes × 64 causes)
-const STVEC_ALIGNMENT_MASK = STVEC_ALIGNMENT - 1;
 
 /// Trap vector table. Aligned to 256 bytes as per spec.
 /// Contains jumps to the common trap handler for exceptions and interrupts.
@@ -312,14 +306,13 @@ fn dumpTrap(ctx: *const TrapContext, cause: TrapCause) void {
     printKeyRegister("stval", ctx.stval);
     print("\n");
 
-    // Dump all general-purpose registers
+    // Dump all general-purpose registers (x1-x31)
     const reg_names = [_][]const u8{
         "ra", "sp",  "gp",  "tp", "t0", "t1", "t2", "s0",
         "s1", "a0",  "a1",  "a2", "a3", "a4", "a5", "a6",
         "a7", "s2",  "s3",  "s4", "s5", "s6", "s7", "s8",
         "s9", "s10", "s11", "t3", "t4", "t5", "t6",
     };
-
     for (reg_names, 0..) |name, i| {
         print(&common.trap.formatRegName(name));
         print("0x");
@@ -345,12 +338,8 @@ pub fn init(print_func: PrintFn) void {
 
     // stvec format: [63:2] address, [1:0] mode (00=Direct, 01=Vectored)
     // Vectored mode: Exceptions -> Base, Interrupts -> Base + 4*Cause
+    // Alignment guaranteed by align(256) on trapVector declaration.
     const stvec_val = @intFromPtr(&trapVector) | 1;
-
-    // Ensure Base Address is 256-byte aligned
-    if (@intFromPtr(&trapVector) & STVEC_ALIGNMENT_MASK != 0) {
-        @panic("Trap vector not 256-byte aligned!");
-    }
 
     asm volatile ("csrw stvec, %[stvec]"
         :

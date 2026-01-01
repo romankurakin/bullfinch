@@ -2,47 +2,40 @@
 //! ARM's standard UART peripheral. Powers up disabled, requires baud rate config + enable.
 
 // PL011 register offsets (byte offsets from base address)
-const UART_DR_OFFSET = 0x00; // Data Register
-const UART_FR_OFFSET = 0x18; // Flag Register
-const UART_IBRD_OFFSET = 0x24; // Integer Baud Rate Divisor
-const UART_FBRD_OFFSET = 0x28; // Fractional Baud Rate Divisor
-const UART_LCRH_OFFSET = 0x2C; // Line Control Register
-const UART_CR_OFFSET = 0x30; // Control Register
-const UART_ICR_OFFSET = 0x44; // Interrupt Clear Register
+const DR = 0x00; // Data Register
+const FR = 0x18; // Flag Register
+const IBRD = 0x24; // Integer Baud Rate Divisor
+const FBRD = 0x28; // Fractional Baud Rate Divisor
+const LCRH = 0x2C; // Line Control Register
+const CR = 0x30; // Control Register
+const ICR = 0x44; // Interrupt Clear Register
 
-const UART_FR_TXFF = 1 << 5; // TX FIFO Full
-const UART_FR_BUSY = 1 << 3; // UART Busy
+const FR_TXFF: u32 = 1 << 5; // TX FIFO Full
+const FR_BUSY: u32 = 1 << 3; // UART Busy
 
-const UART_CR_UARTEN = 1 << 0; // UART Enable
-const UART_CR_TXE = 1 << 8; // TX Enable
+const CR_UARTEN: u32 = 1 << 0; // UART Enable
+const CR_TXE: u32 = 1 << 8; // TX Enable
+const CR_ENABLED: u32 = CR_UARTEN | CR_TXE;
 
-const UART_LCRH_FEN = 1 << 4; // FIFO Enable
-const UART_LCRH_WLEN_8 = 0b11 << 5; // 8-bit word length
+const LCRH_FEN: u32 = 1 << 4; // FIFO Enable
+const LCRH_WLEN_8: u32 = 0b11 << 5; // 8-bit word length
 
 pub const InitConfig = struct {
     uartclk_hz: u32 = 24_000_000,
     baud: u32 = 115_200,
 };
 
-pub const State = struct {
-    initialized: bool = false,
-};
-
 // MMIO access (volatile required for memory-mapped I/O)
-inline fn reg32(base: usize, comptime offset: usize) *volatile u32 {
-    return @as(*volatile u32, @ptrFromInt(base + offset));
+inline fn reg32(base: usize, offset: usize) *volatile u32 {
+    return @ptrFromInt(base + offset);
 }
 
-inline fn reg8(base: usize, comptime offset: usize) *volatile u8 {
-    return @as(*volatile u8, @ptrFromInt(base + offset));
+inline fn waitTxReady(base: usize) void {
+    while ((reg32(base, FR).* & FR_TXFF) != 0) {}
 }
 
-inline fn waitTxFifo(base: usize) void {
-    while ((reg32(base, UART_FR_OFFSET).* & UART_FR_TXFF) != 0) {}
-}
-
-inline fn writeData(base: usize, byte: u8) void {
-    reg8(base, UART_DR_OFFSET).* = byte;
+inline fn writeByte(base: usize, byte: u8) void {
+    reg32(base, DR).* = byte;
 }
 
 /// Compute PL011 baud rate divisors (16x oversampling: divisor = clk / (16 * baud)).
@@ -62,47 +55,38 @@ pub fn computeDivisors(uartclk_hz: u32, baud: u32) struct { ibrd: u32, fbrd: u32
     return .{ .ibrd = @intCast(ibrd), .fbrd = @intCast(fbrd) };
 }
 
-fn setBaud(base: usize, uartclk_hz: u32, baud: u32) void {
-    const divs = computeDivisors(uartclk_hz, baud);
-    reg32(base, UART_IBRD_OFFSET).* = divs.ibrd;
-    reg32(base, UART_FBRD_OFFSET).* = divs.fbrd;
+/// Initialize UART (disable, configure baud rate + line control, enable).
+pub fn init(base: usize, config: InitConfig) void {
+    while ((reg32(base, FR).* & FR_BUSY) != 0) {} // Wait for TX to complete
+    reg32(base, CR).* = 0; // Disable UART for config
+    reg32(base, ICR).* = 0x7FF; // Clear interrupts
+
+    const divs = computeDivisors(config.uartclk_hz, config.baud);
+    reg32(base, IBRD).* = divs.ibrd;
+    reg32(base, FBRD).* = divs.fbrd;
+    reg32(base, LCRH).* = LCRH_WLEN_8 | LCRH_FEN; // 8N1, FIFOs enabled
+
+    reg32(base, CR).* = CR_ENABLED;
+    asm volatile ("dsb ish"); // Ensure write reaches hardware
 }
 
-/// Initialize UART (must disable, configure baud rate + line control, enable).
-pub fn init(base: usize, state: *State, config: InitConfig) void {
-    while ((reg32(base, UART_FR_OFFSET).* & UART_FR_BUSY) != 0) {} // Wait for TX to complete
-    reg32(base, UART_CR_OFFSET).* = 0; // Disable UART for config
-    reg32(base, UART_ICR_OFFSET).* = 0x7FF; // Clear interrupts
-
-    setBaud(base, config.uartclk_hz, config.baud);
-    reg32(base, UART_LCRH_OFFSET).* = UART_LCRH_WLEN_8 | UART_LCRH_FEN; // 8N1, FIFOs enabled
-
-    reg32(base, UART_CR_OFFSET).* = UART_CR_UARTEN | UART_CR_TXE; // Enable UART + TX
-    asm volatile ("dsb ish"); // Ensure enable write reaches hardware (weakly-ordered memory)
-
-    state.initialized = true;
+pub fn initDefault(base: usize) void {
+    init(base, .{});
 }
 
-pub fn initDefault(base: usize, state: *State) void {
-    init(base, state, .{});
-}
-
-/// Print string to UART (only if initialized).
-pub fn print(base: usize, state: *State, s: []const u8) void {
-    if (!state.initialized) @panic("UART not initialized");
-
-    const cr = reg32(base, UART_CR_OFFSET).*;
-    if ((cr & (UART_CR_UARTEN | UART_CR_TXE)) != (UART_CR_UARTEN | UART_CR_TXE)) {
-        @panic("UART disabled in hardware");
+/// Print string to UART.
+pub fn print(base: usize, s: []const u8) void {
+    if ((reg32(base, CR).* & CR_ENABLED) != CR_ENABLED) {
+        @panic("UART not enabled");
     }
 
     for (s) |byte| {
-        waitTxFifo(base);
+        waitTxReady(base);
         if (byte == '\n') {
-            writeData(base, '\r');
-            waitTxFifo(base);
+            writeByte(base, '\r');
+            waitTxReady(base);
         }
-        writeData(base, byte);
+        writeByte(base, byte);
     }
 }
 
