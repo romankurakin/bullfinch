@@ -45,12 +45,12 @@ comptime {
     }
 
     // Verify kernel physical base if defined
-    if (@hasDecl(board.config, "KERNEL_PHYS_BASE")) {
-        const KERNEL_PHYS_BASE = board.config.KERNEL_PHYS_BASE;
+    if (@hasDecl(board.config, "KERNEL_PHYS_LOAD")) {
+        const KERNEL_PHYS_LOAD = board.config.KERNEL_PHYS_LOAD;
 
         // Kernel must be page-aligned
-        if (KERNEL_PHYS_BASE & (PAGE_SIZE - 1) != 0) {
-            @compileError("KERNEL_PHYS_BASE must be page-aligned");
+        if (KERNEL_PHYS_LOAD & (PAGE_SIZE - 1) != 0) {
+            @compileError("KERNEL_PHYS_LOAD must be page-aligned");
         }
     }
 

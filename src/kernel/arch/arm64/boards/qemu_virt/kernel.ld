@@ -7,19 +7,19 @@ STACK_SIZE = 16 * 1024; /* 16KB kernel stack - sufficient for early boot without
 
 /* Memory layout constants */
 __dram_base = 0x40000000;              /* DRAM starts here on QEMU virt */
-__kernel_phys_base = 0x40080000;       /* Kernel load address */
-__kernel_virt_base = 0xFFFFFF8040080000; /* Higher-half virtual address */
+__kernel_phys_load = 0x40080000;       /* Kernel physical load address */
+__kernel_virt_load = 0xFFFFFF8040080000; /* Kernel virtual load address */
 
 ENTRY(_start) /* Entry point defined in boot.zig - must be first in .text */
 
 SECTIONS {
     /* Virtual address for linking - all references use higher-half addresses.
        AT() specifies physical load address for firmware/bootloader. */
-    . = __kernel_virt_base;
+    . = __kernel_virt_load;
 
     /* Boot code must be position-independent as it runs before MMU enable.
        Placed first so firmware loads it at correct physical address. */
-    .text : AT(__kernel_phys_base) {
+    .text : AT(__kernel_phys_load) {
         KEEP(*(.text.boot)) /* Position-independent boot code */
         *(.text*) /* All executable code */
     }

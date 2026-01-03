@@ -50,7 +50,7 @@ Enable paging with identity mapping. Introduce HAL isolating architecture-specif
 
 Reading:
 
-- OSTEP Chapters 18-20 (Paging)
+- OSTEP Chapters 14-20
 - RISC-V Sv39 specification
 - ARM64 four-level page table specification
 
@@ -60,6 +60,7 @@ Implement timer interrupts. Add basic clock syscalls for monotonic time. Timer h
 
 Reading:
 
+- OSDI3 Section 2.8 (The Clock Task in MINIX 3)
 - RISC-V SBI timer specification
 - ARM64 generic timer specification
 - Zircon clock documentation
@@ -74,7 +75,6 @@ Implement page allocator with leak detection. Research allocator strategies (bit
 
 Reading:
 
-- OSTEP Chapter 17 (Free-Space Management)
 - OSDI3 Section 4.1 (basic memory management)
 
 #### Rung 6: Kernel Object Allocator
@@ -101,7 +101,6 @@ Implement address space isolation with ASID support.
 
 Reading:
 
-- OSTEP Chapters 13, 18-20
 - OSDI3 Sections 4.3, 4.5, 4.7-4.8 (virtual memory, MINIX memory manager)
 
 ---

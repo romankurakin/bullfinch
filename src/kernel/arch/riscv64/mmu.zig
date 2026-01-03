@@ -376,7 +376,7 @@ var root_table: PageTable align(PAGE_SIZE) = PageTable.EMPTY;
 
 // Board-specific memory layout (imported directly to avoid circular deps)
 const config = @import("config");
-const KERNEL_PHYS_BASE = config.KERNEL_PHYS_BASE;
+const KERNEL_PHYS_LOAD = config.KERNEL_PHYS_LOAD;
 
 // Kernel size estimate for gigapage mapping (1GB should cover typical kernel)
 const KERNEL_SIZE_ESTIMATE: usize = 1 << 30; // 1GB
@@ -385,15 +385,15 @@ const KERNEL_SIZE_ESTIMATE: usize = 1 << 30; // 1GB
 /// Identity mapping allows boot code to continue running after MMU enable.
 /// Higher-half mapping prepares for eventual transition to high addresses.
 pub fn init() void {
-    const kernel_start = KERNEL_PHYS_BASE;
+    const kernel_start = KERNEL_PHYS_LOAD;
     // Estimate kernel end for gigapage mapping (actual end determined at runtime)
-    const kernel_end = KERNEL_PHYS_BASE + KERNEL_SIZE_ESTIMATE;
+    const kernel_end = KERNEL_PHYS_LOAD + KERNEL_SIZE_ESTIMATE;
     const start_gb = kernel_start >> 30;
     const end_gb = (kernel_end + (1 << 30) - 1) >> 30;
 
     // Identity mapping (for boot continuation after MMU enable)
     // MMIO first - ensures it's not overwritten if kernel happens to start in first GB
-    // (e.g., on boards where KERNEL_PHYS_BASE < 0x40000000)
+    // (e.g., on boards where KERNEL_PHYS_LOAD < 0x40000000)
     root_table.entries[0] = Pte.kernelLeaf(0, true, false); // MMIO (first GB, non-executable)
 
     var gb: usize = start_gb;
@@ -443,8 +443,8 @@ pub fn disable() void {
 /// Improves security by preventing kernel access via low addresses.
 pub fn removeIdentityMapping() void {
     // Use same range as init() for consistency
-    const kernel_start = KERNEL_PHYS_BASE;
-    const kernel_end = KERNEL_PHYS_BASE + KERNEL_SIZE_ESTIMATE;
+    const kernel_start = KERNEL_PHYS_LOAD;
+    const kernel_end = KERNEL_PHYS_LOAD + KERNEL_SIZE_ESTIMATE;
     const start_gb = kernel_start >> 30;
     const end_gb = (kernel_end + (1 << 30) - 1) >> 30;
 
