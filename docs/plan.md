@@ -308,10 +308,11 @@ TBD: multi-core, tickless scheduling, real filesystems, network stack, virtio dr
 
 ### Architecture
 
-- RISC-V Privileged Specification v1.12
-- RISC-V SBI Specification
-- ARM Architecture Reference Manual (DDI 0487), ARMv8.2-A
-- ARM GIC Specification (IHI 0069)
+- [RISC-V Privileged Specification](https://github.com/riscv/riscv-isa-manual/releases/tag/Priv-v1.12), Version 20211203 (v1.12 ratified)
+- [RISC-V SBI Specification v3.0](https://github.com/riscv-non-isa/riscv-sbi-doc/releases/tag/v3.0), 2025-07-16 (ratified)
+- [ARM Architecture Reference Manual](https://developer.arm.com/documentation/ddi0487/maa) (DDI 0487M.a.a), ARMv8-A / ARMv9-A
+- [ARM GIC Architecture Specification](https://developer.arm.com/documentation/ihi0069/hb) (IHI 0069H.b), GICv3.3/v4.2
+- [ARM GIC-400 TRM](https://developer.arm.com/documentation/ddi0471/b) (DDI 0471B) — GICv2 for Pi 5
 
 ### Capability Systems
 

@@ -25,11 +25,7 @@ const arch = switch (builtin.cpu.arch) {
     else => @compileError("Unsupported architecture"),
 };
 
-const board = switch (builtin.cpu.arch) {
-    .aarch64 => @import("../arch/arm64/boards/qemu_virt/board.zig"),
-    .riscv64 => @import("../arch/riscv64/boards/qemu_virt/board.zig"),
-    else => @compileError("Unsupported architecture"),
-};
+const board = @import("board");
 
 // Compile-time verifications.
 comptime {

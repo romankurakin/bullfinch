@@ -9,11 +9,7 @@ const backend = switch (builtin.cpu.arch) {
     else => @compileError("Unsupported architecture"),
 };
 
-const config = switch (builtin.cpu.arch) {
-    .aarch64 => @import("../arch/arm64/boards/qemu_virt/config.zig"),
-    .riscv64 => @import("../arch/riscv64/boards/qemu_virt/config.zig"),
-    else => @compileError("Unsupported architecture"),
-};
+const config = @import("board").config;
 
 var uart_base: usize = if (@hasDecl(config, "UART_PHYS")) config.UART_PHYS else 0;
 

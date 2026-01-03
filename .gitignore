@@ -11,3 +11,6 @@ zig-lib/
 
 # macOS files
 .DS_Store
+
+# Architecture files, excluded due to ARM policy
+/spec
