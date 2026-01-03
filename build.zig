@@ -4,6 +4,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const test_filter = b.option([]const u8, "test-filter", "Filter tests by name") orelse null;
+    const board = b.option([]const u8, "board", "Board name (default: qemu_virt)") orelse "qemu_virt";
 
     const arch_dir = switch (target.result.cpu.arch) {
         .aarch64 => "arm64",
@@ -11,11 +12,22 @@ pub fn build(b: *std.Build) void {
         else => @panic("Unsupported architecture"),
     };
 
-    // Single kernel module - all imports use relative paths and builtin.cpu.arch switch.
+    // Board module - injected as dependency so kernel code imports via @import("board").
+    const board_path = b.pathJoin(&.{ "src", "kernel", "arch", arch_dir, "boards", board, "board.zig" });
+    const board_module = b.createModule(.{
+        .root_source_file = b.path(board_path),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // Single kernel module with board dependency.
     const kernel_module = b.createModule(.{
         .root_source_file = b.path("src/kernel/main.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "board", .module = board_module },
+        },
     });
 
     const kernel = b.addExecutable(.{
@@ -28,7 +40,7 @@ pub fn build(b: *std.Build) void {
     });
 
     // Linker script for memory layout.
-    const linker_script_path = b.pathJoin(&.{ "src", "kernel", "arch", arch_dir, "boards", "qemu_virt", "kernel.ld" });
+    const linker_script_path = b.pathJoin(&.{ "src", "kernel", "arch", arch_dir, "boards", board, "kernel.ld" });
     kernel.setLinkerScript(b.path(linker_script_path));
 
     if (target.result.cpu.arch == .riscv64) {
