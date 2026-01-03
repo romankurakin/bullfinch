@@ -14,8 +14,22 @@
 //! Order is enforced by `bootPhysical()` and `bootVirtual()` structure.
 
 const std = @import("std");
-const arch = @import("arch");
-const board = @import("board");
+const builtin = @import("builtin");
+const console = @import("../kernel.zig").console;
+
+// Select arch and board based on target architecture.
+// This eliminates need for build.zig module wiring.
+const arch = switch (builtin.cpu.arch) {
+    .aarch64 => @import("../arch/arm64/arch.zig"),
+    .riscv64 => @import("../arch/riscv64/arch.zig"),
+    else => @compileError("Unsupported architecture"),
+};
+
+const board = switch (builtin.cpu.arch) {
+    .aarch64 => @import("../arch/arm64/boards/qemu_virt/board.zig"),
+    .riscv64 => @import("../arch/riscv64/boards/qemu_virt/board.zig"),
+    else => @compileError("Unsupported architecture"),
+};
 
 // Compile-time verifications.
 comptime {
@@ -89,13 +103,13 @@ pub const config = board.config;
 /// Runs at physical addresses. Initializes hardware, MMU, traps, then jumps to higher-half.
 /// The continuation should call `bootVirtual()` first.
 pub fn bootPhysical(continuation: *const fn (usize) noreturn, arg: usize) noreturn {
-    board.hal.init();
+    console.init();
     print("\nHardware initialized\n");
 
-    arch.hal.initMmu();
+    arch.hal.initMmu(board.config.KERNEL_PHYS_LOAD);
     print("MMU enabled\n");
 
-    arch.hal.initTrap(board.hal.print);
+    arch.hal.initTrap();
     print("Trap handling initialized\n");
 
     arch.hal.jumpToHigherHalf(continuation, arg);
@@ -107,7 +121,7 @@ pub fn bootVirtual() void {
     print("Running in higher-half virtual address space\n");
 
     if (@hasDecl(board.config, "UART_PHYS")) {
-        board.hal.setUartBase(arch.hal.physToVirt(board.config.UART_PHYS));
+        console.setBase(arch.hal.physToVirt(board.config.UART_PHYS));
     }
 
     arch.hal.removeIdentityMapping();
@@ -115,7 +129,7 @@ pub fn bootVirtual() void {
 }
 
 pub fn print(s: []const u8) void {
-    board.hal.print(s);
+    console.print(s);
 }
 
 pub fn halt() noreturn {

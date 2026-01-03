@@ -7,15 +7,8 @@
 //!
 //! Reference: ARM Architecture Reference Manual for A-profile (DDI 0487).
 
-const common = @import("common");
-
-/// Print function type - injected at init to avoid circular deps.
-const PrintFn = *const fn ([]const u8) void;
-var print_fn: ?PrintFn = null;
-
-fn print(s: []const u8) void {
-    if (print_fn) |f| f(s);
-}
+const kernel = @import("../../kernel.zig");
+const print = kernel.console.print;
 
 /// Saved register context during trap. Layout must match assembly save/restore order.
 /// ARM calling convention: x0-x7 arguments, x19-x28 callee-saved, x29 frame pointer, x30 link register.
@@ -298,9 +291,9 @@ fn dumpTrap(ctx: *const TrapContext, ec: TrapClass) void {
         "x24", "x25", "x26", "x27", "x28", "x29", "x30",
     };
     for (reg_names, 0..) |reg_name, i| {
-        print(&common.trap.formatRegName(reg_name));
+        print(&kernel.trap.formatRegName(reg_name));
         print("0x");
-        print(&common.trap.formatHex(ctx.regs[i]));
+        print(&kernel.trap.formatHex(ctx.regs[i]));
         if ((i + 1) % 4 == 0) {
             print("\n");
         } else {
@@ -310,18 +303,15 @@ fn dumpTrap(ctx: *const TrapContext, ec: TrapClass) void {
 }
 
 fn printKeyRegister(name: []const u8, value: u64) void {
-    print(&common.trap.formatRegName(name));
+    print(&kernel.trap.formatRegName(name));
     print("0x");
-    print(&common.trap.formatHex(value));
+    print(&kernel.trap.formatHex(value));
 }
 
 // Initialization
 
 /// Initialize trap handling by installing the vector table.
-/// Print function is injected to avoid circular dependencies.
-pub fn init(print_func: PrintFn) void {
-    print_fn = print_func;
-
+pub fn init() void {
     const vbar = @intFromPtr(&trap_vectors);
 
     // Write VBAR_EL1 with vector table address
