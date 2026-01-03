@@ -10,17 +10,17 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const common_mmu = @import("common").mmu;
+const kernel = @import("../../kernel.zig");
 
 const is_aarch64 = builtin.cpu.arch == .aarch64;
 
 // Re-export common types for convenience
-pub const PAGE_SIZE = common_mmu.PAGE_SIZE;
-pub const PAGE_SHIFT = common_mmu.PAGE_SHIFT;
-pub const ENTRIES_PER_TABLE = common_mmu.ENTRIES_PER_TABLE;
-pub const PageFlags = common_mmu.PageFlags;
-pub const MapError = common_mmu.MapError;
-pub const UnmapError = common_mmu.UnmapError;
+pub const PAGE_SIZE = kernel.mmu.PAGE_SIZE;
+pub const PAGE_SHIFT = kernel.mmu.PAGE_SHIFT;
+pub const ENTRIES_PER_TABLE = kernel.mmu.ENTRIES_PER_TABLE;
+pub const PageFlags = kernel.mmu.PageFlags;
+pub const MapError = kernel.mmu.MapError;
+pub const UnmapError = kernel.mmu.UnmapError;
 
 /// Kernel virtual base address (39-bit VA upper half, TTBR1 region).
 /// Physical addresses are mapped to virtual = physical + KERNEL_VIRT_BASE.
@@ -478,17 +478,19 @@ const Sctlr = struct {
 var l1_table_low: PageTable align(PAGE_SIZE) = PageTable.EMPTY;
 var l1_table_high: PageTable align(PAGE_SIZE) = PageTable.EMPTY;
 
-// Board-specific memory layout (imported directly to avoid circular deps)
-const config = @import("config");
-const KERNEL_PHYS_LOAD = config.KERNEL_PHYS_LOAD;
-
 // Kernel size estimate for gigapage mapping (1GB should cover typical kernel)
 const KERNEL_SIZE_ESTIMATE: usize = 1 << 30; // 1GB
+
+// Stored during init() for use by removeIdentityMapping()
+var stored_kernel_phys_load: usize = 0;
 
 /// Set up identity + higher-half mappings using 1GB blocks, enable MMU.
 /// TTBR0 handles identity mapping for boot continuation.
 /// TTBR1 handles higher-half kernel addresses (0xFFFF_0000_xxxx_xxxx).
-pub fn init() void {
+/// kernel_phys_load: Physical address where kernel is loaded (from board config).
+pub fn init(kernel_phys_load: usize) void {
+    stored_kernel_phys_load = kernel_phys_load;
+
     asm volatile ("msr mair_el1, %[mair]"
         :
         : [mair] "r" (MAIR_VALUE),
@@ -498,9 +500,9 @@ pub fn init() void {
     Tcr.write(Tcr.DEFAULT);
     instructionBarrier();
 
-    const kernel_start = KERNEL_PHYS_LOAD;
+    const kernel_start = kernel_phys_load;
     // Estimate kernel end for gigapage mapping (actual end determined at runtime)
-    const kernel_end = KERNEL_PHYS_LOAD + KERNEL_SIZE_ESTIMATE;
+    const kernel_end = kernel_phys_load + KERNEL_SIZE_ESTIMATE;
     const start_gb = kernel_start >> 30;
     const end_gb = (kernel_end + (1 << 30) - 1) >> 30;
 
@@ -571,8 +573,8 @@ pub fn disable() void {
 /// Improves security by preventing kernel access via low addresses.
 pub fn removeIdentityMapping() void {
     // Use same range as init() for consistency
-    const kernel_start = KERNEL_PHYS_LOAD;
-    const kernel_end = KERNEL_PHYS_LOAD + KERNEL_SIZE_ESTIMATE;
+    const kernel_start = stored_kernel_phys_load;
+    const kernel_end = stored_kernel_phys_load + KERNEL_SIZE_ESTIMATE;
     const start_gb = kernel_start >> 30;
     const end_gb = (kernel_end + (1 << 30) - 1) >> 30;
 

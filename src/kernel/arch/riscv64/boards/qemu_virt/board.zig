@@ -1,8 +1,8 @@
 //! Board-specific operations for QEMU virt RISC-V.
 //! Imports config (pure data) and arch.uart (SBI console).
 
-pub const config = @import("config");
-const uart = @import("arch").uart;
+pub const config = @import("config.zig");
+const uart = @import("../../uart.zig");
 
 /// Board-level HAL - UART operations (via SBI).
 pub const hal = struct {

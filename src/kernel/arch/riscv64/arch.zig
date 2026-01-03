@@ -9,9 +9,9 @@ pub const boot = @import("boot.zig");
 
 /// Architecture-level HAL - operations that are arch-specific but board-independent.
 pub const hal = struct {
-    /// Initialize MMU with identity + higher-half mapping, enable paging.
-    pub fn initMmu() void {
-        mmu.init();
+    /// Initialize paging with identity + higher-half mapping, enable MMU.
+    pub fn initMmu(kernel_phys_load: usize) void {
+        mmu.init(kernel_phys_load);
     }
 
     /// Flush all TLB entries
@@ -50,9 +50,8 @@ pub const hal = struct {
     }
 
     /// Initialize trap/exception handling.
-    /// Print function is injected to avoid circular dependencies.
-    pub fn initTrap(print_func: *const fn ([]const u8) void) void {
-        trap.init(print_func);
+    pub fn initTrap() void {
+        trap.init();
     }
 
     /// Halt the CPU (disable interrupts and wait forever)

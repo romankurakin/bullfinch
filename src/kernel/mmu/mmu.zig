@@ -1,4 +1,4 @@
-//! Common MMU types shared between architectures.
+//! Common paging types shared between architectures.
 //! Architecture-specific implementations import these for consistency.
 
 /// Page size constants (4KB pages on both ARM64 and RISC-V).

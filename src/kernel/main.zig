@@ -4,7 +4,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const hal = @import("hal");
+const hal = @import("hal/hal.zig");
 
 comptime {
     _ = hal.boot; // Force boot module inclusion for entry point

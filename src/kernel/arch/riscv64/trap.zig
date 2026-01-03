@@ -6,15 +6,8 @@
 //!
 //! Reference: RISC-V Privileged Specification v1.12, Chapter 4 "Supervisor-Level ISA"
 
-const common = @import("common");
-
-/// Print function type - injected at init to avoid circular deps.
-const PrintFn = *const fn ([]const u8) void;
-var print_fn: ?PrintFn = null;
-
-fn print(s: []const u8) void {
-    if (print_fn) |f| f(s);
-}
+const kernel = @import("../../kernel.zig");
+const print = kernel.console.print;
 
 /// Saved register context during trap. Layout must match assembly save/restore order.
 /// RISC-V calling convention: a0-a7 arguments, s0-s11 callee-saved, ra return address.
@@ -314,9 +307,9 @@ fn dumpTrap(ctx: *const TrapContext, cause: TrapCause) void {
         "s9", "s10", "s11", "t3", "t4", "t5", "t6",
     };
     for (reg_names, 0..) |name, i| {
-        print(&common.trap.formatRegName(name));
+        print(&kernel.trap.formatRegName(name));
         print("0x");
-        print(&common.trap.formatHex(ctx.regs[i]));
+        print(&kernel.trap.formatHex(ctx.regs[i]));
         if ((i + 1) % 4 == 0) {
             print("\n");
         } else {
@@ -326,16 +319,13 @@ fn dumpTrap(ctx: *const TrapContext, cause: TrapCause) void {
 }
 
 fn printKeyRegister(name: []const u8, value: u64) void {
-    print(&common.trap.formatRegName(name));
+    print(&kernel.trap.formatRegName(name));
     print("0x");
-    print(&common.trap.formatHex(value));
+    print(&kernel.trap.formatHex(value));
 }
 
 /// Initialize trap handling by installing stvec (Vectored mode).
-/// Print function is injected to avoid circular dependencies.
-pub fn init(print_func: PrintFn) void {
-    print_fn = print_func;
-
+pub fn init() void {
     // stvec format: [63:2] address, [1:0] mode (00=Direct, 01=Vectored)
     // Vectored mode: Exceptions -> Base, Interrupts -> Base + 4*Cause
     // Alignment guaranteed by align(256) on trapVector declaration.
