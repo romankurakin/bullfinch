@@ -1,7 +1,7 @@
 //! Board-specific operations for QEMU virt ARM64.
 
-pub const config = @import("config");
-const uart = @import("arch").uart;
+pub const config = @import("config.zig");
+const uart = @import("../../uart.zig");
 
 /// Board-level HAL - UART operations.
 pub const hal = struct {
