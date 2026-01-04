@@ -8,6 +8,7 @@ const std = @import("std");
 pub const Fdt = *const anyopaque;
 
 extern fn fdt_check_header(fdt: Fdt) c_int;
+extern fn fdt_totalsize(fdt: Fdt) u32;
 extern fn fdt_path_offset(fdt: Fdt, path: [*:0]const u8) c_int;
 extern fn fdt_getprop(fdt: Fdt, nodeoffset: c_int, name: [*:0]const u8, lenp: *c_int) ?*const anyopaque;
 extern fn fdt_first_subnode(fdt: Fdt, offset: c_int) c_int;
@@ -17,6 +18,11 @@ extern fn fdt_get_name(fdt: Fdt, nodeoffset: c_int, lenp: ?*c_int) ?[*:0]const u
 /// Check if the FDT header is valid.
 pub fn checkHeader(fdt: Fdt) error{InvalidHeader}!void {
     if (fdt_check_header(fdt) != 0) return error.InvalidHeader;
+}
+
+/// Get total size of DTB blob in bytes.
+pub fn totalSize(fdt: Fdt) u32 {
+    return fdt_totalsize(fdt);
 }
 
 /// Find a node by path (e.g., "/memory", "/soc").
