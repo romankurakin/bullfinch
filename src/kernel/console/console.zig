@@ -1,5 +1,10 @@
-//! Kernel console output.
-//! Initialized early in boot with UART address, updated when switching to virtual.
+//! Kernel Console Output.
+//!
+//! Early boot console for kernel messages. Architecture-specific UART backends
+//! (PL011 for ARM, SBI for RISC-V) are selected at compile time.
+//!
+//! This is a temporary kernel-mode driver. Eventually UART access moves to
+//! userspace. The kernel will just provide MMIO VMOs and IRQ capabilities.
 
 const builtin = @import("builtin");
 

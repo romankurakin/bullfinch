@@ -1,22 +1,28 @@
-//! PL011 UART driver for ARM64 - TX only, direct MMIO.
-//! ARM's standard UART peripheral. Powers up disabled, requires baud rate config + enable.
+//! PL011 UART Driver.
+//!
+//! PL011 is ARM's standard UART peripheral, used in QEMU virt and many real boards.
+//! We implement TX only since early boot only needs output. The UART powers up
+//! disabled and requires baud rate configuration before use.
+//!
+//! For a full driver (with RX, interrupts, flow control), this would be moved to
+//! userspace. The kernel would just provide MMIO VMOs and IRQ capabilities.
 
-// PL011 register offsets (byte offsets from base address)
+const mmio = @import("mmio.zig");
+
+// PL011 register offsets
+const CR = 0x30; // Control Register
 const DR = 0x00; // Data Register
+const FBRD = 0x28; // Fractional Baud Rate Divisor
 const FR = 0x18; // Flag Register
 const IBRD = 0x24; // Integer Baud Rate Divisor
-const FBRD = 0x28; // Fractional Baud Rate Divisor
-const LCRH = 0x2C; // Line Control Register
-const CR = 0x30; // Control Register
 const ICR = 0x44; // Interrupt Clear Register
+const LCRH = 0x2C; // Line Control Register
 
-const FR_TXFF: u32 = 1 << 5; // TX FIFO Full
-const FR_BUSY: u32 = 1 << 3; // UART Busy
-
-const CR_UARTEN: u32 = 1 << 0; // UART Enable
 const CR_TXE: u32 = 1 << 8; // TX Enable
+const CR_UARTEN: u32 = 1 << 0; // UART Enable
 const CR_ENABLED: u32 = CR_UARTEN | CR_TXE;
-
+const FR_BUSY: u32 = 1 << 3; // UART Busy
+const FR_TXFF: u32 = 1 << 5; // TX FIFO Full
 const LCRH_FEN: u32 = 1 << 4; // FIFO Enable
 const LCRH_WLEN_8: u32 = 0b11 << 5; // 8-bit word length
 
@@ -25,17 +31,8 @@ pub const InitConfig = struct {
     baud: u32 = 115_200,
 };
 
-// MMIO access (volatile required for memory-mapped I/O)
-inline fn reg32(base: usize, offset: usize) *volatile u32 {
-    return @ptrFromInt(base + offset);
-}
-
 inline fn waitTxReady(base: usize) void {
-    while ((reg32(base, FR).* & FR_TXFF) != 0) {}
-}
-
-inline fn writeByte(base: usize, byte: u8) void {
-    reg32(base, DR).* = byte;
+    while ((mmio.read32(base + FR) & FR_TXFF) != 0) {}
 }
 
 /// Compute PL011 baud rate divisors (16x oversampling: divisor = clk / (16 * baud)).
@@ -57,16 +54,16 @@ pub fn computeDivisors(uartclk_hz: u32, baud: u32) struct { ibrd: u32, fbrd: u32
 
 /// Initialize UART (disable, configure baud rate + line control, enable).
 pub fn init(base: usize, config: InitConfig) void {
-    while ((reg32(base, FR).* & FR_BUSY) != 0) {} // Wait for TX to complete
-    reg32(base, CR).* = 0; // Disable UART for config
-    reg32(base, ICR).* = 0x7FF; // Clear interrupts
+    while ((mmio.read32(base + FR) & FR_BUSY) != 0) {} // Wait for TX to complete
+    mmio.write32(base + CR, 0); // Disable UART for config
+    mmio.write32(base + ICR, 0x7FF); // Clear interrupts
 
     const divs = computeDivisors(config.uartclk_hz, config.baud);
-    reg32(base, IBRD).* = divs.ibrd;
-    reg32(base, FBRD).* = divs.fbrd;
-    reg32(base, LCRH).* = LCRH_WLEN_8 | LCRH_FEN; // 8N1, FIFOs enabled
+    mmio.write32(base + IBRD, divs.ibrd);
+    mmio.write32(base + FBRD, divs.fbrd);
+    mmio.write32(base + LCRH, LCRH_WLEN_8 | LCRH_FEN); // 8N1, FIFOs enabled
 
-    reg32(base, CR).* = CR_ENABLED;
+    mmio.write32(base + CR, CR_ENABLED);
     asm volatile ("dsb ish"); // Ensure write reaches hardware
 }
 
@@ -76,17 +73,17 @@ pub fn initDefault(base: usize) void {
 
 /// Print string to UART.
 pub fn print(base: usize, s: []const u8) void {
-    if ((reg32(base, CR).* & CR_ENABLED) != CR_ENABLED) {
+    if ((mmio.read32(base + CR) & CR_ENABLED) != CR_ENABLED) {
         @panic("UART not enabled");
     }
 
     for (s) |byte| {
         waitTxReady(base);
         if (byte == '\n') {
-            writeByte(base, '\r');
+            mmio.write32(base + DR, '\r');
             waitTxReady(base);
         }
-        writeByte(base, byte);
+        mmio.write32(base + DR, byte);
     }
 }
 
