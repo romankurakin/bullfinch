@@ -1,9 +1,13 @@
-//! Architecture-independent kernel entry point for Bullfinch.
+//! Kernel Entry Point.
 //!
-//! Boot sequence is handled by HAL to enforce correct ordering.
+//! Control arrives from boot.zig after stack and BSS setup. We run two-phase boot
+//! (physical then virtual), initialize clock for timer interrupts, and enter the
+//! idle loop. Later we'll start the scheduler here.
 
-const std = @import("std");
 const builtin = @import("builtin");
+const std = @import("std");
+
+const clock = @import("kernel.zig").clock;
 const hal = @import("hal/hal.zig");
 
 comptime {
@@ -24,13 +28,22 @@ pub export fn main() callconv(.c) void {
 fn kmain(_: usize) noreturn {
     hal.bootVirtual();
 
-    hal.print("Welcome to Bullfinch on ");
-    hal.print(arch_name);
-    hal.print(" architecture\n");
+    hal.console.print("Welcome to Bullfinch on ");
+    hal.console.print(arch_name);
+    hal.console.print(" architecture\n");
 
-    hal.trap.testTriggerBreakpoint();
+    clock.init();
+    hal.console.print("Clock initialized\n");
 
-    hal.print("Boot complete. Halting.\n");
+    hal.console.print("Waiting for timer ticks");
+    const target_ticks: u64 = 10;
+    while (clock.getTickCount() < target_ticks) {
+        hal.waitForInterrupt();
+    }
+    hal.console.print("\n");
+    clock.printStatus();
+
+    hal.console.print("Boot complete. Halting.\n");
     hal.halt();
 }
 
@@ -38,11 +51,11 @@ var panicking: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 
 /// Kernel panic handler. Prints message and halts. Guards against double panic.
 pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, _: ?usize) noreturn {
-    // Double panic guard - halt immediately if already panicking
+    hal.disableInterrupts();
     if (panicking.swap(true, .acquire)) hal.halt();
 
-    hal.print("\nPanic: ");
-    hal.print(msg);
-    hal.print("\n");
+    hal.console.print("\nPanic: ");
+    hal.console.print(msg);
+    hal.console.print("\n");
     hal.halt();
 }

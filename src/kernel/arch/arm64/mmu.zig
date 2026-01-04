@@ -1,20 +1,31 @@
-//! ARM64 MMU - 39-bit virtual address, 4KB granule, 3-level page tables.
-//! ARM64 calls these "descriptors"; we use "Pte" to match RISC-V and OS literature.
-//! Uses T0SZ=25/T1SZ=25 for 3-level walk (L1 -> L2 -> L3), matching RISC-V Sv39 depth.
-//! Boot maps with 1GB blocks at level 1 to avoid allocating level 2/3 tables.
-//! TTBR0 handles identity mapping (low addresses), TTBR1 handles higher-half kernel.
+//! ARM64 Memory Management Unit.
 //!
-//! TODO(Rung 8): Use ASID for per-process TLB management. Currently ASID=0 for all
-//! mappings. When implementing per-task virtual memory, assign unique ASIDs to
-//! processes and use flushAsid() instead of flushAll() for efficient TLB invalidation.
+//! ARM64 uses a two-register design for address translation: TTBR0 handles the lower
+//! half of the virtual address space (user), TTBR1 handles the upper half (kernel).
+//! This differs from RISC-V which uses a single SATP register. The split allows fast
+//! context switches — only TTBR0 changes when switching processes, while TTBR1 stays
+//! fixed for the kernel.
+//!
+//! We configure 39-bit virtual addresses (T0SZ=T1SZ=25) with 4KB pages, giving us a
+//! 3-level page table walk (L1 -> L2 -> L3). This matches RISC-V Sv39 depth, making
+//! the HAL cleaner. Boot uses 1GB blocks at L1 to avoid allocating L2/L3 tables.
+//!
+//! ARM calls page table entries "descriptors" but we use "Pte" to match OS literature.
+//!
+//! See ARM Architecture Reference Manual, Chapter D8 (The AArch64 Virtual Memory
+//! System Architecture).
+//!
+//! TODO: Use ASID for per-process TLB management. Currently ASID=0 for all mappings.
+//! When implementing per-task virtual memory, assign unique ASIDs and use flushAsid()
+//! for efficient TLB invalidation without flushing global kernel entries.
 
-const std = @import("std");
 const builtin = @import("builtin");
+const std = @import("std");
+
 const kernel = @import("../../kernel.zig");
 
 const is_aarch64 = builtin.cpu.arch == .aarch64;
 
-// Re-export common types for convenience
 pub const PAGE_SIZE = kernel.mmu.PAGE_SIZE;
 pub const PAGE_SHIFT = kernel.mmu.PAGE_SHIFT;
 pub const ENTRIES_PER_TABLE = kernel.mmu.ENTRIES_PER_TABLE;
@@ -28,21 +39,19 @@ pub const UnmapError = kernel.mmu.UnmapError;
 /// This means the valid TTBR1 range starts at 0xFFFF_FF80_0000_0000.
 pub const KERNEL_VIRT_BASE: usize = 0xFFFF_FF80_0000_0000;
 
-// Offset masks for block translation
-const BLOCK_1GB_MASK: usize = (1 << 30) - 1; // 1GB offset mask
-const BLOCK_2MB_MASK: usize = (1 << 21) - 1; // 2MB offset mask
+const BLOCK_1GB_MASK: usize = (1 << 30) - 1;
+const BLOCK_2MB_MASK: usize = (1 << 21) - 1;
 
 /// Convert physical address to kernel virtual address.
-pub fn physToVirt(paddr: usize) usize {
+pub inline fn physToVirt(paddr: usize) usize {
     return paddr +% KERNEL_VIRT_BASE;
 }
 
 /// Convert kernel virtual address to physical address.
-pub fn virtToPhys(vaddr: usize) usize {
+pub inline fn virtToPhys(vaddr: usize) usize {
     return vaddr -% KERNEL_VIRT_BASE;
 }
 
-// Memory attribute indices for MAIR_EL1
 pub const MemAttr = enum(u3) {
     device_nGnRnE = 0,
     device_nGnRE = 1,
@@ -51,16 +60,17 @@ pub const MemAttr = enum(u3) {
     normal_tagged = 4,
 };
 
+/// MAIR_EL1 memory attribute encodings for AttrIndx field in PTEs.
 const MAIR_VALUE: u64 =
-    (@as(u64, 0x00) << 0) | // Device nGnRnE
-    (@as(u64, 0x04) << 8) | // Device nGnRE
-    (@as(u64, 0x44) << 16) | // Normal NC
-    (@as(u64, 0xFF) << 24) | // Normal WBWA
-    (@as(u64, 0xF0) << 32); // Normal Tagged
+    (@as(u64, 0x00) << 0) | // 0: Device nGnRnE (strongly ordered)
+    (@as(u64, 0x04) << 8) | // 1: Device nGnRE (non-reordering)
+    (@as(u64, 0x44) << 16) | // 2: Normal Non-Cacheable
+    (@as(u64, 0xFF) << 24) | // 3: Normal Write-Back Write-Allocate
+    (@as(u64, 0xF0) << 32); // 4: Normal Tagged
 
-// Shareability domain for cache coherency.
-// Inner shareable = coherent within cluster (typical for multicore).
-// Device memory uses outer shareable per ARM recommendations.
+/// Shareability domain for cache coherency.
+/// Inner shareable = coherent within cluster (typical for multicore).
+/// Device memory uses outer shareable per ARM recommendations.
 pub const Shareability = enum(u2) {
     non_shareable = 0b00,
     outer_shareable = 0b10,
@@ -88,19 +98,19 @@ pub const Pte = packed struct(u64) {
 
     pub const INVALID = Pte{};
 
-    pub fn isValid(self: Pte) bool {
+    pub inline fn isValid(self: Pte) bool {
         return self.valid;
     }
 
-    pub fn isTable(self: Pte) bool {
+    pub inline fn isTable(self: Pte) bool {
         return self.valid and self.type_bit;
     }
 
-    pub fn isBlock(self: Pte) bool {
+    pub inline fn isBlock(self: Pte) bool {
         return self.valid and !self.type_bit;
     }
 
-    pub fn physAddr(self: Pte) usize {
+    pub inline fn physAddr(self: Pte) usize {
         return @as(usize, self.output_addr) << PAGE_SHIFT;
     }
 
@@ -178,11 +188,11 @@ pub const PageTable = struct {
 
     pub const EMPTY = PageTable{ .entries = [_]Pte{Pte.INVALID} ** ENTRIES_PER_TABLE };
 
-    pub fn get(self: *const PageTable, index: usize) Pte {
+    pub inline fn get(self: *const PageTable, index: usize) Pte {
         return self.entries[index];
     }
 
-    pub fn set(self: *PageTable, index: usize, desc: Pte) void {
+    pub inline fn set(self: *PageTable, index: usize, desc: Pte) void {
         self.entries[index] = desc;
     }
 };
@@ -200,7 +210,7 @@ pub const VirtAddr = struct {
     l3: u9, // bits 20:12
     offset: u12,
 
-    pub fn parse(vaddr: usize) VirtAddr {
+    pub inline fn parse(vaddr: usize) VirtAddr {
         return .{
             .l1 = @truncate((vaddr >> 30) & 0x1FF),
             .l2 = @truncate((vaddr >> 21) & 0x1FF),
@@ -210,18 +220,18 @@ pub const VirtAddr = struct {
     }
 
     /// Check if address is in TTBR0 range (user space, low addresses 0 to 512GB).
-    pub fn isUserRange(vaddr: usize) bool {
+    pub inline fn isUserRange(vaddr: usize) bool {
         return vaddr < (1 << 39);
     }
 
     /// Check if address is valid for TTBR1 (kernel space, high addresses).
     /// With T1SZ=25, TTBR1 handles addresses where bits 63:39 are all 1s.
-    pub fn isKernel(vaddr: usize) bool {
+    pub inline fn isKernel(vaddr: usize) bool {
         return (vaddr & KERNEL_VIRT_BASE) == KERNEL_VIRT_BASE;
     }
 
     /// Check if address is in valid range (either TTBR0 or TTBR1).
-    pub fn isCanonical(vaddr: usize) bool {
+    pub inline fn isCanonical(vaddr: usize) bool {
         return isUserRange(vaddr) or isKernel(vaddr);
     }
 };
@@ -264,15 +274,15 @@ pub const Tcr = struct {
     }
 };
 
-// Memory barriers (ARM requires explicit ordering for page table updates).
-// Data barrier ensures stores complete before TLB invalidation.
-// Instruction barrier flushes pipeline after MMU configuration changes.
+/// Data barrier ensures stores complete before TLB invalidation.
 inline fn storeBarrier() void {
     if (is_aarch64) asm volatile ("dsb ishst");
 }
 inline fn fullBarrier() void {
     if (is_aarch64) asm volatile ("dsb ish");
 }
+
+/// Flushes pipeline after MMU configuration changes.
 inline fn instructionBarrier() void {
     if (is_aarch64) asm volatile ("isb");
 }
@@ -287,7 +297,7 @@ inline fn tlbFlushLocal() void {
 
 pub const Tlb = struct {
     /// Invalidate all translation lookaside buffer entries (broadcast to inner shareable domain).
-    pub fn flushAll() void {
+    pub inline fn flushAll() void {
         storeBarrier();
         tlbFlushAll();
         fullBarrier();
@@ -295,7 +305,7 @@ pub const Tlb = struct {
     }
 
     /// Invalidate cached translation for a specific virtual address.
-    pub fn flushAddr(vaddr: usize) void {
+    pub inline fn flushAddr(vaddr: usize) void {
         const va_operand = (vaddr >> 12) & 0xFFFFFFFFFFF;
         storeBarrier();
         if (is_aarch64) asm volatile ("tlbi vale1is, %[va]"
@@ -335,9 +345,7 @@ pub const Tlb = struct {
 
 /// Walk page tables for a virtual address and return pointer to the leaf entry.
 /// Returns null if any level has an invalid entry or if a block mapping is found
-/// before reaching level 3 (can't get individual page entry from block).
-/// Note: This walks to the L3 (4KB page) level only.
-/// Page tables are accessed via higher-half virtual addresses after MMU enable.
+/// before reaching L3. Only walks to L3 (4KB page) level.
 pub fn walk(root: *PageTable, vaddr: usize) ?*Pte {
     if (!VirtAddr.isCanonical(vaddr)) return null;
 
@@ -472,16 +480,11 @@ const Sctlr = struct {
     }
 };
 
-// Boot page tables using 1GB blocks
-// TTBR0: identity mapping for boot (low addresses)
-// TTBR1: higher-half kernel (high addresses starting at KERNEL_VIRT_BASE)
 var l1_table_low: PageTable align(PAGE_SIZE) = PageTable.EMPTY;
 var l1_table_high: PageTable align(PAGE_SIZE) = PageTable.EMPTY;
 
-// Kernel size estimate for gigapage mapping (1GB should cover typical kernel)
-const KERNEL_SIZE_ESTIMATE: usize = 1 << 30; // 1GB
+const KERNEL_SIZE_ESTIMATE: usize = 1 << 30;
 
-// Stored during init() for use by removeIdentityMapping()
 var stored_kernel_phys_load: usize = 0;
 
 /// Set up identity + higher-half mappings using 1GB blocks, enable MMU.

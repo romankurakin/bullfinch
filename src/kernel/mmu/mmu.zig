@@ -1,5 +1,8 @@
-//! Common paging types shared between architectures.
-//! Architecture-specific implementations import these for consistency.
+//! Common Paging Types.
+//!
+//! Shared definitions for ARM64 and RISC-V MMU code. Both architectures use 4KB
+//! pages and 512-entry page tables (4KB = 512 × 8-byte PTEs). The actual page
+//! table format and TLB operations are architecture-specific.
 
 /// Page size constants (4KB pages on both ARM64 and RISC-V).
 pub const PAGE_SIZE: usize = 4096;
@@ -7,8 +10,7 @@ pub const PAGE_SHIFT: u6 = 12;
 pub const ENTRIES_PER_TABLE: usize = 512;
 
 /// Permission flags for page mapping.
-/// All valid mappings are implicitly readable on both architectures.
-/// Global bit is set automatically: kernel pages are global, user pages are not.
+/// All valid mappings are implicitly readable. Global bit is set automatically.
 pub const PageFlags = struct {
     write: bool = false,
     exec: bool = false,
@@ -47,6 +49,5 @@ test "PAGE_SIZE is 4KB" {
 
 test "ENTRIES_PER_TABLE fits one page" {
     const std = @import("std");
-    // 512 entries * 8 bytes = 4096 bytes = one page
     try std.testing.expectEqual(PAGE_SIZE, ENTRIES_PER_TABLE * 8);
 }

@@ -1,19 +1,29 @@
-//! RISC-V Sv39 MMU - 39-bit virtual address, 3-level page tables.
-//! Virtual address format: VPN[2](9b) | VPN[1](9b) | VPN[0](9b) | offset(12b)
-//! Boot uses 1GB gigapages (leaf entries at level 2) to avoid allocating lower tables.
-//! Gigapage requires physical address to be 1GB-aligned.
+//! RISC-V Sv39 Memory Management Unit.
 //!
-//! TODO(Rung 8): Use ASID for per-process TLB management. Currently ASID=0 for all
-//! mappings. When implementing per-task virtual memory, assign unique ASIDs to
-//! processes and use flushAsid() instead of flushAll() for efficient TLB invalidation.
+//! RISC-V Sv39 provides 39-bit virtual addresses with a 3-level page table. The format
+//! is clean: VPN[2](9b) | VPN[1](9b) | VPN[0](9b) | offset(12b). Each level indexes
+//! into a 512-entry table (4KB page = 512 × 8-byte entries).
+//!
+//! Page table entries can be leaves (with RWX permissions) or branches (pointing to
+//! the next level). A leaf at level 2 creates a 1GB gigapage, at level 1 a 2MB
+//! megapage. Boot uses gigapages to avoid allocating lower-level tables.
+//!
+//! RISC-V uses a single SATP register for translation, unlike ARM's TTBR0/TTBR1 split.
+//! The ASID field in SATP allows per-process TLB entries without full flushes.
+//!
+//! See RISC-V Privileged Specification, Chapter 5 (Supervisor-Level ISA).
+//!
+//! TODO: Use ASID for per-process TLB management. Currently ASID=0 for all mappings.
+//! When implementing per-task virtual memory, assign unique ASIDs and use flushAsid()
+//! for efficient TLB invalidation.
 
-const std = @import("std");
 const builtin = @import("builtin");
+const std = @import("std");
+
 const kernel = @import("../../kernel.zig");
 
 const is_riscv64 = builtin.cpu.arch == .riscv64;
 
-// Re-export common types for convenience
 pub const PAGE_SIZE = kernel.mmu.PAGE_SIZE;
 pub const PAGE_SHIFT = kernel.mmu.PAGE_SHIFT;
 pub const ENTRIES_PER_TABLE = kernel.mmu.ENTRIES_PER_TABLE;
@@ -26,17 +36,16 @@ pub const UnmapError = kernel.mmu.UnmapError;
 /// This places kernel in the upper half of the 39-bit address space.
 pub const KERNEL_VIRT_BASE: usize = 0xFFFF_FFC0_0000_0000;
 
-// Offset masks for superpage translation
-const GIGAPAGE_MASK: usize = (1 << 30) - 1; // 1GB offset mask
-const MEGAPAGE_MASK: usize = (1 << 21) - 1; // 2MB offset mask
+const GIGAPAGE_MASK: usize = (1 << 30) - 1;
+const MEGAPAGE_MASK: usize = (1 << 21) - 1;
 
 /// Convert physical address to kernel virtual address.
-pub fn physToVirt(paddr: usize) usize {
+pub inline fn physToVirt(paddr: usize) usize {
     return paddr +% KERNEL_VIRT_BASE;
 }
 
 /// Convert kernel virtual address to physical address.
-pub fn virtToPhys(vaddr: usize) usize {
+pub inline fn virtToPhys(vaddr: usize) usize {
     return vaddr -% KERNEL_VIRT_BASE;
 }
 
@@ -59,22 +68,22 @@ pub const Pte = packed struct(u64) {
     pub const EMPTY = Pte{};
 
     /// Check if this entry is valid (present in page table).
-    pub fn isValid(self: Pte) bool {
+    pub inline fn isValid(self: Pte) bool {
         return self.v;
     }
 
     /// Check if this is a leaf entry (final translation with permissions).
-    pub fn isLeaf(self: Pte) bool {
+    pub inline fn isLeaf(self: Pte) bool {
         return self.r or self.w or self.x;
     }
 
     /// Check if this is a branch entry (pointer to next level table).
-    pub fn isBranch(self: Pte) bool {
+    pub inline fn isBranch(self: Pte) bool {
         return self.v and !self.isLeaf();
     }
 
     /// Extract the physical address from this entry.
-    pub fn physAddr(self: Pte) usize {
+    pub inline fn physAddr(self: Pte) usize {
         return @as(usize, self.ppn) << PAGE_SHIFT;
     }
 
@@ -83,13 +92,12 @@ pub const Pte = packed struct(u64) {
         return .{ .v = true, .ppn = @truncate(phys_addr >> PAGE_SHIFT) };
     }
 
-    /// Kernel leaf entry. Pre-sets accessed/dirty to avoid page faults on first access
-    /// (Svadu extension would set these in hardware, but we don't rely on it).
-    /// All valid mappings are implicitly readable - RISC-V spec requires R=1 when W=1.
+    /// Kernel leaf entry. Pre-sets A/D bits to avoid page faults on first access
+    /// since we don't rely on Svadu hardware support.
     pub fn kernelLeaf(phys_addr: usize, write: bool, exec: bool) Pte {
         return .{
             .v = true,
-            .r = true, // Always readable; W=1,R=0 is reserved in RISC-V
+            .r = true, // W=1 R=0 is reserved in RISC-V
             .w = write,
             .x = exec,
             .g = true, // global - not flushed on address space change
@@ -99,12 +107,11 @@ pub const Pte = packed struct(u64) {
         };
     }
 
-    /// User leaf entry. Sets user-accessible bit and pre-sets accessed/dirty.
-    /// All valid mappings are implicitly readable - RISC-V spec requires R=1 when W=1.
+    /// User leaf entry. Sets user-accessible bit and pre-sets A/D bits.
     pub fn userLeaf(phys_addr: usize, write: bool, exec: bool) Pte {
         return .{
             .v = true,
-            .r = true, // Always readable; W=1,R=0 is reserved in RISC-V
+            .r = true, // W=1 R=0 is reserved in RISC-V
             .w = write,
             .x = exec,
             .u = true,
@@ -126,12 +133,12 @@ pub const PageTable = struct {
     pub const EMPTY = PageTable{ .entries = [_]Pte{Pte.EMPTY} ** ENTRIES_PER_TABLE };
 
     /// Read entry at given index.
-    pub fn get(self: *const PageTable, index: usize) Pte {
+    pub inline fn get(self: *const PageTable, index: usize) Pte {
         return self.entries[index];
     }
 
     /// Write entry at given index.
-    pub fn set(self: *PageTable, index: usize, pte: Pte) void {
+    pub inline fn set(self: *PageTable, index: usize, pte: Pte) void {
         self.entries[index] = pte;
     }
 };
@@ -148,7 +155,7 @@ pub const VirtAddr = struct {
     offset: u12,
 
     /// Parse a virtual address into its component indices.
-    pub fn parse(vaddr: usize) VirtAddr {
+    pub inline fn parse(vaddr: usize) VirtAddr {
         return .{
             .vpn2 = @truncate((vaddr >> 30) & 0x1FF),
             .vpn1 = @truncate((vaddr >> 21) & 0x1FF),
@@ -158,7 +165,7 @@ pub const VirtAddr = struct {
     }
 
     /// Check if address is canonical (bits 63:39 are sign-extension of bit 38).
-    pub fn isCanonical(vaddr: usize) bool {
+    pub inline fn isCanonical(vaddr: usize) bool {
         const high_bits = vaddr >> 38;
         return high_bits == 0 or high_bits == 0x3FFFFFF;
     }
@@ -206,9 +213,8 @@ comptime {
     if (@sizeOf(Satp) != 8) @compileError("SATP must be 8 bytes");
 }
 
-// Memory barrier for RISC-V.
-// fence rw, rw ensures all prior reads/writes complete before subsequent ones.
-// Required after SATP writes to ensure new translations take effect.
+/// Memory barrier for page table updates.
+/// Required after SATP writes to ensure new translations take effect.
 inline fn fence() void {
     if (is_riscv64) asm volatile ("fence rw, rw");
 }
@@ -218,12 +224,12 @@ inline fn fence() void {
 /// More specific flushes (by address or address space) reduce cache invalidation overhead.
 pub const Tlb = struct {
     /// Invalidate all cached address translations.
-    pub fn flushAll() void {
+    pub inline fn flushAll() void {
         if (is_riscv64) asm volatile ("sfence.vma zero, zero");
     }
 
     /// Invalidate cached translation for a specific virtual address.
-    pub fn flushAddr(vaddr: usize) void {
+    pub inline fn flushAddr(vaddr: usize) void {
         if (is_riscv64) asm volatile ("sfence.vma %[addr], zero"
             :
             : [addr] "r" (vaddr),
@@ -250,9 +256,7 @@ pub const Tlb = struct {
 
 /// Walk page tables for a virtual address and return pointer to the leaf entry.
 /// Returns null if any level has an invalid entry or if a superpage is found
-/// before reaching level 0 (can't get individual page entry from superpage).
-/// Note: This walks to level 0 (4KB page) only.
-/// Page tables are accessed via higher-half virtual addresses after MMU enable.
+/// before reaching level 0. Only walks to level 0 (4KB page).
 pub fn walk(root: *PageTable, vaddr: usize) ?*Pte {
     if (!VirtAddr.isCanonical(vaddr)) return null;
 
@@ -371,13 +375,8 @@ pub fn unmapPageAndFlush(root: *PageTable, vaddr: usize) ?usize {
     return paddr;
 }
 
-// Boot page table (single level-2 table using gigapages)
 var root_table: PageTable align(PAGE_SIZE) = PageTable.EMPTY;
-
-// Kernel size estimate for gigapage mapping (1GB should cover typical kernel)
-const KERNEL_SIZE_ESTIMATE: usize = 1 << 30; // 1GB
-
-// Stored during init() for use by removeIdentityMapping()
+const KERNEL_SIZE_ESTIMATE: usize = 1 << 30;
 var stored_kernel_phys_load: usize = 0;
 
 /// Set up identity + higher-half mappings using 1GB gigapages, enable Sv39.
