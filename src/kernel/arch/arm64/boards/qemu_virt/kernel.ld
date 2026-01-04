@@ -7,8 +7,8 @@ STACK_SIZE = 16 * 1024; /* 16KB kernel stack - sufficient for early boot without
 
 /* Memory layout constants */
 __dram_base = 0x40000000;              /* DRAM starts here on QEMU virt */
-__kernel_phys_load = 0x40080000;       /* Kernel physical load address */
-__kernel_virt_load = 0xFFFFFF8040080000; /* Kernel virtual load address */
+__kernel_phys_load = 0x40200000;       /* Kernel physical load address (after DTB) */
+__kernel_virt_load = 0xFFFFFF8040200000; /* Kernel virtual load address */
 
 ENTRY(_start) /* Entry point defined in boot.zig - must be first in .text */
 

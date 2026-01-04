@@ -17,14 +17,13 @@
             zig
             qemu
             just
+            llvm
           ];
 
           shellHook = ''
             echo "Bullfinch development environment"
-            echo "Zig version: $(zig version)"
-            echo "QEMU ARM64 version: $(qemu-system-aarch64 --version | head -n 1)"
-            echo "QEMU RISC-V version: $(qemu-system-riscv64 --version | head -n 1)"
-            echo "Just version: $(just --version)"
+            echo "  Zig: $(zig version)"
+            echo "  QEMU: $(qemu-system-aarch64 --version | head -1)"
           '';
         };
       });

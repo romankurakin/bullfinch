@@ -463,32 +463,6 @@ pub fn removeIdentityMapping() void {
     Tlb.flushAll();
 }
 
-/// Transition to running in higher-half address space.
-/// Jumps to the higher-half address of the continuation function and
-/// updates the stack pointer to its higher-half equivalent.
-/// The continuation function receives the same argument passed here.
-/// Must be called after init() has set up higher-half mappings.
-pub fn jumpToHigherHalf(continuation: *const fn (usize) noreturn, arg: usize) noreturn {
-    // Compute higher-half addresses
-    const high_continuation = @intFromPtr(continuation) +% KERNEL_VIRT_BASE;
-    const current_sp = asm volatile ("mv %[sp], sp"
-        : [sp] "=r" (-> usize),
-    );
-    const high_sp = current_sp +% KERNEL_VIRT_BASE;
-
-    // Jump to higher-half with new stack pointer.
-    // No clobbers needed since this function never returns.
-    asm volatile (
-        \\ mv sp, %[new_sp]
-        \\ jr %[target]
-        :
-        : [new_sp] "r" (high_sp),
-          [target] "r" (high_continuation),
-          [arg] "{a0}" (arg),
-    );
-    unreachable;
-}
-
 test "Pte size and layout" {
     try std.testing.expectEqual(@as(usize, 8), @sizeOf(Pte));
     try std.testing.expectEqual(@as(usize, 64), @bitSizeOf(Pte));

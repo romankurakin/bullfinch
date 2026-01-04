@@ -12,6 +12,20 @@ pub fn build(b: *std.Build) void {
         else => @panic("Unsupported architecture"),
     };
 
+    // libfdt - read-only subset for parsing bootloader DTB
+    const libfdt_module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = false });
+    const cflags: []const []const u8 = switch (target.result.cpu.arch) {
+        .aarch64 => &.{ "-ffreestanding", "-nostdlib", "-include", "src/kernel/fdt/libfdt_env.h" },
+        .riscv64 => &.{ "-ffreestanding", "-nostdlib", "-mcmodel=medany", "-include", "src/kernel/fdt/libfdt_env.h" },
+        else => @panic("Unsupported architecture for libfdt"),
+    };
+    libfdt_module.addCSourceFiles(.{
+        .files = &.{ "lib/dtc/libfdt/fdt.c", "lib/dtc/libfdt/fdt_ro.c", "lib/dtc/libfdt/fdt_strerror.c" },
+        .flags = cflags,
+    });
+    libfdt_module.addIncludePath(b.path("lib/dtc/libfdt"));
+    const libfdt = b.addLibrary(.{ .linkage = .static, .name = "fdt", .root_module = libfdt_module });
+
     // Board module - injected as dependency so kernel code imports via @import("board").
     const board_path = b.pathJoin(&.{ "src", "kernel", "arch", arch_dir, "boards", board, "board.zig" });
     const board_module = b.createModule(.{
@@ -38,6 +52,9 @@ pub fn build(b: *std.Build) void {
         },
         .root_module = kernel_module,
     });
+
+    // Link libfdt (Zig bindings in src/kernel/fdt/fdt.zig)
+    kernel.linkLibrary(libfdt);
 
     // Linker script for memory layout.
     const linker_script_path = b.pathJoin(&.{ "src", "kernel", "arch", arch_dir, "boards", board, "kernel.ld" });

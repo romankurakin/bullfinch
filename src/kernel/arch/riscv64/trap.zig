@@ -404,12 +404,20 @@ fn printKeyRegister(name: []const u8, value: u64) void {
 }
 
 /// Initialize trap handling by installing stvec (Vectored mode).
-/// Must be called after running at higher-half virtual addresses.
+/// Called twice: first at physical addresses (with identity mapping),
+/// then at virtual addresses after boot.zig switches to higher-half.
 pub fn init() void {
     // stvec format: [63:2] address, [1:0] mode (00=Direct, 01=Vectored)
     // Vectored mode: Exceptions -> Base, Interrupts -> Base + 4*Cause
     // Alignment guaranteed by align(256) on trapVector declaration.
-    const stvec_val = @intFromPtr(&trapVector) | 1;
+    //
+    // Use inline assembly to get the PC-relative address of trapVector.
+    // This ensures we get the correct address whether running at physical
+    // or virtual addresses, since PC-relative addressing works in either case.
+    const stvec_val = asm volatile (
+        \\ la %[ret], trapVector
+        : [ret] "=r" (-> usize),
+    ) | 1;
 
     asm volatile ("csrw stvec, %[stvec]"
         :
