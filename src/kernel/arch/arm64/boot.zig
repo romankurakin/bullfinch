@@ -1,9 +1,13 @@
-//! ARM64 boot shim - clears BSS and transfers to main().
-//! Runs without stack or memory management. Must set SP, enable FP/SIMD, and zero BSS before main().
+//! ARM64 Boot Entry Point.
 //!
-//! Boot code uses PC-relative addressing (adrp+add) because kernel is linked at
-//! higher-half VMA but loaded at physical LMA. The MMU isn't enabled yet, so we
-//! must use PC-relative offsets which work at any base address.
+//! This is the first code that runs when the kernel loads. The bootloader places us
+//! at a physical address but we're linked at a higher-half virtual address. Since
+//! MMU is off, we use PC-relative addressing (adrp+add) which works at any address.
+//!
+//! Boot sequence: set stack pointer, enable FP/SIMD, zero BSS, call main().
+//!
+//! We must enable FP/SIMD via CPACR_EL1.FPEN because Zig's compiler may emit SIMD
+//! instructions for array operations. Without this, any FP/SIMD instruction traps.
 
 extern const __bss_start: u8;
 extern const __bss_end: u8;
@@ -11,7 +15,7 @@ extern fn main() callconv(.c) void;
 
 export fn _start() linksection(".text.boot") callconv(.naked) noreturn {
     asm volatile (
-        // Set up stack pointer (PC-relative addressing for position independence)
+    // Set up stack pointer (PC-relative addressing for position independence)
         \\ adrp x0, __stack_top
         \\ add x0, x0, :lo12:__stack_top
         \\ mov sp, x0
@@ -33,9 +37,7 @@ export fn _start() linksection(".text.boot") callconv(.naked) noreturn {
         \\   add x0, x0, #8
         \\   cmp x0, x1
         \\   b.lt clear_bss
-
         \\ bl main
-
         \\ hang:
         \\   wfi
         \\   b hang

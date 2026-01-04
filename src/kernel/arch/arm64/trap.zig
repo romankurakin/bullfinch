@@ -1,13 +1,22 @@
-//! ARM64 trap handling - exception vector table and handlers.
+//! ARM64 Trap Handling.
 //!
-//! ARM64 calls these "exceptions"; we use "trap" to match RISC-V and OS literature.
-//! Vector table has 16 entries (4 exception types × 4 sources), 2KB aligned, 128 bytes each.
-//! Types: Synchronous, IRQ, FIQ, SError.
-//! Sources: current/lower exception level, using SP0/SPx, AArch64/AArch32.
+//! When the CPU encounters an exceptional condition (interrupt, fault, syscall), it
+//! transfers control to a handler via the exception vector table. ARM64 calls these
+//! "exceptions" but we use "trap" to match RISC-V and general OS terminology.
 //!
-//! Reference: ARM Architecture Reference Manual for A-profile (DDI 0487).
+//! The vector table has 16 entries organized as 4 exception types × 4 sources:
+//!   ypes:   Synchronous (faults, syscalls), IRQ, FIQ, SError
+//!   Sources: Current EL with SP0, Current EL with SPx, Lower EL AArch64, Lower EL AArch32
+//!
+//! Each entry is 128 bytes (32 instructions), and the table must be 2KB aligned.
+//! Hardware automatically saves return address to ELR_EL1, status to SPSR_EL1, and
+//! masks interrupts. We save remaining registers manually in the trap entry code.
+//!
+//! See ARM Architecture Reference Manual, Chapter D1 (The AArch64 Exception Model).
 
+const gic = @import("gic.zig");
 const kernel = @import("../../kernel.zig");
+
 const print = kernel.console.print;
 
 /// Saved register context during trap. Layout must match assembly save/restore order.
@@ -27,14 +36,14 @@ pub const TrapContext = extern struct {
     }
 
     /// Get general-purpose register value by index (x0-x30). Returns 0 for invalid index.
-    pub fn getReg(self: *const TrapContext, idx: usize) u64 {
+    pub inline fn getReg(self: *const TrapContext, idx: usize) u64 {
         if (idx >= 31) return 0;
         return self.regs[idx];
     }
 };
 
 /// Exception class from ESR_EL1[31:26].
-/// ARM Architecture Reference Manual (DDI 0487), ARMv8.2-A, Table D1-6.
+/// See ARM Architecture Reference Manual, Table D1-6.
 pub const TrapClass = enum(u6) {
     unknown = 0x00,
     wfi_wfe = 0x01,
@@ -110,64 +119,62 @@ pub const TrapClass = enum(u6) {
     }
 };
 
-// Trap Vector Table
-
-/// VBAR_EL1 requires 2KB alignment (bits [10:0] = 0).
+/// VBAR_EL1 requires 2KB alignment (bits 10:0 must be 0).
 const VBAR_ALIGNMENT = 2048;
 
 /// Trap vector table - must be 2KB aligned per ARM spec.
-/// 16 entries × 128 bytes each. Each entry branches to trapEntry.
+/// 16 entries × 128 bytes each. IRQ entries branch to irqEntry, others to trapEntry.
 /// Static assembly - no runtime patching needed, linker resolves offsets.
 export fn trap_vectors() align(VBAR_ALIGNMENT) linksection(".vectors") callconv(.naked) void {
     // 16 vector entries, each 128 bytes (32 instructions).
-    // We use b (branch) + padding. Assembler/linker handles offset calculation.
+    // Entry order within each group: Synchronous, IRQ, FIQ, SError
     asm volatile (
-    // Current EL with SP_EL0 (0x000 - 0x1FF)
-        \\ b trapEntry
+    // Current EL with SP_EL0 (0x000 - 0x1FF) - shouldn't happen, we use SP_ELx
+        \\ b trapEntry      // 0x000: Synchronous
         \\ .balign 128
-        \\ b trapEntry
+        \\ b irqEntry       // 0x080: IRQ
         \\ .balign 128
-        \\ b trapEntry
+        \\ b trapEntry      // 0x100: FIQ
         \\ .balign 128
-        \\ b trapEntry
+        \\ b trapEntry      // 0x180: SError
         \\ .balign 128
-        // Current EL with SP_ELx (0x200 - 0x3FF)
-        \\ b trapEntry
+        // Current EL with SP_ELx (0x200 - 0x3FF) - main kernel mode
+        \\ b trapEntry      // 0x200: Synchronous
         \\ .balign 128
-        \\ b trapEntry
+        \\ b irqEntry       // 0x280: IRQ
         \\ .balign 128
-        \\ b trapEntry
+        \\ b trapEntry      // 0x300: FIQ
         \\ .balign 128
-        \\ b trapEntry
+        \\ b trapEntry      // 0x380: SError
         \\ .balign 128
-        // Lower EL using AArch64 (0x400 - 0x5FF)
-        \\ b trapEntry
+        // Lower EL using AArch64 (0x400 - 0x5FF) - userspace
+        \\ b trapEntry      // 0x400: Synchronous
         \\ .balign 128
-        \\ b trapEntry
+        \\ b irqEntry       // 0x480: IRQ
         \\ .balign 128
-        \\ b trapEntry
+        \\ b trapEntry      // 0x500: FIQ
         \\ .balign 128
-        \\ b trapEntry
+        \\ b trapEntry      // 0x580: SError
         \\ .balign 128
-        // Lower EL using AArch32 (0x600 - 0x7FF)
-        \\ b trapEntry
+        // Lower EL using AArch32 (0x600 - 0x7FF) - not supported, panic
+        \\ b aarch32Unsupported  // 0x600: Synchronous (AArch32 unsupported)
         \\ .balign 128
-        \\ b trapEntry
+        \\ b aarch32Unsupported  // 0x680: IRQ (AArch32 unsupported)
         \\ .balign 128
-        \\ b trapEntry
+        \\ b aarch32Unsupported  // 0x700: FIQ (AArch32 unsupported)
         \\ .balign 128
-        \\ b trapEntry
+        \\ b aarch32Unsupported  // 0x780: SError (AArch32 unsupported)
         \\ .balign 128
     );
 }
 
-// Trap Entry Point (naked function)
+/// Called when an AArch32 exception occurs - we don't support 32-bit mode.
+export fn aarch32Unsupported() noreturn {
+    @panic("AArch32 mode not supported");
+}
 
 /// Raw trap entry point. Saves all registers and calls Zig handler.
-/// This function is naked to give us full control over register usage.
-/// Called from vector table entries.
-///
-/// NOTE: On exception entry, ARM64 automatically masks interrupts (PSTATE.{D,A,I,F}
+/// On exception entry, ARM64 automatically masks interrupts (PSTATE.{D,A,I,F}
 /// set per SCTLR_EL1). SPSR saves old PSTATE, restored by ERET.
 export fn trapEntry() callconv(.naked) noreturn {
     // Save all general-purpose registers and system state.
@@ -189,40 +196,29 @@ export fn trapEntry() callconv(.naked) noreturn {
         \\stp x24, x25, [sp, #192]
         \\stp x26, x27, [sp, #208]
         \\stp x28, x29, [sp, #224]
-        \\str x30, [sp, #240]
 
-        // Calculate and save original SP (SP before sub #288)
+        // Save x30 and original SP together (contiguous in frame)
         \\add x0, sp, #288
-        \\str x0, [sp, #248]
+        \\stp x30, x0, [sp, #240]
 
-        // Save ELR_EL1 (return address)
+        // Save ELR and SPSR as pair
         \\mrs x0, elr_el1
-        \\str x0, [sp, #256]
+        \\mrs x1, spsr_el1
+        \\stp x0, x1, [sp, #256]
 
-        // Save SPSR_EL1 (saved program status)
-        \\mrs x0, spsr_el1
-        \\str x0, [sp, #264]
-
-        // Read and save ESR_EL1 (exception syndrome)
+        // Save ESR and FAR as pair
         \\mrs x0, esr_el1
-        \\str x0, [sp, #272]
-
-        // Read and save FAR_EL1 (fault address)
-        \\mrs x0, far_el1
-        \\str x0, [sp, #280]
+        \\mrs x1, far_el1
+        \\stp x0, x1, [sp, #272]
 
         // Call Zig trap handler with pointer to context
         \\mov x0, sp
         \\bl handleTrap
 
-        // Handler returned - restore registers
-        // Note: For now handler panics, but we include restore for future use
-
-        // Restore ELR and SPSR first (may have been modified by handler)
-        \\ldr x0, [sp, #256]
+        // Restore ELR and SPSR (may have been modified by handler)
+        \\ldp x0, x1, [sp, #256]
         \\msr elr_el1, x0
-        \\ldr x0, [sp, #264]
-        \\msr spsr_el1, x0
+        \\msr spsr_el1, x1
 
         // Restore general-purpose registers
         \\ldp x0, x1, [sp, #0]
@@ -248,7 +244,77 @@ export fn trapEntry() callconv(.naked) noreturn {
     );
 }
 
-// Trap Handler
+/// IRQ entry point - optimized fast path saving only caller-saved registers.
+/// AAPCS64 guarantees x19-x28 are callee-saved, so handleIrq preserves them.
+/// We only save x0-x18, x30 (caller-saved) plus ELR/SPSR for return.
+/// Frame: 176 bytes = 20 regs + elr + spsr (16-byte aligned).
+export fn irqEntry() callconv(.naked) noreturn {
+    asm volatile (
+    // Allocate smaller frame for caller-saved registers only
+        \\sub sp, sp, #176
+
+        // Save caller-saved registers: x0-x17 (pairs), x18, x30
+        \\stp x0, x1, [sp, #0]
+        \\stp x2, x3, [sp, #16]
+        \\stp x4, x5, [sp, #32]
+        \\stp x6, x7, [sp, #48]
+        \\stp x8, x9, [sp, #64]
+        \\stp x10, x11, [sp, #80]
+        \\stp x12, x13, [sp, #96]
+        \\stp x14, x15, [sp, #112]
+        \\stp x16, x17, [sp, #128]
+        \\stp x18, x30, [sp, #144]
+
+        // Save ELR and SPSR for eret (use STP for efficiency)
+        \\mrs x0, elr_el1
+        \\mrs x1, spsr_el1
+        \\stp x0, x1, [sp, #160]
+
+        // Call IRQ handler (no context needed, GIC tells us the interrupt)
+        \\bl handleIrq
+
+        // Restore ELR and SPSR (use LDP for efficiency)
+        \\ldp x0, x1, [sp, #160]
+        \\msr elr_el1, x0
+        \\msr spsr_el1, x1
+
+        // Restore caller-saved registers
+        \\ldp x0, x1, [sp, #0]
+        \\ldp x2, x3, [sp, #16]
+        \\ldp x4, x5, [sp, #32]
+        \\ldp x6, x7, [sp, #48]
+        \\ldp x8, x9, [sp, #64]
+        \\ldp x10, x11, [sp, #80]
+        \\ldp x12, x13, [sp, #96]
+        \\ldp x14, x15, [sp, #112]
+        \\ldp x16, x17, [sp, #128]
+        \\ldp x18, x30, [sp, #144]
+        \\add sp, sp, #176
+        \\eret
+    );
+}
+
+/// Spurious interrupt ID returned by GIC when no interrupt is pending.
+const SPURIOUS_INTID: u32 = 1023;
+
+/// Timer PPI interrupt ID (EL1 physical timer).
+const TIMER_PPI: u32 = 30;
+
+/// Handle IRQ - acknowledge, dispatch via comptime switch, end-of-interrupt.
+/// All handlers must be known at compile time for zero-overhead dispatch.
+export fn handleIrq() void {
+    const intid = gic.acknowledge();
+
+    // Spurious interrupts need no EOI
+    if (intid == SPURIOUS_INTID) return;
+
+    switch (intid) {
+        TIMER_PPI => kernel.clock.handleTimerIrq(),
+        else => @panic("Unhandled interrupt"),
+    }
+
+    gic.endOfInterrupt(intid);
+}
 
 /// Main trap handler called from assembly entry point.
 /// Examines trap cause and either handles it or panics.
@@ -259,12 +325,10 @@ export fn handleTrap(ctx: *TrapContext) void {
     // Print register dump
     dumpTrap(ctx, ec);
 
-    // For now, all traps are fatal
+    // For now, all synchronous traps are fatal
     // Later: handle page faults, syscalls, etc.
     @panic("Unhandled trap");
 }
-
-// Register Dump
 
 /// Print trap information and register dump for debugging.
 fn dumpTrap(ctx: *const TrapContext, ec: TrapClass) void {
@@ -308,23 +372,16 @@ fn printKeyRegister(name: []const u8, value: u64) void {
     print(&kernel.trap.formatHex(value));
 }
 
-// Initialization
-
 /// Initialize trap handling by installing the vector table.
 pub fn init() void {
     const vbar = @intFromPtr(&trap_vectors);
 
-    // Write VBAR_EL1 with vector table address
     asm volatile ("msr vbar_el1, %[vbar]"
         :
         : [vbar] "r" (vbar),
     );
-
-    // ISB ensures the VBAR write completes before any trap could occur.
     asm volatile ("isb");
 }
-
-// Test Helpers
 
 /// Trigger a synchronous trap for testing (BRK instruction).
 /// BRK #0 generates EC=0x3C (brk_aarch64) in ESR_EL1.
@@ -338,12 +395,19 @@ pub fn testTriggerIllegalInstruction() void {
     asm volatile (".word 0x00000000"); // UDF #0
 }
 
-/// Disable interrupts and halt CPU (for panic/fatal error handling).
-pub fn halt() noreturn {
-    asm volatile ("msr daifset, #0xF"); // Disable all interrupts (D, A, I, F)
-    while (true) {
-        asm volatile ("wfi");
-    }
+/// Wait for interrupt (single wait, returns after interrupt handled).
+pub inline fn waitForInterrupt() void {
+    asm volatile ("wfi");
+}
+
+/// Halt CPU (loop forever, interrupts still enabled).
+pub inline fn halt() noreturn {
+    while (true) asm volatile ("wfi");
+}
+
+/// Disable all interrupts.
+pub inline fn disableInterrupts() void {
+    asm volatile ("msr daifset, #0xF");
 }
 
 test "TrapContext size is correct" {

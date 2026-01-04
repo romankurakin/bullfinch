@@ -1,12 +1,22 @@
-//! RISC-V trap handling - trap vector and exception handlers.
+//! RISC-V Trap Handling.
 //!
-//! We run in supervisor mode (kernel). OpenSBI (machine mode) delegates traps via stvec.
-//! On trap: hardware saves sepc, sstatus, scause, stval and jumps to stvec.
-//! We use Vectored mode: exceptions jump to base, interrupts to base + 4 * cause.
+//! RISC-V has three privilege levels: Machine (M), Supervisor (S), and User (U).
+//! OpenSBI runs at M-mode and delegates most traps to S-mode where our kernel runs.
+//! When a trap occurs, hardware saves state to CSRs and jumps to the address in stvec.
 //!
-//! Reference: RISC-V Privileged Specification v1.12, Chapter 4 "Supervisor-Level ISA"
+//! Hardware-saved state:
+//!   sepc    - Exception program counter (return address)
+//!   sstatus - Saved status (privilege level, interrupt enable)
+//!   scause  - Cause code (bit 63 = interrupt flag, lower bits = cause)
+//!   stval   - Trap value (fault address or faulting instruction)
+//!
+//! We use Vectored mode where interrupts jump to base + 4*cause, allowing fast dispatch
+//! without reading scause. Exceptions all go to base+0.
+//!
+//! See RISC-V Privileged Specification, Chapter 4 (Supervisor-Level ISA).
 
 const kernel = @import("../../kernel.zig");
+
 const print = kernel.console.print;
 
 /// Saved register context during trap. Layout must match assembly save/restore order.
@@ -28,7 +38,7 @@ pub const TrapContext = extern struct {
     /// Get register value by index (x0-x31).
     /// Returns the original SP for x2, not the modified stack pointer in regs[1].
     /// Returns 0 for out-of-bounds indices.
-    pub fn getReg(self: *const TrapContext, idx: usize) u64 {
+    pub inline fn getReg(self: *const TrapContext, idx: usize) u64 {
         if (idx == 0) return 0; // x0 is always zero
         if (idx > 31) return 0; // out of bounds
         if (idx == 2) return self.sp; // x2/sp: return original, not modified
@@ -37,10 +47,8 @@ pub const TrapContext = extern struct {
 };
 
 /// Trap cause from scause register. Bit 63: interrupt (1) vs exception (0).
-/// RISC-V Privileged Specification v1.12, Table 4.2.
-/// Hypervisor extension adds codes 20-23 for guest virtualization.
+/// See RISC-V Privileged Specification, Table 4.2.
 pub const TrapCause = enum(u64) {
-    // Exceptions (interrupt bit = 0)
     instruction_misaligned = 0,
     instruction_access_fault = 1,
     illegal_instruction = 2,
@@ -61,13 +69,10 @@ pub const TrapCause = enum(u64) {
     reserved_17 = 17,
     reserved_18 = 18,
     reserved_19 = 19,
-    // H-extension (codes 20-23)
     instruction_guest_page_fault = 20,
     load_guest_page_fault = 21,
     virtual_instruction = 22,
     store_guest_page_fault = 23,
-
-    // Interrupts (bit 63 set)
     supervisor_software_interrupt = 0x8000000000000001,
     supervisor_timer_interrupt = 0x8000000000000005,
     supervisor_external_interrupt = 0x8000000000000009,
@@ -75,12 +80,12 @@ pub const TrapCause = enum(u64) {
     _,
 
     /// Check if scause indicates an interrupt (bit 63 set) vs exception.
-    pub fn isInterrupt(cause: u64) bool {
+    pub inline fn isInterrupt(cause: u64) bool {
         return (cause >> 63) == 1;
     }
 
     /// Extract the cause code (lower 63 bits) from scause.
-    pub fn code(cause: u64) u64 {
+    pub inline fn code(cause: u64) u64 {
         return cause & ~(@as(u64, 1) << 63);
     }
 
@@ -120,10 +125,11 @@ pub const TrapCause = enum(u64) {
 };
 
 /// Trap vector table. Aligned to 256 bytes as per spec.
-/// Contains jumps to the common trap handler for exceptions and interrupts.
+/// Vectored mode: interrupts jump to base + 4*cause, exceptions to base.
+/// Timer interrupt (cause 5) uses dedicated fast path timerEntry.
 export fn trapVector() align(256) linksection(".trap") callconv(.naked) void {
     asm volatile (
-    // Base + 0: Exceptions (Cause < 16)
+    // Base + 0: Exceptions (all synchronous traps)
         \\ j trapEntry
         // Base + 4: Supervisor Software Interrupt (Cause 1)
         \\ j trapEntry
@@ -134,7 +140,7 @@ export fn trapVector() align(256) linksection(".trap") callconv(.naked) void {
         // Base + 16: Reserved (Cause 4)
         \\ j trapEntry
         // Base + 20: Supervisor Timer Interrupt (Cause 5)
-        \\ j trapEntry
+        \\ j timerEntry
         // Base + 24: Reserved (Cause 6)
         \\ j trapEntry
         // Base + 28: Reserved (Cause 7)
@@ -155,10 +161,8 @@ export fn trapVector() align(256) linksection(".trap") callconv(.naked) void {
 
 /// Common trap handler entry point.
 /// Stack frame: 288 bytes (x1-x31, sp, sepc, sstatus, scause, stval).
-///
-/// NOTE: On trap entry, hardware automatically clears sstatus.SIE (saving old value
-/// to sstatus.SPIE). This prevents interrupt nesting without explicit action.
-/// We restore sstatus on sret, which restores SIE from SPIE.
+/// On trap entry, hardware clears sstatus.SIE (saved to SPIE), preventing nesting.
+/// sret restores SIE from SPIE.
 export fn trapEntry() linksection(".trap") callconv(.naked) noreturn {
     // Save all general-purpose registers except x0 (hardwired zero).
     // We use x5 (t0) as scratch after saving it.
@@ -211,20 +215,17 @@ export fn trapEntry() linksection(".trap") callconv(.naked) noreturn {
         \\csrr t0, sstatus
         \\sd t0, 264(sp)
 
-        // Read and save scause
+        // Save scause
         \\csrr t0, scause
         \\sd t0, 272(sp)
 
-        // Read and save stval
+        // Save stval
         \\csrr t0, stval
         \\sd t0, 280(sp)
 
         // Call Zig trap handler with pointer to context
         \\mv a0, sp
         \\call handleTrap
-
-        // Handler returned - restore registers
-        // Note: For now handler panics, but we include restore for future use
 
         // Restore sepc and sstatus (may have been modified by handler)
         \\ld t0, 256(sp)
@@ -271,16 +272,94 @@ export fn trapEntry() linksection(".trap") callconv(.naked) noreturn {
     );
 }
 
+/// Timer interrupt fast path - saves only caller-saved registers.
+/// RISC-V calling convention guarantees s0-s11 are callee-saved.
+/// We only save ra, t0-t6, a0-a7 (16 regs) plus sepc/sstatus for return.
+/// Frame: 144 bytes = 16 regs + sepc + sstatus (16-byte aligned).
+export fn timerEntry() linksection(".trap") callconv(.naked) noreturn {
+    asm volatile (
+    // Allocate frame for caller-saved registers only
+        \\addi sp, sp, -144
+
+        // Save ra (x1)
+        \\sd ra, 0(sp)
+
+        // Save t0-t2 (x5-x7)
+        \\sd t0, 8(sp)
+        \\sd t1, 16(sp)
+        \\sd t2, 24(sp)
+
+        // Save a0-a7 (x10-x17)
+        \\sd a0, 32(sp)
+        \\sd a1, 40(sp)
+        \\sd a2, 48(sp)
+        \\sd a3, 56(sp)
+        \\sd a4, 64(sp)
+        \\sd a5, 72(sp)
+        \\sd a6, 80(sp)
+        \\sd a7, 88(sp)
+
+        // Save t3-t6 (x28-x31)
+        \\sd t3, 96(sp)
+        \\sd t4, 104(sp)
+        \\sd t5, 112(sp)
+        \\sd t6, 120(sp)
+
+        // Save sepc and sstatus for sret
+        \\csrr t0, sepc
+        \\sd t0, 128(sp)
+        \\csrr t0, sstatus
+        \\sd t0, 136(sp)
+
+        // Call timer handler directly
+        \\call handleTimerIrq
+
+        // Restore sepc and sstatus
+        \\ld t0, 128(sp)
+        \\csrw sepc, t0
+        \\ld t0, 136(sp)
+        \\csrw sstatus, t0
+
+        // Restore t3-t6
+        \\ld t3, 96(sp)
+        \\ld t4, 104(sp)
+        \\ld t5, 112(sp)
+        \\ld t6, 120(sp)
+
+        // Restore a0-a7
+        \\ld a0, 32(sp)
+        \\ld a1, 40(sp)
+        \\ld a2, 48(sp)
+        \\ld a3, 56(sp)
+        \\ld a4, 64(sp)
+        \\ld a5, 72(sp)
+        \\ld a6, 80(sp)
+        \\ld a7, 88(sp)
+
+        // Restore t0-t2
+        \\ld t0, 8(sp)
+        \\ld t1, 16(sp)
+        \\ld t2, 24(sp)
+
+        // Restore ra
+        \\ld ra, 0(sp)
+
+        // Deallocate and return
+        \\addi sp, sp, 144
+        \\sret
+    );
+}
+
 /// Main trap handler - examines scause and dispatches or panics.
 export fn handleTrap(ctx: *TrapContext) void {
     const cause = @as(TrapCause, @enumFromInt(ctx.scause));
-
-    // Print register dump
     dumpTrap(ctx, cause);
-
-    // For now, all traps are fatal
-    // Later: handle page faults, syscalls, timer interrupts, etc.
     @panic("Unhandled trap");
+}
+
+/// Timer interrupt handler called from timerEntry assembly.
+export fn handleTimerIrq() void {
+    kernel.clock.handleTimerIrq();
 }
 
 fn dumpTrap(ctx: *const TrapContext, cause: TrapCause) void {
@@ -325,6 +404,7 @@ fn printKeyRegister(name: []const u8, value: u64) void {
 }
 
 /// Initialize trap handling by installing stvec (Vectored mode).
+/// Must be called after running at higher-half virtual addresses.
 pub fn init() void {
     // stvec format: [63:2] address, [1:0] mode (00=Direct, 01=Vectored)
     // Vectored mode: Exceptions -> Base, Interrupts -> Base + 4*Cause
@@ -348,12 +428,19 @@ pub fn testTriggerIllegalInstruction() void {
     asm volatile (".word 0x00000000");
 }
 
-/// Disable interrupts and halt CPU (for panic/fatal error handling).
-pub fn halt() noreturn {
-    asm volatile ("csrci sstatus, 0x2"); // Clear SIE bit (disable interrupts)
-    while (true) {
-        asm volatile ("wfi");
-    }
+/// Wait for interrupt (single wait, returns after interrupt handled).
+pub inline fn waitForInterrupt() void {
+    asm volatile ("wfi");
+}
+
+/// Halt CPU (loop forever, interrupts still enabled).
+pub inline fn halt() noreturn {
+    while (true) asm volatile ("wfi");
+}
+
+/// Disable all interrupts.
+pub inline fn disableInterrupts() void {
+    asm volatile ("csrci sstatus, 0x2");
 }
 
 test "TrapContext size is correct" {

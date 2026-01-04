@@ -1,4 +1,16 @@
-//! SBI ecall wrappers for OpenSBI firmware.
+//! SBI (Supervisor Binary Interface) Wrappers.
+//!
+//! SBI is the interface between S-mode (kernel) and M-mode (OpenSBI firmware). It
+//! provides services that require M-mode privilege: timer, IPI, console, power control.
+//!
+//! The ecall instruction traps to M-mode. Arguments go in a0-a2, extension ID in a7,
+//! function ID in a6. Return value comes back in a0 (negative = error).
+//!
+//! We use the Timer Extension for scheduling and legacy console for early boot output.
+//!
+//! See RISC-V SBI Specification.
+
+const EXT_TIMER: usize = 0x54494D45; // "TIME"
 
 /// SBI ecall with up to 3 arguments. Returns error if SBI returns negative value.
 pub fn call(eid: usize, fid: usize, arg0: usize, arg1: usize, arg2: usize) !usize {
@@ -26,6 +38,14 @@ pub fn legacyConsolePutchar(byte: u8) void {
 /// Check if an SBI return value indicates an error (negative when interpreted as signed).
 pub fn isError(ret: usize) bool {
     return @as(isize, @bitCast(ret)) < 0;
+}
+
+/// Set timer deadline using SBI Timer Extension.
+/// Programs mtimecmp and clears any pending timer interrupt.
+/// The interrupt fires when mtime >= stime_value.
+pub fn setTimer(stime_value: u64) void {
+    _ = call(EXT_TIMER, 0, stime_value, 0, 0) catch
+        @panic("SBI set_timer failed");
 }
 
 test "isError detects negative return values" {

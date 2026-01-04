@@ -1,5 +1,6 @@
-//! Common trap formatting utilities shared between architectures.
-//! Pure functions with no external dependencies - caller handles printing.
+//! Common Trap Utilities.
+//!
+//! Formatting helpers for register dumps and trap messages.
 
 /// Format a 64-bit value as hexadecimal (16 characters, no prefix).
 pub fn formatHex(val: u64) [16]u8 {
@@ -32,7 +33,6 @@ pub fn formatDecimal(val: usize) struct { buf: [20]u8, len: usize } {
         v /= 10;
     }
 
-    // Shift to beginning
     const len = buf.len - i;
     var result: [20]u8 = undefined;
     for (0..len) |j| {

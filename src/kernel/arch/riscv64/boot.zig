@@ -1,5 +1,9 @@
-//! RISC-V boot shim - clears BSS and transfers to main().
-//! OpenSBI leaves us in S-mode. Must set SP and zero BSS before main().
+//! RISC-V Boot Entry Point.
+//!
+//! OpenSBI loads and jumps to us in S-mode. Unlike ARM, we don't need to enable FP
+//! since RISC-V F extension is always accessible. Boot sequence: set stack, zero BSS,
+//! call main(). The kernel is linked at higher-half VMA but loaded at physical LMA;
+//! the la pseudo-instruction generates PC-relative addressing that works at any base.
 
 extern const __bss_start: u8;
 extern const __bss_end: u8;
