@@ -2,9 +2,10 @@
 default:
     @just --list
 
-# Build for ARM64
+# Build for ARM64 (binary format triggers DTB in x0)
 build-arm64:
     zig build -Dtarget=aarch64-freestanding
+    llvm-objcopy -O binary zig-out/bin/kernel-arm64 zig-out/bin/kernel-arm64.bin
 
 # Build for RISC-V
 build-riscv64:
@@ -12,7 +13,7 @@ build-riscv64:
 
 # Run in QEMU (ARM64)
 qemu-arm64: build-arm64
-    qemu-system-aarch64 -machine virt,gic-version=3 -cpu cortex-a76 -m 128M -nographic -kernel zig-out/bin/kernel-arm64
+    qemu-system-aarch64 -machine virt,gic-version=3 -cpu cortex-a76 -m 128M -nographic -kernel zig-out/bin/kernel-arm64.bin
 
 # Run in QEMU (RISC-V)
 qemu-riscv64: build-riscv64
@@ -20,7 +21,7 @@ qemu-riscv64: build-riscv64
 
 # Smoke test ARM64 - build and run briefly to check boot
 smoke-arm64: build-arm64
-    bash -c 'output=$(qemu-system-aarch64 -machine virt,gic-version=3 -cpu cortex-a76 -m 128M -nographic -kernel zig-out/bin/kernel-arm64 2>&1 & pid=$!; sleep 3; kill $pid; wait $pid 2>/dev/null); echo "$output"'
+    bash -c 'output=$(qemu-system-aarch64 -machine virt,gic-version=3 -cpu cortex-a76 -m 128M -nographic -kernel zig-out/bin/kernel-arm64.bin 2>&1 & pid=$!; sleep 5; kill $pid; wait $pid 2>/dev/null); echo "$output"'
 
 # Smoke test RISC-V - build and run briefly to check boot
 smoke-riscv64: build-riscv64

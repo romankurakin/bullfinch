@@ -1,17 +1,19 @@
 //! Kernel Entry Point.
 //!
-//! Control arrives from boot.zig after stack and BSS setup. We run two-phase boot
-//! (physical then virtual), initialize clock for timer interrupts, and enter the
-//! idle loop. Later we'll start the scheduler here.
+//! Control arrives from boot.zig after physInit() enables MMU and switches to
+//! higher-half addresses. We finalize the virtual address space transition,
+//! initialize clock for timer interrupts, and enter the idle loop.
 
 const builtin = @import("builtin");
 const std = @import("std");
 
 const clock = @import("kernel.zig").clock;
+const fdt = @import("fdt/fdt.zig");
 const hal = @import("hal/hal.zig");
 
 comptime {
     _ = hal.boot; // Force boot module inclusion for entry point
+    _ = @import("c_compat.zig"); // C stdlib shim for libfdt
 }
 
 const arch_name = switch (builtin.target.cpu.arch) {
@@ -20,17 +22,32 @@ const arch_name = switch (builtin.target.cpu.arch) {
     else => "Unknown",
 };
 
-/// Entry point called from boot (runs at physical addresses).
-pub export fn main() callconv(.c) void {
-    hal.bootPhysical(kmain, 0);
+/// Print memory info from Device Tree.
+fn printDtbInfo(dtb_phys: usize) void {
+    if (dtb_phys == 0) return;
+
+    const dtb: fdt.Fdt = @ptrFromInt(hal.physToVirt(dtb_phys));
+    fdt.checkHeader(dtb) catch return;
+
+    if (fdt.getMemoryRegion(dtb)) |mem| {
+        hal.console.print("RAM: ");
+        hal.console.printDec(mem.size / (1024 * 1024));
+        hal.console.print(" MB @ ");
+        hal.console.printHex(mem.base);
+        hal.console.print("\n");
+    }
 }
 
-fn kmain(_: usize) noreturn {
+/// Kernel main, called from boot.zig after MMU enables higher-half mapping.
+export fn kmain() noreturn {
     hal.bootVirtual();
 
     hal.console.print("Welcome to Bullfinch on ");
     hal.console.print(arch_name);
     hal.console.print(" architecture\n");
+
+    // Print DTB info
+    printDtbInfo(hal.getDtbPtr());
 
     clock.init();
     hal.console.print("Clock initialized\n");
@@ -40,7 +57,7 @@ fn kmain(_: usize) noreturn {
     while (clock.getTickCount() < target_ticks) {
         hal.waitForInterrupt();
     }
-    hal.console.print("\n");
+    hal.console.print(" done\n");
     clock.printStatus();
 
     hal.console.print("Boot complete. Halting.\n");

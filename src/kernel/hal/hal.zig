@@ -46,15 +46,21 @@ pub const physToVirt = arch.mmu.physToVirt;
 pub const virtToPhys = arch.mmu.virtToPhys;
 pub const waitForInterrupt = arch.trap.waitForInterrupt;
 
+/// Get DTB physical address (passed in x0/a1 by bootloader).
+/// Must be converted to virtual before use.
+pub fn getDtbPtr() usize {
+    return boot.dtb_ptr;
+}
+
 comptime {
-    const KERNEL_VIRT_BASE = arch.mmu.KERNEL_VIRT_BASE;
+    const virt_base = arch.mmu.KERNEL_VIRT_BASE;
     const PAGE_SIZE = arch.mmu.PAGE_SIZE;
     const PAGE_SHIFT = arch.mmu.PAGE_SHIFT;
     const GB: usize = 1 << 30;
 
-    if (KERNEL_VIRT_BASE & (GB - 1) != 0)
+    if (virt_base & (GB - 1) != 0)
         @compileError("KERNEL_VIRT_BASE must be 1GB aligned");
-    if (KERNEL_VIRT_BASE < (1 << 63))
+    if (virt_base < (1 << 63))
         @compileError("KERNEL_VIRT_BASE must be in upper address space");
     if (@popCount(PAGE_SIZE) != 1)
         @compileError("PAGE_SIZE must be a power of 2");
@@ -78,8 +84,10 @@ comptime {
         @compileError("TrapContext must be at least 8-byte aligned");
 }
 
-/// Runs at physical addresses. Initializes hardware, MMU, traps, then jumps to higher-half.
-pub fn bootPhysical(continuation: *const fn (usize) noreturn, arg: usize) noreturn {
+/// Physical-mode initialization. Called from boot.zig before jumping to higher-half.
+/// Initializes console, MMU (with identity + higher-half mappings), and traps.
+/// Returns to caller which then switches SP and jumps to kmain.
+pub export fn physInit() void {
     console.init();
     console.print("\nHardware initialized\n");
 
@@ -88,9 +96,10 @@ pub fn bootPhysical(continuation: *const fn (usize) noreturn, arg: usize) noretu
 
     arch.trap.init();
     console.print("Trap handling initialized\n");
-
-    arch.mmu.jumpToHigherHalf(continuation, arg);
 }
+
+/// Kernel virtual base address, exported for boot.zig to use when jumping to higher-half.
+pub export const KERNEL_VIRT_BASE: usize = arch.mmu.KERNEL_VIRT_BASE;
 
 /// Runs at virtual addresses. Finalizes address space transition.
 pub fn bootVirtual() void {

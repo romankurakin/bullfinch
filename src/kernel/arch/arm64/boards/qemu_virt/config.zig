@@ -1,7 +1,8 @@
 //! Memory and peripheral configuration for QEMU virt ARM64.
 
 pub const DRAM_BASE: usize = 0x4000_0000;
-pub const KERNEL_PHYS_LOAD: usize = 0x4008_0000;
+/// Kernel load address (after DTB area).
+pub const KERNEL_PHYS_LOAD: usize = 0x4020_0000;
 pub const TIMER_FREQ: u64 = 62_500_000;
 pub const UART_PHYS: usize = 0x0900_0000;
 

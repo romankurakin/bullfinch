@@ -40,3 +40,34 @@ pub fn print(s: []const u8) void {
         backend.print(s);
     }
 }
+
+/// Print a u64 value in hexadecimal.
+pub fn printHex(value: u64) void {
+    const hex_chars = "0123456789abcdef";
+    var buf: [18]u8 = undefined; // "0x" + 16 hex digits
+    buf[0] = '0';
+    buf[1] = 'x';
+    var i: usize = 17;
+    var v = value;
+    while (i >= 2) : (i -= 1) {
+        buf[i] = hex_chars[@intCast(v & 0xF)];
+        v >>= 4;
+    }
+    print(&buf);
+}
+
+/// Print a decimal number.
+pub fn printDec(value: u64) void {
+    if (value == 0) {
+        print("0");
+        return;
+    }
+    var buf: [20]u8 = undefined; // Max u64 is 20 digits
+    var i: usize = 20;
+    var v = value;
+    while (v > 0) : (i -= 1) {
+        buf[i - 1] = @intCast('0' + (v % 10));
+        v /= 10;
+    }
+    print(buf[i..20]);
+}
