@@ -14,19 +14,24 @@ const arch_timer = switch (builtin.cpu.arch) {
     else => @compileError("Unsupported architecture"),
 };
 
-pub const frequency = arch_timer.frequency;
+/// Timer frequency in Hz. Must call initFrequency() before use.
+pub fn frequency() u64 {
+    return arch_timer.frequency;
+}
+
 pub const now = arch_timer.now;
 pub const setDeadline = arch_timer.setDeadline;
 pub const start = arch_timer.start;
+pub const initFrequency = arch_timer.initFrequency;
 
 /// Convert ticks to nanoseconds.
 pub fn ticksToNs(ticks: u64) u64 {
     const ns_per_sec: u128 = 1_000_000_000;
-    return @truncate(@as(u128, ticks) * ns_per_sec / frequency);
+    return @truncate(@as(u128, ticks) * ns_per_sec / frequency());
 }
 
 /// Convert nanoseconds to ticks.
 pub fn nsToTicks(ns: u64) u64 {
     const ns_per_sec: u128 = 1_000_000_000;
-    return @truncate(@as(u128, ns) * frequency / ns_per_sec);
+    return @truncate(@as(u128, ns) * frequency() / ns_per_sec);
 }

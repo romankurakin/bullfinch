@@ -9,11 +9,15 @@
 //!
 //! See RISC-V SBI Specification, Chapter 6 (Timer Extension).
 
-const board = @import("board");
 const sbi = @import("sbi.zig");
 
-/// Timer frequency in Hz (ticks per second).
-pub const frequency: u64 = board.config.TIMER_FREQ;
+/// Timer frequency in Hz. Set by initFrequency() before use.
+pub var frequency: u64 = 0;
+
+/// Set timer frequency (from DTB /cpus/timebase-frequency).
+pub fn initFrequency(freq: u64) void {
+    frequency = freq;
+}
 
 // CSR bit positions - named constants for clarity
 const SIE_STIE: u64 = 1 << 5; // Supervisor Timer Interrupt Enable

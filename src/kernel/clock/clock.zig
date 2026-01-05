@@ -31,9 +31,9 @@ var tick_count: u64 = 0;
 /// Optional scheduler callback, invoked on each tick.
 var scheduler_tick: ?*const fn () void = null;
 
-/// Initialize clock subsystem.
+/// Initialize clock subsystem. Timer frequency must be initialized first.
 pub fn init() void {
-    ticks_per_interval = hal.timer.frequency / TICK_RATE_HZ;
+    ticks_per_interval = hal.timer.frequency() / TICK_RATE_HZ;
 
     const now = hal.timer.now();
     next_tick = now + ticks_per_interval;

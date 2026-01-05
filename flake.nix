@@ -22,10 +22,10 @@
 
           shellHook = ''
             echo "Bullfinch development environment"
-            echo "  Just: $(just --version)"
-            echo "  Zig: $(zig version)"
-            echo "  QEMU: $(qemu-system-aarch64 --version | head -1)"
-            echo "  LLVM: $(llvm-config --version)"
+            echo "Just: $(just --version)"
+            echo "Zig: $(zig version)"
+            echo "QEMU: $(qemu-system-aarch64 --version | head -1)"
+            echo "LLVM: $(llvm-config --version)"
           '';
         };
       });
