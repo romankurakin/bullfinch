@@ -1,10 +1,7 @@
 //! Memory and peripheral configuration for QEMU virt RISC-V.
 
-/// Base physical address of DRAM. QEMU virt places RAM at 0x8000_0000.
-pub const DRAM_BASE: usize = 0x8000_0000;
-
-/// Kernel load address. Placed at DRAM_BASE + 2MB to leave room for
-/// OpenSBI firmware which occupies the first 2MB of DRAM.
+/// Kernel load address. Placed 2MB into DRAM to leave room for
+/// OpenSBI firmware which occupies the first 2MB.
 pub const KERNEL_PHYS_LOAD: usize = 0x8020_0000;
 
 /// Linker-provided symbol marking the end of the kernel image.

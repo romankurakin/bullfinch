@@ -10,7 +10,6 @@
 //!
 //! See ARM GIC-400 Technical Reference Manual.
 
-const board = @import("board");
 const mmio = @import("mmio.zig");
 const mmu = @import("mmu.zig");
 
@@ -29,9 +28,9 @@ var gicd_base: usize = 0;
 var gicc_base: usize = 0;
 
 /// Initialize GICv2 distributor and CPU interface.
-pub fn init() void {
-    gicd_base = mmu.physToVirt(board.config.GICD_BASE);
-    gicc_base = mmu.physToVirt(board.config.GICC_BASE);
+pub fn init(gicd_phys: u64, gicc_phys: u64) void {
+    gicd_base = mmu.physToVirt(@intCast(gicd_phys));
+    gicc_base = mmu.physToVirt(@intCast(gicc_phys));
 
     mmio.write32(gicd_base + GICD_CTLR, 0);
     mmio.write32(gicd_base + GICD_CTLR, 1);
