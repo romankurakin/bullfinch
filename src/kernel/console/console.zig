@@ -16,14 +16,18 @@ const backend = switch (builtin.cpu.arch) {
 
 const config = @import("board").config;
 
-var uart_base: usize = if (@hasDecl(config, "UART_PHYS")) config.UART_PHYS else 0;
+var uart_base: usize = switch (builtin.cpu.arch) {
+    .aarch64 => config.UART_PHYS,
+    .riscv64 => 0,
+    else => unreachable,
+};
 
 /// Initialize console output.
 pub fn init() void {
-    if (builtin.cpu.arch == .aarch64) {
-        backend.initDefault(uart_base);
-    } else {
-        backend.init();
+    switch (builtin.cpu.arch) {
+        .aarch64 => backend.initDefault(uart_base),
+        .riscv64 => backend.init(),
+        else => unreachable,
     }
 }
 
@@ -34,10 +38,10 @@ pub fn setBase(addr: usize) void {
 
 /// Print string to console.
 pub fn print(s: []const u8) void {
-    if (builtin.cpu.arch == .aarch64) {
-        backend.print(uart_base, s);
-    } else {
-        backend.print(s);
+    switch (builtin.cpu.arch) {
+        .aarch64 => backend.print(uart_base, s),
+        .riscv64 => backend.print(s),
+        else => unreachable,
     }
 }
 

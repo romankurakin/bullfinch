@@ -16,7 +16,9 @@
 //!
 //! See ARM Architecture Reference Manual, Chapter D13 (The Generic Timer).
 
+const fdt = @import("../../fdt/fdt.zig");
 const gic = @import("gic.zig");
+const hal = @import("../../hal/hal.zig");
 
 /// Timer frequency in Hz. Read from CNTFRQ_EL0 register.
 pub var frequency: u64 = 0;
@@ -60,7 +62,14 @@ inline fn enableIrq() void {
 
 /// Enable timer interrupts and global interrupt delivery.
 pub fn start() void {
-    gic.init();
+    const dtb = hal.getDtb() orelse @panic("No DTB for GIC discovery");
+    const gic_info = fdt.getGicInfo(dtb) orelse @panic("GIC not found in DTB");
+    gic.init(.{
+        .version = gic_info.version,
+        .gicd_base = gic_info.gicd_base,
+        .gicc_base = gic_info.gicc_base,
+        .gicr_base = gic_info.gicr_base,
+    });
     gic.enableTimerInterrupt();
     enableTimer();
     enableIrq();
