@@ -14,7 +14,6 @@
 //!
 //! See ARM GIC Architecture Specification, Chapter 12 (GIC Programmer's Model).
 
-const board = @import("board");
 const mmio = @import("mmio.zig");
 const mmu = @import("mmu.zig");
 
@@ -36,9 +35,9 @@ var gicd_base: usize = 0;
 var gicr_base: usize = 0;
 
 /// Initialize GICv3 distributor and redistributor.
-pub fn init() void {
-    gicd_base = mmu.physToVirt(board.config.GICD_BASE);
-    gicr_base = mmu.physToVirt(board.config.GICR_BASE);
+pub fn init(gicd_phys: u64, gicr_phys: u64) void {
+    gicd_base = mmu.physToVirt(@intCast(gicd_phys));
+    gicr_base = mmu.physToVirt(@intCast(gicr_phys));
 
     const ctlr = mmio.read32(gicd_base + GICD_CTLR);
     mmio.write32(gicd_base + GICD_CTLR, ctlr | GICD_CTLR_ARE_NS | GICD_CTLR_ENABLE_G1NS);

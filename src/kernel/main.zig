@@ -13,7 +13,7 @@ const hal = @import("hal/hal.zig");
 
 comptime {
     _ = hal.boot; // Force boot module inclusion for entry point
-    _ = @import("c_compat.zig"); // C stdlib shim for libfdt
+    _ = @import("c_compat.zig"); // C stdlib shim
 }
 
 const arch_name = switch (builtin.target.cpu.arch) {
@@ -21,17 +21,6 @@ const arch_name = switch (builtin.target.cpu.arch) {
     .riscv64 => "RISC-V",
     else => "Unknown",
 };
-
-/// Print memory info from Device Tree.
-fn printDtbInfo() void {
-    const dtb = hal.getDtb() orelse return;
-    const mem = fdt.getMemoryRegion(dtb) orelse return;
-    hal.console.print("RAM: ");
-    hal.console.printDec(mem.size / (1024 * 1024));
-    hal.console.print(" MB @ ");
-    hal.console.printHex(mem.base);
-    hal.console.print("\n");
-}
 
 /// Kernel main, called from boot.zig after MMU enables higher-half mapping.
 export fn kmain() noreturn {
@@ -41,7 +30,6 @@ export fn kmain() noreturn {
     hal.console.print(arch_name);
     hal.console.print(" architecture\n");
 
-    printDtbInfo();
     clock.init();
     hal.console.print("Clock initialized\n");
 

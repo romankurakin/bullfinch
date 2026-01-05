@@ -108,11 +108,14 @@ pub fn getDtb() ?fdt.Fdt {
 pub fn virtInit() void {
     console.print("Running in higher-half virtual address space\n");
 
-    // Reinit trap vector to virtual address
+    // Reinit trap vector to virtual address, must happen before removing identity mapping
     arch.trap.init();
 
-    if (@hasDecl(board.config, "UART_PHYS")) {
-        console.setBase(arch.mmu.physToVirt(board.config.UART_PHYS));
+    // Switch console to virtual address
+    switch (builtin.cpu.arch) {
+        .aarch64 => console.setBase(arch.mmu.physToVirt(board.config.UART_PHYS)),
+        .riscv64 => {},
+        else => unreachable,
     }
 
     arch.mmu.removeIdentityMapping();
