@@ -34,7 +34,6 @@ const arch = switch (builtin.cpu.arch) {
 };
 
 pub const boot = arch.boot;
-pub const config = board.config;
 pub const mmu = arch.mmu;
 pub const timer = @import("timer.zig");
 pub const trap = arch.trap;
@@ -61,8 +60,8 @@ comptime {
         @compileError("PAGE_SIZE must be a power of 2");
     if (std.math.log2_int(usize, PAGE_SIZE) != PAGE_SHIFT)
         @compileError("PAGE_SHIFT doesn't match PAGE_SIZE");
-    if (@hasDecl(board.config, "KERNEL_PHYS_LOAD")) {
-        if (board.config.KERNEL_PHYS_LOAD & (PAGE_SIZE - 1) != 0)
+    if (@hasDecl(board, "KERNEL_PHYS_LOAD")) {
+        if (board.KERNEL_PHYS_LOAD & (PAGE_SIZE - 1) != 0)
             @compileError("KERNEL_PHYS_LOAD must be page-aligned");
     }
 
@@ -86,7 +85,7 @@ pub export fn physInit() void {
     console.init();
     console.print("\nHardware initialized\n");
 
-    arch.mmu.init(board.config.KERNEL_PHYS_LOAD);
+    arch.mmu.init(board.KERNEL_PHYS_LOAD);
     console.print("MMU enabled\n");
 
     arch.trap.init();
@@ -113,7 +112,7 @@ pub fn virtInit() void {
 
     // Switch console to virtual address
     switch (builtin.cpu.arch) {
-        .aarch64 => console.setBase(arch.mmu.physToVirt(board.config.UART_PHYS)),
+        .aarch64 => console.setBase(arch.mmu.physToVirt(board.UART_PHYS)),
         .riscv64 => {},
         else => unreachable,
     }

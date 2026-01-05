@@ -22,6 +22,27 @@ const arch_name = switch (builtin.target.cpu.arch) {
     else => "Unknown",
 };
 
+fn printDtbInfo() void {
+    const dtb = hal.getDtb() orelse return;
+
+    hal.console.print("CPUs: ");
+    hal.console.printDec(fdt.getCpuCount(dtb));
+    hal.console.print("\n");
+
+    hal.console.print("RAM: ");
+    hal.console.printDec(fdt.getTotalMemory(dtb) / (1024 * 1024));
+    hal.console.print(" MB\n");
+
+    var reserved = fdt.getReservedRegions(dtb);
+    while (reserved.next()) |region| {
+        hal.console.print("Reserved: ");
+        hal.console.printHex(region.base);
+        hal.console.print(" - ");
+        hal.console.printHex(region.base + region.size);
+        hal.console.print("\n");
+    }
+}
+
 /// Kernel main, called from boot.zig after MMU enables higher-half mapping.
 export fn kmain() noreturn {
     hal.virtInit();
@@ -29,6 +50,8 @@ export fn kmain() noreturn {
     hal.console.print("Welcome to Bullfinch on ");
     hal.console.print(arch_name);
     hal.console.print(" architecture\n");
+
+    printDtbInfo();
 
     clock.init();
     hal.console.print("Clock initialized\n");

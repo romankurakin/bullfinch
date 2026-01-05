@@ -4,8 +4,8 @@ const board = @import("board");
 
 // Validate required board config
 comptime {
-    if (!@hasDecl(board.config, "KERNEL_PHYS_LOAD"))
-        @compileError("RISC-V board config must define KERNEL_PHYS_LOAD");
+    if (!@hasDecl(board, "KERNEL_PHYS_LOAD"))
+        @compileError("RISC-V board must define KERNEL_PHYS_LOAD");
 }
 
 pub const boot = @import("boot.zig");

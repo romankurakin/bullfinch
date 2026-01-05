@@ -14,10 +14,10 @@ const backend = switch (builtin.cpu.arch) {
     else => @compileError("Unsupported architecture"),
 };
 
-const config = @import("board").config;
+const board = @import("board");
 
 var uart_base: usize = switch (builtin.cpu.arch) {
-    .aarch64 => config.UART_PHYS,
+    .aarch64 => board.UART_PHYS,
     .riscv64 => 0,
     else => unreachable,
 };

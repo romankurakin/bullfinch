@@ -4,10 +4,10 @@ const board = @import("board");
 
 // Validate required board config
 comptime {
-    if (!@hasDecl(board.config, "UART_PHYS"))
-        @compileError("ARM64 board config must define UART_PHYS");
-    if (!@hasDecl(board.config, "KERNEL_PHYS_LOAD"))
-        @compileError("ARM64 board config must define KERNEL_PHYS_LOAD");
+    if (!@hasDecl(board, "UART_PHYS"))
+        @compileError("ARM64 board must define UART_PHYS");
+    if (!@hasDecl(board, "KERNEL_PHYS_LOAD"))
+        @compileError("ARM64 board must define KERNEL_PHYS_LOAD");
 }
 
 pub const boot = @import("boot.zig");
