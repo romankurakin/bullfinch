@@ -23,32 +23,25 @@ const arch_name = switch (builtin.target.cpu.arch) {
 };
 
 /// Print memory info from Device Tree.
-fn printDtbInfo(dtb_phys: usize) void {
-    if (dtb_phys == 0) return;
-
-    const dtb: fdt.Fdt = @ptrFromInt(hal.physToVirt(dtb_phys));
-    fdt.checkHeader(dtb) catch return;
-
-    if (fdt.getMemoryRegion(dtb)) |mem| {
-        hal.console.print("RAM: ");
-        hal.console.printDec(mem.size / (1024 * 1024));
-        hal.console.print(" MB @ ");
-        hal.console.printHex(mem.base);
-        hal.console.print("\n");
-    }
+fn printDtbInfo() void {
+    const dtb = hal.getDtb() orelse return;
+    const mem = fdt.getMemoryRegion(dtb) orelse return;
+    hal.console.print("RAM: ");
+    hal.console.printDec(mem.size / (1024 * 1024));
+    hal.console.print(" MB @ ");
+    hal.console.printHex(mem.base);
+    hal.console.print("\n");
 }
 
 /// Kernel main, called from boot.zig after MMU enables higher-half mapping.
 export fn kmain() noreturn {
-    hal.bootVirtual();
+    hal.virtInit();
 
     hal.console.print("Welcome to Bullfinch on ");
     hal.console.print(arch_name);
     hal.console.print(" architecture\n");
 
-    // Print DTB info
-    printDtbInfo(hal.getDtbPtr());
-
+    printDtbInfo();
     clock.init();
     hal.console.print("Clock initialized\n");
 

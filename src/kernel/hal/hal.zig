@@ -24,6 +24,7 @@ const builtin = @import("builtin");
 const std = @import("std");
 
 const board = @import("board");
+const fdt = @import("../fdt/fdt.zig");
 pub const console = @import("../kernel.zig").console;
 
 const arch = switch (builtin.cpu.arch) {
@@ -45,12 +46,6 @@ pub const halt = arch.trap.halt;
 pub const physToVirt = arch.mmu.physToVirt;
 pub const virtToPhys = arch.mmu.virtToPhys;
 pub const waitForInterrupt = arch.trap.waitForInterrupt;
-
-/// Get DTB physical address (passed in x0/a1 by bootloader).
-/// Must be converted to virtual before use.
-pub fn getDtbPtr() usize {
-    return boot.dtb_ptr;
-}
 
 comptime {
     const virt_base = arch.mmu.KERNEL_VIRT_BASE;
@@ -101,8 +96,16 @@ pub export fn physInit() void {
 /// Kernel virtual base address, exported for boot.zig to use when jumping to higher-half.
 pub export const KERNEL_VIRT_BASE: usize = arch.mmu.KERNEL_VIRT_BASE;
 
-/// Runs at virtual addresses. Finalizes address space transition.
-pub fn bootVirtual() void {
+/// Get validated DTB handle. Returns null if DTB unavailable or invalid.
+pub fn getDtb() ?fdt.Fdt {
+    if (boot.dtb_ptr == 0) return null;
+    const dtb: fdt.Fdt = @ptrFromInt(physToVirt(boot.dtb_ptr));
+    fdt.checkHeader(dtb) catch return null;
+    return dtb;
+}
+
+/// Finalizes address space transition and initializes timer hardware.
+pub fn virtInit() void {
     console.print("Running in higher-half virtual address space\n");
 
     // Reinit trap vector to virtual address
@@ -114,4 +117,8 @@ pub fn bootVirtual() void {
 
     arch.mmu.removeIdentityMapping();
     console.print("Identity mapping removed\n");
+
+    // Initialize timer frequency (ARM64 reads register, RISC-V uses DTB)
+    const timer_freq = if (getDtb()) |dtb| fdt.getTimerFrequency(dtb) orelse 0 else 0;
+    timer.initFrequency(timer_freq);
 }

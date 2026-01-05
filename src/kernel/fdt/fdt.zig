@@ -84,3 +84,16 @@ pub fn parseReg(fdt: Fdt, offset: i32) ?Region {
         .size = std.mem.readInt(u64, reg[8..16], .big),
     };
 }
+
+/// Get timer frequency from /cpus/timebase-frequency.
+pub fn getTimerFrequency(fdt: Fdt) ?u64 {
+    const offset = pathOffset(fdt, "/cpus") orelse return null;
+    const prop = getprop(fdt, offset, "timebase-frequency") orelse return null;
+    // Property can be u32 or u64 depending on DTB
+    if (prop.len >= 8) {
+        return std.mem.readInt(u64, prop[0..8], .big);
+    } else if (prop.len >= 4) {
+        return std.mem.readInt(u32, prop[0..4], .big);
+    }
+    return null;
+}

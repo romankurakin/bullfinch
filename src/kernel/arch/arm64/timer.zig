@@ -16,11 +16,18 @@
 //!
 //! See ARM Architecture Reference Manual, Chapter D13 (The Generic Timer).
 
-const board = @import("board");
 const gic = @import("gic.zig");
 
-/// Timer frequency in Hz (from board config).
-pub const frequency: u64 = board.config.TIMER_FREQ;
+/// Timer frequency in Hz. Read from CNTFRQ_EL0 register.
+pub var frequency: u64 = 0;
+
+/// Read frequency from CNTFRQ_EL0 (set by firmware at boot).
+/// The freq parameter is ignored - ARM64 reads the register directly.
+pub fn initFrequency(_: u64) void {
+    frequency = asm volatile ("mrs %[freq], cntfrq_el0"
+        : [freq] "=r" (-> u64),
+    );
+}
 
 /// Read current counter value in ticks.
 pub inline fn now() u64 {
