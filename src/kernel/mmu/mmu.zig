@@ -1,13 +1,9 @@
-//! Common Paging Types.
+//! Common MMU Types.
 //!
-//! Shared definitions for ARM64 and RISC-V MMU code. Both architectures use 4KB
-//! pages and 512-entry page tables (4KB = 512 × 8-byte PTEs). The actual page
-//! table format and TLB operations are architecture-specific.
+//! Shared types for page table operations. Architecture-specific MMU
+//! implementations are in arch/*/mmu.zig.
 
-/// Page size constants (4KB pages on both ARM64 and RISC-V).
-pub const PAGE_SIZE: usize = 4096;
-pub const PAGE_SHIFT: u6 = 12;
-pub const ENTRIES_PER_TABLE: usize = 512;
+const std = @import("std");
 
 /// Permission flags for page mapping.
 /// All valid mappings are implicitly readable. Global bit is set automatically.
@@ -29,6 +25,8 @@ pub const MapError = error{
     AlreadyMapped,
     /// Attempted to map over a superpage (1GB/2MB block)
     SuperpageConflict,
+    /// Page allocator returned null (out of memory)
+    OutOfMemory,
 };
 
 /// Errors that can occur during page unmapping operations.
@@ -40,14 +38,3 @@ pub const UnmapError = error{
     /// Cannot unmap individual page from superpage
     SuperpageConflict,
 };
-
-test "PAGE_SIZE is 4KB" {
-    const std = @import("std");
-    try std.testing.expectEqual(@as(usize, 4096), PAGE_SIZE);
-    try std.testing.expectEqual(@as(usize, 1) << PAGE_SHIFT, PAGE_SIZE);
-}
-
-test "ENTRIES_PER_TABLE fits one page" {
-    const std = @import("std");
-    try std.testing.expectEqual(PAGE_SIZE, ENTRIES_PER_TABLE * 8);
-}

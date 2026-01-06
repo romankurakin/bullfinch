@@ -9,16 +9,21 @@
 //! For a bare-metal kernel, physical is the right choice.
 //!
 //! Key registers:
-//!   CNTFRQ_EL0   - Counter frequency in Hz (read-only, set by firmware)
-//!   CNTPCT_EL0   - Current counter value (read-only, monotonically increasing)
-//!   CNTP_CVAL_EL0 - Comparator value (interrupt fires when counter >= this)
-//!   CNTP_CTL_EL0  - Timer control (ENABLE, IMASK, ISTATUS bits)
+//! - CNTFRQ_EL0: Counter frequency in Hz (read-only, set by firmware)
+//! - CNTPCT_EL0: Current counter value (read-only, monotonically increasing)
+//! - CNTP_CVAL_EL0: Comparator value (interrupt fires when counter >= this)
+//! - CNTP_CTL_EL0: Timer control (ENABLE, IMASK, ISTATUS bits)
 //!
 //! See ARM Architecture Reference Manual, Chapter D13 (The Generic Timer).
 
 const fdt = @import("../../fdt/fdt.zig");
 const gic = @import("gic.zig");
 const hal = @import("../../hal/hal.zig");
+
+const panic_msg = struct {
+    const NO_DTB = "TIMER: no DTB for GIC discovery";
+    const GIC_NOT_FOUND = "TIMER: GIC not found in DTB";
+};
 
 /// Timer frequency in Hz. Read from CNTFRQ_EL0 register.
 pub var frequency: u64 = 0;
@@ -62,8 +67,8 @@ inline fn enableIrq() void {
 
 /// Enable timer interrupts and global interrupt delivery.
 pub fn start() void {
-    const dtb = hal.getDtb() orelse @panic("No DTB for GIC discovery");
-    const gic_info = fdt.getGicInfo(dtb) orelse @panic("GIC not found in DTB");
+    const dtb = hal.getDtb() orelse @panic(panic_msg.NO_DTB);
+    const gic_info = fdt.getGicInfo(dtb) orelse @panic(panic_msg.GIC_NOT_FOUND);
     gic.init(.{
         .version = gic_info.version,
         .gicd_base = gic_info.gicd_base,

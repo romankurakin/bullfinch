@@ -5,13 +5,16 @@
 //! and time accounting. Without ticks, a CPU-bound process could run forever.
 //!
 //! We use a 100 Hz tick rate (10ms per tick). Each tick:
-//!   1. Increment the tick counter
-//!   2. Schedule the next timer deadline (absolute, not relative, to prevent drift)
-//!   3. Call the scheduler hook for preemption (once scheduling is implemented)
+//! 1. Increment the tick counter
+//! 2. Schedule the next timer deadline (absolute, not relative, to prevent drift)
+//! 3. Call the scheduler hook for preemption (once scheduling is implemented)
 //!
 //! Monotonic time combines ticks with the hardware counter for sub-tick precision.
 //!
 //! See OSDI3 Section 2.8 (The Clock Task) and Zircon clock documentation.
+//!
+//! TODO(smp): tick_count needs atomic access or per-CPU counters
+//! TODO(smp): next_tick/scheduler_tick need protection if modified from multiple cores
 
 const hal = @import("../hal/hal.zig");
 const kernel = @import("../kernel.zig");

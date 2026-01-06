@@ -5,8 +5,8 @@
 //! "exceptions" but we use "trap" to match RISC-V and general OS terminology.
 //!
 //! The vector table has 16 entries organized as 4 exception types × 4 sources:
-//!   ypes:   Synchronous (faults, syscalls), IRQ, FIQ, SError
-//!   Sources: Current EL with SP0, Current EL with SPx, Lower EL AArch64, Lower EL AArch32
+//! - Types: Synchronous (faults, syscalls), IRQ, FIQ, SError
+//! - Sources: Current EL with SP0, Current EL with SPx, Lower EL AArch64, Lower EL AArch32
 //!
 //! Each entry is 128 bytes (32 instructions), and the table must be 2KB aligned.
 //! Hardware automatically saves return address to ELR_EL1, status to SPSR_EL1, and
@@ -17,17 +17,22 @@
 const gic = @import("gic.zig");
 const kernel = @import("../../kernel.zig");
 
+const panic_msg = struct {
+    const UNHANDLED = "TRAP: unhandled";
+    const UNHANDLED_IRQ = "TRAP: unhandled interrupt";
+};
+
 const print = kernel.console.print;
 
 /// Saved register context during trap. Layout must match assembly save/restore order.
 /// ARM calling convention: x0-x7 arguments, x19-x28 callee-saved, x29 frame pointer, x30 link register.
 pub const TrapContext = extern struct {
     regs: [31]u64, // x0-x30
-    sp: u64, // Stack pointer at time of exception
-    elr: u64, // Exception Link Register (return address)
-    spsr: u64, // Saved Program Status Register
-    esr: u64, // Exception Syndrome Register (cause)
-    far: u64, // Fault Address Register (for memory aborts)
+    sp: u64, // Stack pointer at exception
+    elr: u64, // Exception link register (return address)
+    spsr: u64, // Saved program status register
+    esr: u64, // Exception syndrome register (cause)
+    far: u64, // Fault address register
 
     pub const FRAME_SIZE = @sizeOf(TrapContext);
 
@@ -156,21 +161,16 @@ export fn trap_vectors() align(VBAR_ALIGNMENT) linksection(".vectors") callconv(
         \\ .balign 128
         \\ b trapEntry      // 0x580: SError
         \\ .balign 128
-        // Lower EL using AArch32 (0x600 - 0x7FF) - not supported, panic
-        \\ b aarch32Unsupported  // 0x600: Synchronous (AArch32 unsupported)
+        // Lower EL using AArch32 (0x600 - 0x7FF) - not supported, use generic handler
+        \\ b trapEntry      // 0x600: Synchronous
         \\ .balign 128
-        \\ b aarch32Unsupported  // 0x680: IRQ (AArch32 unsupported)
+        \\ b trapEntry      // 0x680: IRQ
         \\ .balign 128
-        \\ b aarch32Unsupported  // 0x700: FIQ (AArch32 unsupported)
+        \\ b trapEntry      // 0x700: FIQ
         \\ .balign 128
-        \\ b aarch32Unsupported  // 0x780: SError (AArch32 unsupported)
+        \\ b trapEntry      // 0x780: SError
         \\ .balign 128
     );
-}
-
-/// Called when an AArch32 exception occurs - we don't support 32-bit mode.
-export fn aarch32Unsupported() noreturn {
-    @panic("AArch32 mode not supported");
 }
 
 /// Raw trap entry point. Saves all registers and calls Zig handler.
@@ -310,7 +310,7 @@ export fn handleIrq() void {
 
     switch (intid) {
         TIMER_PPI => kernel.clock.handleTimerIrq(),
-        else => @panic("Unhandled interrupt"),
+        else => @panic(panic_msg.UNHANDLED_IRQ),
     }
 
     gic.endOfInterrupt(intid);
@@ -327,7 +327,7 @@ export fn handleTrap(ctx: *TrapContext) void {
 
     // For now, all synchronous traps are fatal
     // Later: handle page faults, syscalls, etc.
-    @panic("Unhandled trap");
+    @panic(panic_msg.UNHANDLED);
 }
 
 /// Print trap information and register dump for debugging.
@@ -410,7 +410,7 @@ pub inline fn disableInterrupts() void {
     asm volatile ("msr daifset, #0xF");
 }
 
-test "TrapContext size is correct" {
+test "TrapContext size and layout" {
     const std = @import("std");
     try std.testing.expectEqual(@as(usize, 288), TrapContext.FRAME_SIZE);
 }

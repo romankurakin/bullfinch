@@ -9,6 +9,13 @@
 
 const mmio = @import("mmio.zig");
 
+const panic_msg = struct {
+    const NOT_ENABLED = "UART: not enabled";
+    const BAUD_ZERO = "UART: baud must be non-zero";
+    const IBRD_OUT_OF_RANGE = "UART: IBRD out of range 1-65535";
+    const FBRD_OUT_OF_RANGE = "UART: FBRD out of range 0-63";
+};
+
 // PL011 register offsets
 const CR = 0x30; // Control Register
 const DR = 0x00; // Data Register
@@ -38,7 +45,7 @@ inline fn waitTxReady(base: usize) void {
 /// Compute PL011 baud rate divisors (16x oversampling: divisor = clk / (16 * baud)).
 /// Returns IBRD (1-65535) and FBRD (0-63, 6-bit fraction). Uses u64 to prevent overflow.
 pub fn computeDivisors(uartclk_hz: u32, baud: u32) struct { ibrd: u32, fbrd: u32 } {
-    if (baud == 0) @panic("baud must be non-zero");
+    if (baud == 0) @panic(panic_msg.BAUD_ZERO);
 
     const denom = @as(u64, 16) * @as(u64, baud);
     const clk = @as(u64, uartclk_hz);
@@ -46,8 +53,8 @@ pub fn computeDivisors(uartclk_hz: u32, baud: u32) struct { ibrd: u32, fbrd: u32
     const remainder = clk - denom * ibrd;
     const fbrd = (remainder * 64 + denom / 2) / denom; // Round fractional part
 
-    if (ibrd < 1 or ibrd > 65535) @panic("IBRD out of valid range 1-65535");
-    if (fbrd > 63) @panic("FBRD out of valid range 0-63");
+    if (ibrd < 1 or ibrd > 65535) @panic(panic_msg.IBRD_OUT_OF_RANGE);
+    if (fbrd > 63) @panic(panic_msg.FBRD_OUT_OF_RANGE);
 
     return .{ .ibrd = @intCast(ibrd), .fbrd = @intCast(fbrd) };
 }
@@ -74,7 +81,7 @@ pub fn initDefault(base: usize) void {
 /// Print string to UART.
 pub fn print(base: usize, s: []const u8) void {
     if ((mmio.read32(base + CR) & CR_ENABLED) != CR_ENABLED) {
-        @panic("UART not enabled");
+        @panic(panic_msg.NOT_ENABLED);
     }
 
     for (s) |byte| {

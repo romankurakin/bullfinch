@@ -15,9 +15,10 @@
 //! See ARM Architecture Reference Manual, Chapter D8 (The AArch64 Virtual Memory
 //! System Architecture).
 //!
-//! TODO: Use ASID for per-process TLB management. Currently ASID=0 for all mappings.
-//! When implementing per-task virtual memory, assign unique ASIDs and use flushAsid()
-//! for efficient TLB invalidation without flushing global kernel entries.
+//! SMP: Boot functions run on primary core only. mapPage/unmapPage need external locking.
+//!
+//! TODO(smp): Implement per-CPU page table locks
+//! TODO(smp): Use ASID for per-process TLB management (currently ASID=0)
 
 const builtin = @import("builtin");
 const std = @import("std");
@@ -26,9 +27,9 @@ const kernel = @import("../../kernel.zig");
 
 const is_aarch64 = builtin.cpu.arch == .aarch64;
 
-pub const PAGE_SIZE = kernel.mmu.PAGE_SIZE;
-pub const PAGE_SHIFT = kernel.mmu.PAGE_SHIFT;
-pub const ENTRIES_PER_TABLE = kernel.mmu.ENTRIES_PER_TABLE;
+pub const PAGE_SIZE = kernel.memory.PAGE_SIZE;
+pub const PAGE_SHIFT = kernel.memory.PAGE_SHIFT;
+pub const ENTRIES_PER_TABLE = kernel.memory.ENTRIES_PER_TABLE;
 pub const PageFlags = kernel.mmu.PageFlags;
 pub const MapError = kernel.mmu.MapError;
 pub const UnmapError = kernel.mmu.UnmapError;
@@ -36,11 +37,12 @@ pub const UnmapError = kernel.mmu.UnmapError;
 /// Kernel virtual base address (39-bit VA upper half, TTBR1 region).
 /// Physical addresses are mapped to virtual = physical + KERNEL_VIRT_BASE.
 /// With T1SZ=25 (39-bit VA), TTBR1 handles addresses where bits 63:39 are all 1s.
-/// This means the valid TTBR1 range starts at 0xFFFF_FF80_0000_0000.
 pub const KERNEL_VIRT_BASE: usize = 0xFFFF_FF80_0000_0000;
 
-const BLOCK_1GB_MASK: usize = (1 << 30) - 1;
-const BLOCK_2MB_MASK: usize = (1 << 21) - 1;
+const BLOCK_1GB_SIZE: usize = 1 << 30;
+const BLOCK_1GB_MASK: usize = BLOCK_1GB_SIZE - 1;
+const BLOCK_2MB_SIZE: usize = 1 << 21;
+const BLOCK_2MB_MASK: usize = BLOCK_2MB_SIZE - 1;
 
 /// Convert physical address to kernel virtual address.
 pub inline fn physToVirt(paddr: usize) usize {
@@ -52,6 +54,7 @@ pub inline fn virtToPhys(vaddr: usize) usize {
     return vaddr -% KERNEL_VIRT_BASE;
 }
 
+/// Memory type for MAIR_EL1 indexing in PTEs.
 pub const MemAttr = enum(u3) {
     device_nGnRnE = 0,
     device_nGnRE = 1,
@@ -83,16 +86,16 @@ pub const Pte = packed struct(u64) {
     type_bit: bool = false, // 0=block, 1=table/page
     attr_idx: u3 = 0,
     ns: bool = false,
-    ap1: bool = false, // user access
-    ap2: bool = false, // read-only
+    ap1: bool = false, // User access
+    ap2: bool = false, // Read-only
     sh: Shareability = .non_shareable,
-    af: bool = false, // access flag
-    ng: bool = false, // non-global (per-ASID)
+    af: bool = false, // Access flag
+    ng: bool = false, // Non-global (per-ASID)
     output_addr: u36 = 0,
     reserved1: u4 = 0,
     cont: bool = false,
-    pxn: bool = false, // privileged execute never
-    uxn: bool = false, // user execute never
+    pxn: bool = false, // Privileged execute never
+    uxn: bool = false, // User execute never
     sw_bits: u4 = 0,
     reserved2: u5 = 0,
 
@@ -102,10 +105,12 @@ pub const Pte = packed struct(u64) {
         return self.valid;
     }
 
+    /// Check if this is a table entry (pointer to next level).
     pub inline fn isTable(self: Pte) bool {
         return self.valid and self.type_bit;
     }
 
+    /// Check if this is a block entry (1GB or 2MB mapping).
     pub inline fn isBlock(self: Pte) bool {
         return self.valid and !self.type_bit;
     }
@@ -114,12 +119,12 @@ pub const Pte = packed struct(u64) {
         return @as(usize, self.output_addr) << PAGE_SHIFT;
     }
 
+    /// Create table entry pointing to next level page table.
     pub fn table(next_table_phys: usize) Pte {
         return .{ .valid = true, .type_bit = true, .output_addr = @truncate(next_table_phys >> PAGE_SHIFT) };
     }
 
     /// Create kernel block entry (1GB or 2MB). All valid mappings are implicitly readable.
-    /// ARM64 AP bits only distinguish RW vs RO - no write-only pages possible.
     pub fn kernelBlock(phys_addr: usize, write: bool, exec: bool) Pte {
         return .{
             .valid = true,
@@ -160,8 +165,7 @@ pub const Pte = packed struct(u64) {
         };
     }
 
-    /// Create user page entry (4KB). All valid mappings are implicitly readable.
-    /// Sets non-global bit for per-ASID TLB invalidation.
+    /// Create user page entry (4KB). Sets non-global bit for per-ASID TLB invalidation.
     pub fn userPage(phys_addr: usize, write: bool, exec: bool) Pte {
         return .{
             .valid = true,
@@ -183,6 +187,7 @@ comptime {
     if (@sizeOf(Pte) != 8) @compileError("Pte must be 8 bytes");
 }
 
+/// Page table containing 512 entries (one 4KB page).
 pub const PageTable = struct {
     entries: [ENTRIES_PER_TABLE]Pte,
 
@@ -205,9 +210,9 @@ comptime {
 /// TTBR0 handles addresses 0x0000_0000_0000_0000 to 0x0000_007F_FFFF_FFFF (bits 63:39 = 0).
 /// TTBR1 handles addresses 0xFFFF_FF80_0000_0000 to 0xFFFF_FFFF_FFFF_FFFF (bits 63:39 = 1).
 pub const VirtAddr = struct {
-    l1: u9, // bits 38:30
-    l2: u9, // bits 29:21
-    l3: u9, // bits 20:12
+    l1: u9, // Bits 38:30
+    l2: u9, // Bits 29:21
+    l3: u9, // Bits 20:12
     offset: u12,
 
     pub inline fn parse(vaddr: usize) VirtAddr {
@@ -225,7 +230,6 @@ pub const VirtAddr = struct {
     }
 
     /// Check if address is valid for TTBR1 (kernel space, high addresses).
-    /// With T1SZ=25, TTBR1 handles addresses where bits 63:39 are all 1s.
     pub inline fn isKernel(vaddr: usize) bool {
         return (vaddr & KERNEL_VIRT_BASE) == KERNEL_VIRT_BASE;
     }
@@ -237,18 +241,15 @@ pub const VirtAddr = struct {
 };
 
 pub const Tcr = struct {
-    /// TCR_EL1: T0SZ=25 (39-bit VA), 4KB granule, both TTBR0 and TTBR1 enabled
-    /// TTBR0 for lower addresses (identity mapping during boot)
-    /// TTBR1 for upper addresses (kernel higher-half)
+    /// TCR_EL1: T0SZ=25 (39-bit VA), 4KB granule, both TTBR0 and TTBR1 enabled.
     pub fn build() u64 {
         var tcr: u64 = 0;
         tcr |= 25; // T0SZ - 39-bit VA for TTBR0
         tcr |= (0b01 << 8); // IRGN0 write-back
         tcr |= (0b01 << 10); // ORGN0 write-back
         tcr |= (0b10 << 12); // SH0 inner shareable
-        tcr |= (0b00 << 14); // TG0 4KB granule (explicit, 0b00 = 4KB)
+        tcr |= (0b00 << 14); // TG0 4KB granule
         tcr |= (25 << 16); // T1SZ - 39-bit VA for TTBR1
-        // EPD1 = 0 (bit 23 not set) - TTBR1 enabled for higher-half kernel
         tcr |= (0b01 << 24); // IRGN1 write-back
         tcr |= (0b01 << 26); // ORGN1 write-back
         tcr |= (0b10 << 28); // SH1 inner shareable
@@ -274,10 +275,25 @@ pub const Tcr = struct {
     }
 };
 
+const Sctlr = struct {
+    fn enableMmu() void {
+        var sctlr: u64 = asm volatile ("mrs %[ret], sctlr_el1"
+            : [ret] "=r" (-> u64),
+        );
+        sctlr |= 1;
+        asm volatile ("msr sctlr_el1, %[val]"
+            :
+            : [val] "r" (sctlr),
+        );
+        instructionBarrier();
+    }
+};
+
 /// Data barrier ensures stores complete before TLB invalidation.
 inline fn storeBarrier() void {
     if (is_aarch64) asm volatile ("dsb ishst");
 }
+
 inline fn fullBarrier() void {
     if (is_aarch64) asm volatile ("dsb ish");
 }
@@ -295,8 +311,11 @@ inline fn tlbFlushLocal() void {
     if (is_aarch64) asm volatile ("tlbi vmalle1");
 }
 
+// TODO(smp): After secondary cores are online, always use broadcast (flushAll).
+// During boot, use flushLocal() since secondary cores aren't initialized.
 pub const Tlb = struct {
-    /// Invalidate all translation lookaside buffer entries (broadcast to inner shareable domain).
+    /// Invalidate all TLB entries (broadcasts to inner shareable domain).
+    /// Use after SMP init when all cores are running.
     pub inline fn flushAll() void {
         storeBarrier();
         tlbFlushAll();
@@ -304,7 +323,7 @@ pub const Tlb = struct {
         instructionBarrier();
     }
 
-    /// Invalidate cached translation for a specific virtual address.
+    /// Invalidate cached translation for a specific virtual address (broadcasts).
     pub inline fn flushAddr(vaddr: usize) void {
         const va_operand = (vaddr >> 12) & 0xFFFFFFFFFFF;
         storeBarrier();
@@ -316,7 +335,17 @@ pub const Tlb = struct {
         instructionBarrier();
     }
 
+    /// Invalidate TLB on this core only (no broadcast).
+    /// Use during boot when secondary cores aren't initialized.
+    pub inline fn flushLocal() void {
+        storeBarrier();
+        tlbFlushLocal();
+        fullBarrier();
+        instructionBarrier();
+    }
+
     /// Invalidate all cached translations for a specific address space.
+    /// TODO(smp): Use this for efficient process teardown with ASID.
     pub fn flushAsid(asid: u16) void {
         const operand = @as(u64, asid) << 48;
         storeBarrier();
@@ -330,7 +359,6 @@ pub const Tlb = struct {
 
     /// Invalidate cached translation for a specific virtual address and address space.
     pub fn flushAddrAsid(vaddr: usize, asid: u16) void {
-        // VAE1IS operand: bits 63:48 = ASID, bits 43:0 = VA[55:12]
         const va_bits = (vaddr >> 12) & 0xFFFFFFFFFFF;
         const operand = (@as(u64, asid) << 48) | va_bits;
         storeBarrier();
@@ -342,6 +370,9 @@ pub const Tlb = struct {
         instructionBarrier();
     }
 };
+
+// TODO(smp): These functions modify page tables and need external locking.
+// Caller must hold appropriate lock before calling mapPage/unmapPage.
 
 /// Walk page tables for a virtual address and return pointer to the leaf entry.
 /// Returns null if any level has an invalid entry or if a block mapping is found
@@ -356,13 +387,13 @@ pub fn walk(root: *PageTable, vaddr: usize) ?*Pte {
     if (!l1_entry.isValid()) return null;
     if (l1_entry.isBlock()) return null; // 1GB block, not page-level
 
-    // Level 2 - convert physical address to virtual for access
+    // Level 2
     const l2_table: *PageTable = @ptrFromInt(physToVirt(l1_entry.physAddr()));
     const l2_entry = &l2_table.entries[va.l2];
     if (!l2_entry.isValid()) return null;
     if (l2_entry.isBlock()) return null; // 2MB block, not page-level
 
-    // Level 3 - convert physical address to virtual for access
+    // Level 3
     const l3_table: *PageTable = @ptrFromInt(physToVirt(l2_entry.physAddr()));
     return &l3_table.entries[va.l3];
 }
@@ -370,7 +401,6 @@ pub fn walk(root: *PageTable, vaddr: usize) ?*Pte {
 /// Translate virtual address to physical address.
 /// Handles block mappings at any level as well as page mappings.
 /// Returns null if address is not mapped.
-/// Page tables are accessed via higher-half virtual addresses after MMU enable.
 pub fn translate(root: *PageTable, vaddr: usize) ?usize {
     if (!VirtAddr.isCanonical(vaddr)) return null;
 
@@ -380,34 +410,30 @@ pub fn translate(root: *PageTable, vaddr: usize) ?usize {
     const l1_entry = root.entries[va.l1];
     if (!l1_entry.isValid()) return null;
     if (l1_entry.isBlock()) {
-        // 1GB block: PA = block base + offset within 1GB
         return l1_entry.physAddr() | (vaddr & BLOCK_1GB_MASK);
     }
 
-    // Level 2 - convert physical address to virtual for access
+    // Level 2
     const l2_table: *const PageTable = @ptrFromInt(physToVirt(l1_entry.physAddr()));
     const l2_entry = l2_table.entries[va.l2];
     if (!l2_entry.isValid()) return null;
     if (l2_entry.isBlock()) {
-        // 2MB block: PA = block base + offset within 2MB
         return l2_entry.physAddr() | (vaddr & BLOCK_2MB_MASK);
     }
 
-    // Level 3 - convert physical address to virtual for access
+    // Level 3
     const l3_table: *const PageTable = @ptrFromInt(physToVirt(l2_entry.physAddr()));
     const l3_entry = l3_table.entries[va.l3];
     if (!l3_entry.isValid()) return null;
 
-    // 4KB page: PA = page base + offset within page
     return l3_entry.physAddr() | @as(usize, va.offset);
 }
 
 /// Map a 4KB page at the given virtual address.
 /// Requires all intermediate page tables (L1, L2) to already exist.
 /// Does NOT flush TLB - caller must do that after mapping.
-/// Page tables are accessed via higher-half virtual addresses after MMU enable.
+/// TODO(smp): Caller must hold page table lock.
 pub fn mapPage(root: *PageTable, vaddr: usize, paddr: usize, flags: PageFlags) MapError!void {
-    // Check alignment and canonical
     if ((vaddr & (PAGE_SIZE - 1)) != 0) return MapError.NotAligned;
     if ((paddr & (PAGE_SIZE - 1)) != 0) return MapError.NotAligned;
     if (!VirtAddr.isCanonical(vaddr)) return MapError.NotCanonical;
@@ -417,23 +443,19 @@ pub fn mapPage(root: *PageTable, vaddr: usize, paddr: usize, flags: PageFlags) M
     // Level 1 - must be a table entry
     const l1_entry = root.entries[va.l1];
     if (!l1_entry.isValid()) return MapError.TableNotPresent;
-    if (!l1_entry.isTable()) return MapError.SuperpageConflict; // 1GB block
+    if (!l1_entry.isTable()) return MapError.SuperpageConflict;
 
-    // Level 2 - must be a table entry (convert phys to virt for access)
+    // Level 2 - must be a table entry
     const l2_table: *PageTable = @ptrFromInt(physToVirt(l1_entry.physAddr()));
     const l2_entry = l2_table.entries[va.l2];
     if (!l2_entry.isValid()) return MapError.TableNotPresent;
-    if (!l2_entry.isTable()) return MapError.SuperpageConflict; // 2MB block
+    if (!l2_entry.isTable()) return MapError.SuperpageConflict;
 
-    // Level 3 - the actual page entry (convert phys to virt for access)
+    // Level 3 - the actual page entry
     const l3_table: *PageTable = @ptrFromInt(physToVirt(l2_entry.physAddr()));
     const l3_entry = &l3_table.entries[va.l3];
     if (l3_entry.isValid()) return MapError.AlreadyMapped;
 
-    // Create the page entry with store barrier to ensure visibility.
-    // On multicore systems, another core's MMU could observe the PTE via cache
-    // coherency before our store completes. DSB ISHST ensures the store is
-    // visible to inner shareable domain before we return to caller.
     if (flags.user) {
         l3_entry.* = Pte.userPage(paddr, flags.write, flags.exec);
     } else {
@@ -442,18 +464,69 @@ pub fn mapPage(root: *PageTable, vaddr: usize, paddr: usize, flags: PageFlags) M
     storeBarrier();
 }
 
+/// Map a 4KB page, allocating intermediate tables as needed.
+/// Allocator must provide zeroed pages (use page_allocator from PMM wrapper).
+/// Does NOT flush TLB - caller must do that after mapping.
+/// TODO(smp): Caller must hold page table lock.
+pub fn mapPageWithAlloc(root: *PageTable, vaddr: usize, paddr: usize, flags: PageFlags, allocator: std.mem.Allocator) MapError!void {
+    if ((vaddr & (PAGE_SIZE - 1)) != 0) return MapError.NotAligned;
+    if ((paddr & (PAGE_SIZE - 1)) != 0) return MapError.NotAligned;
+    if (!VirtAddr.isCanonical(vaddr)) return MapError.NotCanonical;
+
+    const va = VirtAddr.parse(vaddr);
+
+    // Level 1 - allocate L2 table if needed
+    var l1_entry = &root.entries[va.l1];
+    if (!l1_entry.isValid()) {
+        const l2_phys = allocPageTable(allocator) orelse return MapError.OutOfMemory;
+        l1_entry.* = Pte.table(l2_phys);
+        storeBarrier();
+    } else if (!l1_entry.isTable()) {
+        return MapError.SuperpageConflict;
+    }
+
+    // Level 2 - allocate L3 table if needed
+    const l2_table: *PageTable = @ptrFromInt(physToVirt(l1_entry.physAddr()));
+    var l2_entry = &l2_table.entries[va.l2];
+    if (!l2_entry.isValid()) {
+        const l3_phys = allocPageTable(allocator) orelse return MapError.OutOfMemory;
+        l2_entry.* = Pte.table(l3_phys);
+        storeBarrier();
+    } else if (!l2_entry.isTable()) {
+        return MapError.SuperpageConflict;
+    }
+
+    // Level 3 - the actual page entry
+    const l3_table: *PageTable = @ptrFromInt(physToVirt(l2_entry.physAddr()));
+    const l3_entry = &l3_table.entries[va.l3];
+    if (l3_entry.isValid()) return MapError.AlreadyMapped;
+
+    if (flags.user) {
+        l3_entry.* = Pte.userPage(paddr, flags.write, flags.exec);
+    } else {
+        l3_entry.* = Pte.kernelPage(paddr, flags.write, flags.exec);
+    }
+    storeBarrier();
+}
+
+/// Allocate a zeroed page table using std.mem.Allocator.
+/// Returns physical address or null on OOM.
+fn allocPageTable(allocator: std.mem.Allocator) ?usize {
+    const page = allocator.alignedAlloc(u8, PAGE_SIZE, PAGE_SIZE) catch return null;
+    @memset(page, 0);
+    return virtToPhys(@intFromPtr(page.ptr));
+}
+
 /// Unmap a 4KB page at the given virtual address.
 /// Returns the physical address that was mapped, or null if not mapped.
 /// Does NOT flush TLB - caller must do that after unmapping (allows batching).
+/// TODO(smp): Caller must hold page table lock.
 pub fn unmapPage(root: *PageTable, vaddr: usize) ?usize {
     const entry = walk(root, vaddr) orelse return null;
     if (!entry.isValid()) return null;
 
     const paddr = entry.physAddr();
     entry.* = Pte.INVALID;
-    // Ensure invalidation is visible before caller flushes TLB.
-    // Without this barrier, TLB flush could complete before the PTE write
-    // propagates, leaving a window where stale translations are possible.
     storeBarrier();
     return paddr;
 }
@@ -466,32 +539,21 @@ pub fn unmapPageAndFlush(root: *PageTable, vaddr: usize) ?usize {
     return paddr;
 }
 
-const Sctlr = struct {
-    fn enableMmu() void {
-        var sctlr: u64 = asm volatile ("mrs %[ret], sctlr_el1"
-            : [ret] "=r" (-> u64),
-        );
-        sctlr |= 1;
-        asm volatile ("msr sctlr_el1, %[val]"
-            :
-            : [val] "r" (sctlr),
-        );
-        instructionBarrier();
-    }
-};
-
 var l1_table_low: PageTable align(PAGE_SIZE) = PageTable.EMPTY;
 var l1_table_high: PageTable align(PAGE_SIZE) = PageTable.EMPTY;
 
-const KERNEL_SIZE_ESTIMATE: usize = 1 << 30;
+/// Maximum L1 index for physmap (512 entries, 0-511).
+/// With 39-bit VA (T1SZ=25), TTBR1 maps up to 512GB.
+const MAX_PHYSMAP_ENTRIES: usize = ENTRIES_PER_TABLE;
 
 var stored_kernel_phys_load: usize = 0;
+var physmap_end_gb: usize = 0;
 
 /// Set up identity + higher-half mappings using 1GB blocks, enable MMU.
-/// TTBR0 handles identity mapping for boot continuation.
-/// TTBR1 handles higher-half kernel addresses (0xFFFF_0000_xxxx_xxxx).
-/// kernel_phys_load: Physical address where kernel is loaded (from board config).
-pub fn init(kernel_phys_load: usize) void {
+/// Creates minimal mapping covering kernel and DTB. Call expandPhysmap()
+/// after reading DTB to map remaining RAM.
+/// Called from physInit() on primary core before SMP.
+pub fn init(kernel_phys_load: usize, dtb_ptr: usize) void {
     stored_kernel_phys_load = kernel_phys_load;
 
     asm volatile ("msr mair_el1, %[mair]"
@@ -503,34 +565,28 @@ pub fn init(kernel_phys_load: usize) void {
     Tcr.write(Tcr.DEFAULT);
     instructionBarrier();
 
+    // Calculate mapping to cover both kernel and DTB
     const kernel_start = kernel_phys_load;
-    // Estimate kernel end for gigapage mapping (actual end determined at runtime)
-    const kernel_end = kernel_phys_load + KERNEL_SIZE_ESTIMATE;
+    const dtb_end = if (dtb_ptr > 0) dtb_ptr + (1 << 20) else kernel_phys_load;
+    const map_end = @max(kernel_phys_load + (1 << 30), dtb_end);
     const start_gb = kernel_start >> 30;
-    const end_gb = (kernel_end + (1 << 30) - 1) >> 30;
+    const end_gb = (map_end + (1 << 30) - 1) >> 30;
+    physmap_end_gb = end_gb;
 
     // TTBR0: Identity mapping (for boot continuation after MMU enable)
-    // MMIO first - ensures it's not overwritten if kernel happens to start in first GB
-    // (e.g., on boards where KERNEL_PHYS_LOAD < 0x40000000)
-    l1_table_low.entries[0] = Pte.deviceBlock(0); // MMIO (first GB, non-executable)
+    l1_table_low.entries[0] = Pte.deviceBlock(0); // MMIO (first GB)
 
     var gb: usize = start_gb;
     while (gb < end_gb) : (gb += 1) {
-        // Skip index 0 if kernel overlaps MMIO region - MMIO takes precedence
         if (gb == 0) continue;
         l1_table_low.entries[gb] = Pte.kernelBlock(gb << 30, true, true);
     }
 
     // TTBR1: Higher-half kernel mapping
-    // ARM64 TTBR1 handles addresses where bits 63:39 are all 1s.
-    // For 39-bit VA with T1SZ=25: addresses 0xFFFF_FF80_0000_0000 to 0xFFFF_FFFF_FFFF_FFFF
-    // KERNEL_VIRT_BASE = 0xFFFF_FF80_0000_0000 is the start of the TTBR1 region.
-    // L1 index = (VA >> 30) & 0x1FF, so physical GB N maps to same L1 index
     l1_table_high.entries[0] = Pte.deviceBlock(0); // MMIO in higher-half
 
     gb = start_gb;
     while (gb < end_gb) : (gb += 1) {
-        // Skip index 0 - already set for MMIO above
         if (gb == 0) continue;
         l1_table_high.entries[gb] = Pte.kernelBlock(gb << 30, true, true);
     }
@@ -546,14 +602,30 @@ pub fn init(kernel_phys_load: usize) void {
     );
     instructionBarrier();
 
-    // Use local TLBI (vmalle1) not broadcast (alle1is) before MMU enable.
-    // Broadcast can fault on some implementations when MMU is off.
-    storeBarrier();
-    tlbFlushLocal();
-    fullBarrier();
-    instructionBarrier();
+    // Use local TLBI before MMU enable (broadcast can fault when MMU is off)
+    Tlb.flushLocal();
 
     Sctlr.enableMmu();
+}
+
+/// Expand physmap to cover all RAM. Called after DTB is readable.
+/// Uses 1GB blocks - no page allocation needed, just L1 entries.
+///
+/// BOOT-TIME ONLY: Called from virtInit() on primary core before SMP.
+pub fn expandPhysmap(ram_size: usize) void {
+    const new_end = stored_kernel_phys_load + ram_size;
+    const new_end_gb = @min((new_end + (1 << 30) - 1) >> 30, MAX_PHYSMAP_ENTRIES);
+
+    var gb = physmap_end_gb;
+    while (gb < new_end_gb) : (gb += 1) {
+        if (gb == 0) continue;
+        l1_table_high.entries[gb] = Pte.kernelBlock(gb << 30, true, true);
+    }
+
+    if (new_end_gb > physmap_end_gb) {
+        Tlb.flushLocal(); // Local only - secondary cores not running yet
+        physmap_end_gb = new_end_gb;
+    }
 }
 
 /// Disable MMU. Only safe if running from identity-mapped region.
@@ -571,30 +643,20 @@ pub fn disable() void {
 }
 
 /// Remove identity mapping after transitioning to higher-half.
-/// This clears the TTBR0 page table entries that were used during boot.
-/// Only call this after successfully running in higher-half.
 /// Improves security by preventing kernel access via low addresses.
+/// Called from virtInit() on primary core before SMP.
 pub fn removeIdentityMapping() void {
-    // Use same range as init() for consistency
-    const kernel_start = stored_kernel_phys_load;
-    const kernel_end = stored_kernel_phys_load + KERNEL_SIZE_ESTIMATE;
-    const start_gb = kernel_start >> 30;
-    const end_gb = (kernel_end + (1 << 30) - 1) >> 30;
+    const start_gb = stored_kernel_phys_load >> 30;
+    const end_gb = physmap_end_gb;
 
-    // Clear MMIO identity mapping
-    l1_table_low.entries[0] = Pte.INVALID;
+    l1_table_low.entries[0] = Pte.INVALID; // Clear MMIO identity mapping
 
-    // Clear kernel identity mappings
     var gb: usize = start_gb;
     while (gb < end_gb) : (gb += 1) {
         l1_table_low.entries[gb] = Pte.INVALID;
     }
 
-    // Ensure page table writes complete before TLB invalidation
-    storeBarrier();
-    tlbFlushLocal();
-    fullBarrier();
-    instructionBarrier();
+    Tlb.flushLocal();
 }
 
 test "Pte size and layout" {
@@ -655,23 +717,18 @@ test "VirtAddr.isUserRange for TTBR0 (39-bit VA)" {
 }
 
 test "VirtAddr.isKernel for TTBR1 addresses" {
-    // Valid TTBR1 addresses (bits 63:39 all 1s)
     try std.testing.expect(VirtAddr.isKernel(0xFFFF_FF80_0000_0000));
     try std.testing.expect(VirtAddr.isKernel(0xFFFF_FFFF_FFFF_FFFF));
     try std.testing.expect(VirtAddr.isKernel(KERNEL_VIRT_BASE));
-    // Invalid - not all high bits set
     try std.testing.expect(!VirtAddr.isKernel(0x0000_0000_0000_0000));
     try std.testing.expect(!VirtAddr.isKernel(0x0000_007F_FFFF_FFFF));
 }
 
 test "VirtAddr.isCanonical accepts both ranges" {
-    // TTBR0 range
     try std.testing.expect(VirtAddr.isCanonical(0x0000_0000_0000_0000));
     try std.testing.expect(VirtAddr.isCanonical(0x0000_007F_FFFF_FFFF));
-    // TTBR1 range
     try std.testing.expect(VirtAddr.isCanonical(0xFFFF_FF80_0000_0000));
     try std.testing.expect(VirtAddr.isCanonical(0xFFFF_FFFF_FFFF_FFFF));
-    // Invalid - hole between TTBR0 and TTBR1
     try std.testing.expect(!VirtAddr.isCanonical(0x0000_0080_0000_0000));
     try std.testing.expect(!VirtAddr.isCanonical(0x8000_0000_0000_0000));
 }
@@ -689,54 +746,39 @@ test "Tcr.DEFAULT produces valid configuration" {
 
 test "translate handles 1GB block mappings" {
     var root = PageTable.EMPTY;
-    root.entries[1] = Pte.kernelBlock(0x40000000, true, true); // 1GB at index 1
+    root.entries[1] = Pte.kernelBlock(0x40000000, true, true);
 
-    // Address in middle of block should translate correctly
     const pa = translate(&root, 0x40123456);
     try std.testing.expectEqual(@as(?usize, 0x40123456), pa);
-
-    // Unmapped address returns null
     try std.testing.expectEqual(@as(?usize, null), translate(&root, 0x80000000));
 }
 
 test "translate returns null for non-canonical addresses" {
     var root = PageTable.EMPTY;
     root.entries[1] = Pte.kernelBlock(0x40000000, true, true);
-
-    // Non-canonical address in the hole
     try std.testing.expectEqual(@as(?usize, null), translate(&root, 0x0000_0080_0000_0000));
 }
 
 test "mapPage returns NotAligned for misaligned addresses" {
     var root = PageTable.EMPTY;
-
-    // Misaligned virtual address
     try std.testing.expectError(MapError.NotAligned, mapPage(&root, 0x1001, 0x2000, .{}));
-
-    // Misaligned physical address
     try std.testing.expectError(MapError.NotAligned, mapPage(&root, 0x1000, 0x2001, .{}));
 }
 
 test "mapPage returns NotCanonical for non-canonical addresses" {
     var root = PageTable.EMPTY;
-
-    // Address in the hole between TTBR0 and TTBR1
     try std.testing.expectError(MapError.NotCanonical, mapPage(&root, 0x0000_0080_0000_0000, 0x1000, .{}));
     try std.testing.expectError(MapError.NotCanonical, mapPage(&root, 0x8000_0000_0000_0000, 0x1000, .{}));
 }
 
 test "mapPage returns SuperpageConflict for block mappings" {
     var root = PageTable.EMPTY;
-    root.entries[1] = Pte.kernelBlock(0x40000000, true, true); // 1GB block
-
-    // Trying to map a page inside a block should fail
+    root.entries[1] = Pte.kernelBlock(0x40000000, true, true);
     try std.testing.expectError(MapError.SuperpageConflict, mapPage(&root, 0x40001000, 0x80001000, .{}));
 }
 
 test "mapPage returns TableNotPresent without intermediate tables" {
     var root = PageTable.EMPTY;
-
-    // No L1 entry present
     try std.testing.expectError(MapError.TableNotPresent, mapPage(&root, 0x40001000, 0x80001000, .{}));
 }
 
@@ -748,19 +790,15 @@ test "walk returns null for unmapped address" {
 test "walk returns null for block mapping" {
     var root = PageTable.EMPTY;
     root.entries[1] = Pte.kernelBlock(0x40000000, true, true);
-
-    // Block mapping - can't walk to page level
     try std.testing.expectEqual(@as(?*Pte, null), walk(&root, 0x40001000));
 }
 
 test "physToVirt adds KERNEL_VIRT_BASE" {
-    // Physical 0x40080000 should map to virtual 0xFFFF_FF80_4008_0000
     const virt = physToVirt(0x40080000);
     try std.testing.expectEqual(@as(usize, 0xFFFF_FF80_4008_0000), virt);
 }
 
 test "virtToPhys subtracts KERNEL_VIRT_BASE" {
-    // Virtual 0xFFFF_FF80_4008_0000 should map to physical 0x40080000
     const phys = virtToPhys(0xFFFF_FF80_4008_0000);
     try std.testing.expectEqual(@as(usize, 0x40080000), phys);
 }

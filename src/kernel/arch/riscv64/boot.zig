@@ -1,10 +1,11 @@
 //! RISC-V Boot Entry Point.
 //!
 //! OpenSBI loads and jumps to us in S-mode with hart ID in a0 and DTB pointer in a1.
+//!
 //! Boot sequence:
-//!   1. Save DTB pointer, set stack, zero BSS
-//!   2. Call physInit() to init hardware, MMU, traps (returns to us)
-//!   3. Switch SP to higher-half, jump to kmain at higher-half address
+//! 1. Save DTB pointer, set stack, zero BSS
+//! 2. Call physInit() to init hardware, MMU, traps (returns to us)
+//! 3. Switch SP to higher-half, jump to kmain at higher-half address
 //!
 //! The kernel is linked at higher-half VMA but loaded at physical LMA.
 //! PC-relative addressing (la pseudo-instruction) works at any base.
@@ -17,6 +18,13 @@ extern fn kmain() noreturn;
 
 export fn _start() linksection(".text.boot") callconv(.naked) noreturn {
     asm volatile (
+    // Initialize Global Pointer (gp) register.
+    // This is critical for Release builds where global access is optimized
+        \\ .option push
+        \\ .option norelax
+        \\ la gp, __global_pointer$
+        \\ .option pop
+
         // Save DTB pointer (passed in a1 by OpenSBI) to callee-saved register
         \\ mv s0, a1
 
@@ -43,7 +51,6 @@ export fn _start() linksection(".text.boot") callconv(.naked) noreturn {
         \\ la t1, kmain
         \\ add t1, t1, t0
         \\ jr t1
-
         \\ hang:
         \\   wfi
         \\   j hang
@@ -52,3 +59,15 @@ export fn _start() linksection(".text.boot") callconv(.naked) noreturn {
 
 /// DTB pointer saved during boot, before physInit.
 pub export var dtb_ptr: usize = 0;
+
+/// Reload Global Pointer (gp) register.
+/// Must be called after switching to virtual memory to ensure gp points to
+/// the virtual address of global variables, not the physical address used during boot.
+pub fn reloadGlobalPointer() void {
+    asm volatile (
+        \\ .option push
+        \\ .option norelax
+        \\ la gp, __global_pointer$
+        \\ .option pop
+    );
+}
