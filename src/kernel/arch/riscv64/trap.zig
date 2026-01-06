@@ -5,10 +5,10 @@
 //! When a trap occurs, hardware saves state to CSRs and jumps to the address in stvec.
 //!
 //! Hardware-saved state:
-//!   sepc    - Exception program counter (return address)
-//!   sstatus - Saved status (privilege level, interrupt enable)
-//!   scause  - Cause code (bit 63 = interrupt flag, lower bits = cause)
-//!   stval   - Trap value (fault address or faulting instruction)
+//! - sepc: Exception program counter (return address)
+//! - sstatus: Saved status (privilege level, interrupt enable)
+//! - scause: Cause code (bit 63 = interrupt flag, lower bits = cause)
+//! - stval: Trap value (fault address or faulting instruction)
 //!
 //! We use Vectored mode where interrupts jump to base + 4*cause, allowing fast dispatch
 //! without reading scause. Exceptions all go to base+0.
@@ -17,17 +17,21 @@
 
 const kernel = @import("../../kernel.zig");
 
+const panic_msg = struct {
+    const UNHANDLED = "TRAP: unhandled";
+};
+
 const print = kernel.console.print;
 
 /// Saved register context during trap. Layout must match assembly save/restore order.
 /// RISC-V calling convention: a0-a7 arguments, s0-s11 callee-saved, ra return address.
 pub const TrapContext = extern struct {
-    regs: [31]u64, // x1-x31 (x0 hardwired to 0, not saved; regs[1]=x2 is modified SP)
-    sp: u64, // Original stack pointer (before trap frame allocation)
-    sepc: u64, // Supervisor Exception PC (return address)
-    sstatus: u64, // Supervisor Status (privilege, interrupt enable)
-    scause: u64, // Supervisor Cause (bit 63: interrupt, lower: code)
-    stval: u64, // Supervisor Trap Value (fault address or instruction)
+    regs: [31]u64, // x1-x31 (x0 is zero, regs[1] is modified SP)
+    sp: u64, // Original stack pointer
+    sepc: u64, // Exception PC (return address)
+    sstatus: u64, // Status (privilege, interrupt enable)
+    scause: u64, // Cause (bit 63: interrupt, lower: code)
+    stval: u64, // Trap value (fault address or instruction)
 
     pub const FRAME_SIZE = @sizeOf(TrapContext);
 
@@ -354,7 +358,7 @@ export fn timerEntry() linksection(".trap") callconv(.naked) noreturn {
 export fn handleTrap(ctx: *TrapContext) void {
     const cause = @as(TrapCause, @enumFromInt(ctx.scause));
     dumpTrap(ctx, cause);
-    @panic("Unhandled trap");
+    @panic(panic_msg.UNHANDLED);
 }
 
 /// Timer interrupt handler called from timerEntry assembly.
@@ -451,12 +455,12 @@ pub inline fn disableInterrupts() void {
     asm volatile ("csrci sstatus, 0x2");
 }
 
-test "TrapContext size is correct" {
+test "TrapContext size and layout" {
     const std = @import("std");
     try std.testing.expectEqual(@as(usize, 288), TrapContext.FRAME_SIZE);
 }
 
-test "TrapCause interrupt detection" {
+test "TrapCause.isInterrupt detects interrupt bit" {
     const std = @import("std");
     try std.testing.expect(TrapCause.isInterrupt(0x8000000000000005));
     try std.testing.expect(!TrapCause.isInterrupt(0x0000000000000005));

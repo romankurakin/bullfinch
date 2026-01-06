@@ -1,10 +1,11 @@
 //! ARM64 Boot Entry Point.
 //!
 //! Bootloader jumps here at EL1 with DTB pointer in x0 (ARM64 boot protocol).
+//!
 //! Boot sequence:
-//!   1. Save DTB pointer, set stack, enable FP/SIMD, zero BSS
-//!   2. Call physInit() to init hardware, MMU, traps (returns to us)
-//!   3. Switch SP to higher-half, jump to kmain at higher-half address
+//! 1. Save DTB pointer, set stack, enable FP/SIMD, zero BSS
+//! 2. Call physInit() to init hardware, MMU, traps (returns to us)
+//! 3. Switch SP to higher-half, jump to kmain at higher-half address
 //!
 //! The kernel is linked at higher-half VMA but loaded at physical LMA.
 //! PC-relative addressing (adrp+add) works at any base.
@@ -20,8 +21,8 @@ extern fn kmain() noreturn;
 
 export fn _start() linksection(".text.boot") callconv(.naked) noreturn {
     asm volatile (
-        // Bootloader passes DTB pointer in x0 (ARM64 boot protocol).
-        // Save it to callee-saved register before we clobber x0.
+    // Bootloader passes DTB pointer in x0 (ARM64 boot protocol).
+    // Save it to callee-saved register before we clobber x0.
         \\ mov x19, x0
 
         // Set up stack pointer (PC-relative addressing for position independence)
@@ -64,7 +65,6 @@ export fn _start() linksection(".text.boot") callconv(.naked) noreturn {
         \\ add x1, x1, :lo12:kmain
         \\ add x1, x1, x0
         \\ br x1
-
         \\ hang:
         \\   wfi
         \\   b hang

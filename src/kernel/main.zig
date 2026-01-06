@@ -2,14 +2,18 @@
 //!
 //! Control arrives from boot.zig after physInit() enables MMU and switches to
 //! higher-half addresses. We finalize the virtual address space transition,
-//! initialize clock for timer interrupts, and enter the idle loop.
+//! initialize physical memory manager and clock, then enter the idle loop.
 
 const builtin = @import("builtin");
 const std = @import("std");
 
-const clock = @import("kernel.zig").clock;
-const fdt = @import("fdt/fdt.zig");
+const kernel = @import("kernel.zig");
+const pmm = @import("pmm/pmm.zig");
 const hal = @import("hal/hal.zig");
+
+const panic_msg = struct {
+    const NO_DTB = "BOOT: no DTB - cannot discover hardware";
+};
 
 comptime {
     _ = hal.boot; // Force boot module inclusion for entry point
@@ -22,18 +26,16 @@ const arch_name = switch (builtin.target.cpu.arch) {
     else => "Unknown",
 };
 
-fn printDtbInfo() void {
-    const dtb = hal.getDtb() orelse return;
-
+fn printDtbInfo(dtb: kernel.fdt.Fdt) void {
     hal.console.print("CPUs: ");
-    hal.console.printDec(fdt.getCpuCount(dtb));
+    hal.console.printDec(kernel.fdt.getCpuCount(dtb));
     hal.console.print("\n");
 
     hal.console.print("RAM: ");
-    hal.console.printDec(fdt.getTotalMemory(dtb) / (1024 * 1024));
+    hal.console.printDec(kernel.fdt.getTotalMemory(dtb) / (1024 * 1024));
     hal.console.print(" MB\n");
 
-    var reserved = fdt.getReservedRegions(dtb);
+    var reserved = kernel.fdt.getReservedRegions(dtb);
     while (reserved.next()) |region| {
         hal.console.print("Reserved: ");
         hal.console.printHex(region.base);
@@ -51,18 +53,33 @@ export fn kmain() noreturn {
     hal.console.print(arch_name);
     hal.console.print(" architecture\n");
 
-    printDtbInfo();
+    // Get DTB once and pass to all functions
+    const dtb = hal.getDtb() orelse @panic(panic_msg.NO_DTB);
 
-    clock.init();
+    printDtbInfo(dtb);
+
+    // Initialize physical memory manager
+    pmm.init(dtb);
+    hal.console.print("PMM: ");
+    hal.console.printDec(pmm.freeCount());
+    hal.console.print("/");
+    hal.console.printDec(pmm.totalPages());
+    hal.console.print(" pages free\n");
+
+    kernel.clock.init();
     hal.console.print("Clock initialized\n");
 
     hal.console.print("Waiting for timer ticks");
     const target_ticks: u64 = 10;
-    while (clock.getTickCount() < target_ticks) {
+    while (kernel.clock.getTickCount() < target_ticks) {
         hal.waitForInterrupt();
     }
     hal.console.print(" done\n");
-    clock.printStatus();
+    hal.console.print("Clock: ");
+    hal.console.printDec(kernel.clock.getTickCount());
+    hal.console.print(" ticks\n");
+
+    kernel.debug.dumpPmmLeaks();
 
     hal.console.print("Boot complete. Halting.\n");
     hal.halt();

@@ -19,9 +19,16 @@ pub fn frequency() u64 {
     return arch_timer.frequency;
 }
 
+/// Current timer counter value in ticks.
 pub const now = arch_timer.now;
+
+/// Set next timer interrupt deadline (absolute counter value).
 pub const setDeadline = arch_timer.setDeadline;
+
+/// Enable timer interrupts.
 pub const start = arch_timer.start;
+
+/// Initialize timer frequency. ARM64 ignores parameter (reads register).
 pub const initFrequency = arch_timer.initFrequency;
 
 /// Convert ticks to nanoseconds.

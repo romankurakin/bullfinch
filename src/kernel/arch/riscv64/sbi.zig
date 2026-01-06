@@ -10,6 +10,11 @@
 //!
 //! See RISC-V SBI Specification.
 
+const panic_msg = struct {
+    const PUTCHAR_FAILED = "SBI: console putchar failed";
+    const SET_TIMER_FAILED = "SBI: set_timer failed";
+};
+
 const EXT_TIMER: usize = 0x54494D45; // "TIME"
 
 /// SBI ecall with up to 3 arguments. Returns error if SBI returns negative value.
@@ -32,7 +37,7 @@ pub fn call(eid: usize, fid: usize, arg0: usize, arg1: usize, arg2: usize) !usiz
 
 /// Write a single character to the console using legacy SBI call.
 pub fn legacyConsolePutchar(byte: u8) void {
-    _ = call(0x01, 0, byte, 0, 0) catch @panic("SBI console putchar failed");
+    _ = call(0x01, 0, byte, 0, 0) catch @panic(panic_msg.PUTCHAR_FAILED);
 }
 
 /// Check if an SBI return value indicates an error (negative when interpreted as signed).
@@ -45,7 +50,7 @@ pub fn isError(ret: usize) bool {
 /// The interrupt fires when mtime >= stime_value.
 pub fn setTimer(stime_value: u64) void {
     _ = call(EXT_TIMER, 0, stime_value, 0, 0) catch
-        @panic("SBI set_timer failed");
+        @panic(panic_msg.SET_TIMER_FAILED);
 }
 
 test "isError detects negative return values" {

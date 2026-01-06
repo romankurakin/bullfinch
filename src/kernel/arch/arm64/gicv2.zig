@@ -2,9 +2,8 @@
 //!
 //! GICv2 (used in GIC-400 on Raspberry Pi 5) is the older ARM interrupt controller.
 //! Unlike GICv3, everything is memory-mapped including the CPU interface.
-//!
-//!   GICD (Distributor) - Shared, routes interrupts to CPU interfaces.
-//!   GICC (CPU Interface) - Per-CPU, memory-mapped registers for ack/EOI.
+//! - GICD (Distributor): Shared, routes interrupts to CPU interfaces.
+//! - GICC (CPU Interface): Per-CPU, memory-mapped registers for ack/EOI.
 //!
 //! Timer interrupt (CNTP) is PPI 30. PPIs 16-31 are in ISENABLER0.
 //!
@@ -53,4 +52,3 @@ pub inline fn acknowledge() u32 {
 pub inline fn endOfInterrupt(intid: u32) void {
     mmio.write32(gicc_base + GICC_EOIR, intid);
 }
-

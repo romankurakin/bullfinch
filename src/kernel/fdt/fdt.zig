@@ -8,7 +8,6 @@ const std = @import("std");
 pub const Fdt = *const anyopaque;
 
 extern fn fdt_check_header(fdt: Fdt) c_int;
-extern fn fdt_totalsize(fdt: Fdt) u32;
 extern fn fdt_path_offset(fdt: Fdt, path: [*:0]const u8) c_int;
 extern fn fdt_getprop(fdt: Fdt, nodeoffset: c_int, name: [*:0]const u8, lenp: *c_int) ?*const anyopaque;
 extern fn fdt_first_subnode(fdt: Fdt, offset: c_int) c_int;
@@ -22,8 +21,10 @@ pub fn checkHeader(fdt: Fdt) error{InvalidHeader}!void {
 }
 
 /// Get total size of DTB blob in bytes.
-fn totalSize(fdt: Fdt) u32 {
-    return fdt_totalsize(fdt);
+pub fn getTotalSize(fdt: Fdt) u32 {
+    const ptr: [*]const u8 = @ptrCast(fdt);
+    // totalsize is at offset 4 in big-endian
+    return std.mem.readInt(u32, ptr[4..8], .big);
 }
 
 /// Find a node by path (e.g., "/memory", "/soc").
@@ -71,7 +72,7 @@ pub const Region = struct {
 
 /// Cell sizes for parsing reg properties. Each cell is 4 bytes.
 pub const CellSizes = struct {
-    addr_cells: u8, // typically 1 (32-bit) or 2 (64-bit)
+    addr_cells: u8, // Typically 1 (32-bit) or 2 (64-bit)
     size_cells: u8,
 
     fn entrySize(self: CellSizes) usize {
@@ -225,7 +226,7 @@ pub fn findByCompatible(fdt_handle: Fdt, compatible: [:0]const u8) ?i32 {
 pub const GicInfo = struct {
     version: u8, // 2 or 3
     gicd_base: u64, // Distributor (both versions)
-    gicc_base: u64, // CPU Interface (GICv2 only)
+    gicc_base: u64, // CPU interface (GICv2 only)
     gicr_base: u64, // Redistributor (GICv3 only)
 };
 
