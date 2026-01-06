@@ -3,12 +3,12 @@
    physical addresses (LMA). Boot code is position-independent until MMU
    enables the higher-half mapping. */
 
-STACK_SIZE = 16 * 1024; /* 16KB kernel stack - sufficient for early boot without heap */
+STACK_SIZE = 64 * 1024; /* 64KB kernel stack */
 
 /* Memory layout constants */
 __dram_base = 0x80000000;             /* DRAM starts here on QEMU virt */
 __kernel_phys_load = 0x80200000;      /* Kernel physical load address (above OpenSBI) */
-__kernel_virt_load = 0xFFFFFFC080200000; /* Kernel virtual load address */
+__kernel_virt_load = 0xFFFF800080200000; /* Kernel virtual load address */
 
 ENTRY(_start) /* Entry point defined in boot.zig - must be first in .text */
 
@@ -36,12 +36,17 @@ SECTIONS {
     }
 
     .data : {
+        . = ALIGN(16);
+        __global_pointer$ = . + 0x800;
+        *(.sdata*)
         *(.data*) /* Initialized writable data */
     }
 
     /* BSS: Uninitialized data, zeroed by boot code. */
     .bss : {
+        . = ALIGN(16);
         __bss_start = .;
+        *(.sbss*)
         *(.bss*)
         . = ALIGN(16);
         __bss_end = .;

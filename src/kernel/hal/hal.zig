@@ -6,16 +6,16 @@
 //!
 //! Boot is two-phase because of the address space transition:
 //!
-//!   Phase 1 (physical addresses):
-//!     - Init hardware (UART at physical address)
-//!     - Enable MMU (both identity and higher-half mappings active)
-//!     - Init trap vector (physical address, catches early crashes)
-//!     - Jump to higher-half
+//! Phase 1 (physical addresses):
+//! - Init hardware (UART at physical address)
+//! - Enable MMU (both identity and higher-half mappings active)
+//! - Init trap vector (physical address, catches early crashes)
+//! - Jump to higher-half
 //!
-//!   Phase 2 (virtual addresses):
-//!     - Reinit trap vector (now uses virtual address)
-//!     - Switch UART to virtual address
-//!     - Remove identity mapping (security: no low-address access to kernel)
+//! Phase 2 (virtual addresses):
+//! - Reinit trap vector (now uses virtual address)
+//! - Switch UART to virtual address
+//! - Remove identity mapping (security: no low-address access to kernel)
 //!
 //! This sequence allows the kernel to be linked at high addresses while booting
 //! from physical addresses where the bootloader placed us.
@@ -25,7 +25,8 @@ const std = @import("std");
 
 const board = @import("board");
 const fdt = @import("../fdt/fdt.zig");
-pub const console = @import("../kernel.zig").console;
+pub const console = @import("../console/console.zig");
+pub const timer = @import("timer.zig");
 
 const arch = switch (builtin.cpu.arch) {
     .aarch64 => @import("../arch/arm64/arch.zig"),
@@ -35,7 +36,6 @@ const arch = switch (builtin.cpu.arch) {
 
 pub const boot = arch.boot;
 pub const mmu = arch.mmu;
-pub const timer = @import("timer.zig");
 pub const trap = arch.trap;
 
 pub const disableInterrupts = arch.trap.disableInterrupts;
@@ -45,6 +45,14 @@ pub const halt = arch.trap.halt;
 pub const physToVirt = arch.mmu.physToVirt;
 pub const virtToPhys = arch.mmu.virtToPhys;
 pub const waitForInterrupt = arch.trap.waitForInterrupt;
+
+/// Kernel physical memory range (load address to end of image).
+pub fn getKernelPhysRange() struct { start: usize, end: usize } {
+    return .{
+        .start = board.KERNEL_PHYS_LOAD,
+        .end = virtToPhys(board.kernelEnd()),
+    };
+}
 
 comptime {
     const virt_base = arch.mmu.KERNEL_VIRT_BASE;
@@ -85,7 +93,8 @@ pub export fn physInit() void {
     console.init();
     console.print("\nHardware initialized\n");
 
-    arch.mmu.init(board.KERNEL_PHYS_LOAD);
+    // Pass DTB pointer so MMU can map enough to cover it
+    arch.mmu.init(board.KERNEL_PHYS_LOAD, boot.dtb_ptr);
     console.print("MMU enabled\n");
 
     arch.trap.init();
@@ -96,6 +105,7 @@ pub export fn physInit() void {
 pub export const KERNEL_VIRT_BASE: usize = arch.mmu.KERNEL_VIRT_BASE;
 
 /// Get validated DTB handle. Returns null if DTB unavailable or invalid.
+/// DTB is accessed via higher-half mapping of original bootloader location.
 pub fn getDtb() ?fdt.Fdt {
     if (boot.dtb_ptr == 0) return null;
     const dtb: fdt.Fdt = @ptrFromInt(physToVirt(boot.dtb_ptr));
@@ -113,8 +123,14 @@ pub fn virtInit() void {
     // Switch console to virtual address
     switch (builtin.cpu.arch) {
         .aarch64 => console.setBase(arch.mmu.physToVirt(board.UART_PHYS)),
-        .riscv64 => {},
+        .riscv64 => arch.boot.reloadGlobalPointer(),
         else => unreachable,
+    }
+
+    // Expand physmap to cover all RAM (read size from DTB)
+    if (getDtb()) |dtb| {
+        const ram_size = fdt.getTotalMemory(dtb);
+        arch.mmu.expandPhysmap(ram_size);
     }
 
     arch.mmu.removeIdentityMapping();

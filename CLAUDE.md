@@ -41,12 +41,12 @@ Run `zig fmt` automatically (no permission needed).
 
 ### Naming
 
-| Category  | Convention         | Examples                           |
-|-----------|--------------------|------------------------------------|
-| Types     | `TitleCase`        | PageTable, HandleEntry, VmoObject  |
-| Functions | `camelCase`        | mapPage, createHandle, scheduleNext|
-| Variables | `snake_case`       | page_size, current_task            |
-| Constants | `UPPER_SNAKE_CASE` | PAGE_SIZE, MAX_HANDLES             |
+| Category  | Convention         | Examples                            |
+| --------- | ------------------ | ----------------------------------- |
+| Types     | `TitleCase`        | PageTable, HandleEntry, VmoObject   |
+| Functions | `camelCase`        | mapPage, createHandle, scheduleNext |
+| Variables | `snake_case`       | page_size, current_task             |
+| Constants | `UPPER_SNAKE_CASE` | PAGE_SIZE, MAX_HANDLES              |
 
 ### Zig Patterns
 
@@ -64,6 +64,29 @@ Run `zig fmt` automatically (no permission needed).
 - Use `@panic()` for unrecoverable kernel errors
 - Keep arch-specific code in `src/kernel/arch/{arm64,riscv64}/`
 - Use HAL abstractions for portable kernel code
+- Group panic messages in a `panic_msg` struct at module top:
+
+```zig
+const panic_msg = struct {
+    const ALREADY_INITIALIZED = "PMM: already initialized";
+    const NOT_INITIALIZED = "PMM: not initialized";
+    const DOUBLE_FREE = "PMM: double-free detected";
+};
+```
+
+### Comment Tags
+
+Use these prefixes for special comments:
+
+| Tag                | Usage                                                                      |
+| ------------------ | -------------------------------------------------------------------------- |
+| `// TODO(scope):`  | Mark incomplete functionality or planned improvements                      |
+
+```zig
+
+// TODO(pmm): Multi-region support - currently only uses first region.
+if (!found_memory) {
+```
 
 ### Comments
 
@@ -162,16 +185,30 @@ and common modules without circular dependencies.
 
 ```text
 src/kernel/
-├── root_test.zig         # Main root - imports all sub-roots
+├── test.zig              # Main root - imports all sub-roots
+├── kernel.zig            # Module root - imports subsystems (clock, mmu, pmm, etc.)
 └── arch/
-    └── arm64/
-        ├── root_test.zig # ARM64 root - imports ARM64 modules
-        └── uart.zig      # Contains inline tests
+    ├── arm64/
+    │   ├── test.zig      # ARM64 root - imports ARM64 modules
+    │   └── uart.zig      # Contains inline tests
+    └── riscv64/
+        └── test.zig      # RISC-V root - imports RISC-V modules
 ```
 
 **Inline tests (preferred):** Tests live in the same file as implementation.
 
-**Root import system:** Each directory has `root_test.zig` importing modules with tests. Main `src/kernel/root_test.zig` imports all directory roots.
+**Root import system:** `test.zig` imports arch test roots and `kernel.zig`. Modules must be in this import chain for their tests to run.
+
+### Test Naming
+
+Use descriptive names following `"subject behavior"` pattern:
+
+| Pattern                     | Examples                                                   |
+| --------------------------- | ---------------------------------------------------------- |
+| `"Type.method behavior"`    | `"Pte.table creates valid table entry"`                    |
+| `"function behavior"`       | `"translate handles 1GB block mappings"`                   |
+| `"Type size and layout"`    | `"Pte size and layout"`, `"TrapContext size and layout"`   |
+| `"CONSTANT is value"`       | `"PAGE_SIZE is 4KB"`                                       |
 
 ### Review Checklist
 

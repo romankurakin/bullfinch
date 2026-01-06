@@ -1,14 +1,9 @@
 //! GICv3 Interrupt Controller.
 //!
 //! GICv3 is the modern ARM interrupt controller. It has three main components:
-//!
-//!   GICD (Distributor) - Shared across all cores. Routes SPIs (Shared Peripheral
-//!   Interrupts) from devices to specific cores based on affinity.
-//!
-//!   GICR (Redistributor) - One per core. Handles PPIs (Private Peripheral Interrupts)
-//!   like timers, and SGIs (Software Generated Interrupts) for IPIs.
-//!
-//!   ICC_* system registers - The CPU interface.
+//! - GICD (Distributor): Shared across all cores. Routes SPIs from devices to cores.
+//! - GICR (Redistributor): One per core. Handles PPIs (like timers) and SGIs (for IPIs).
+//! - ICC_* system registers: The CPU interface.
 //!
 //! Our timer (CNTP) generates PPI 30. PPIs are configured per-core in the GICR.
 //!
@@ -85,4 +80,3 @@ pub inline fn endOfInterrupt(intid: u32) void {
         : [eoir] "r" (@as(u64, intid)),
     );
 }
-
