@@ -6,8 +6,6 @@
 //! The ecall instruction traps to M-mode. Arguments go in a0-a2, extension ID in a7,
 //! function ID in a6. Return value comes back in a0 (negative = error).
 //!
-//! We use the Timer Extension for scheduling and legacy console for early boot output.
-//!
 //! See RISC-V SBI Specification.
 
 const panic_msg = struct {
