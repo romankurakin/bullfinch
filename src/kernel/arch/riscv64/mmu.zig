@@ -13,8 +13,6 @@
 //!
 //! See RISC-V Privileged Specification, Chapter 5 (Supervisor-Level ISA).
 //!
-//! SMP: Boot functions run on primary hart only. mapPage/unmapPage need external locking.
-//!
 //! TODO(smp): Implement per-hart page table locks
 //! TODO(smp): Send IPI to other harts for TLB shootdown via SBI
 //! TODO(smp): Use ASID for per-process TLB management (currently ASID=0)

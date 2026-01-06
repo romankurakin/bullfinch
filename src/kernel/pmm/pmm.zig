@@ -171,7 +171,7 @@ const Region = struct {
     /// Build free list for all free pages.
     /// In debug mode: uses bitmap (bit=0 means free).
     /// In release mode: uses reserved range tracking.
-    /// BOOT-TIME ONLY: runs on primary core before SMP.
+    /// Runs on primary core before SMP.
     fn buildFreeList(self: *Region) void {
         var added: usize = 0;
         // Iterate forward for cache-friendly access, prepend to list
@@ -223,7 +223,7 @@ fn isReserved(phys: u64) bool {
 }
 
 /// Initialize PMM from DTB memory map.
-/// BOOT-TIME ONLY: runs on primary core before SMP.
+/// Runs on primary core before SMP.
 pub fn init(dtb: fdt.Fdt) void {
     // Reset state (allows re-initialization for testing)
     regions = [_]Region{.{}} ** MAX_REGIONS;

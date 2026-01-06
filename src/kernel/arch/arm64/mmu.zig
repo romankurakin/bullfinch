@@ -7,15 +7,13 @@
 //! fixed for the kernel.
 //!
 //! We configure 39-bit virtual addresses (T0SZ=T1SZ=25) with 4KB pages, giving us a
-//! 3-level page table walk (L1 -> L2 -> L3). This matches RISC-V Sv39 depth, making
-//! the HAL cleaner. Boot uses 1GB blocks at L1 to avoid allocating L2/L3 tables.
+//! 3-level page table walk (L1 -> L2 -> L3). RISC-V uses Sv48 with 4 levels; the HAL
+//! abstracts this difference. Boot uses 1GB blocks at L1 to avoid allocating L2/L3.
 //!
 //! ARM calls page table entries "descriptors" but we use "Pte" to match OS literature.
 //!
 //! See ARM Architecture Reference Manual, Chapter D8 (The AArch64 Virtual Memory
 //! System Architecture).
-//!
-//! SMP: Boot functions run on primary core only. mapPage/unmapPage need external locking.
 //!
 //! TODO(smp): Implement per-CPU page table locks
 //! TODO(smp): Use ASID for per-process TLB management (currently ASID=0)
@@ -610,8 +608,7 @@ pub fn init(kernel_phys_load: usize, dtb_ptr: usize) void {
 
 /// Expand physmap to cover all RAM. Called after DTB is readable.
 /// Uses 1GB blocks - no page allocation needed, just L1 entries.
-///
-/// BOOT-TIME ONLY: Called from virtInit() on primary core before SMP.
+/// Called from virtInit() on primary core before SMP.
 pub fn expandPhysmap(ram_size: usize) void {
     const new_end = stored_kernel_phys_load + ram_size;
     const new_end_gb = @min((new_end + (1 << 30) - 1) >> 30, MAX_PHYSMAP_ENTRIES);
