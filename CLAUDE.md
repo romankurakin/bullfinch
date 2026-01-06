@@ -123,7 +123,7 @@ Follow Conventional Commits: `<type>(<scope>): <subject>`
 ```text
 feat(mmu): implement virtual memory with higher-half kernel mapping
 
-Add MMU support for both architectures using Sv39 (RISC-V) and 39-bit
+Add MMU support for both architectures using Sv48 (RISC-V) and 39-bit
 VA (ARM64) with 4KB pages. Boot sequence identity-maps kernel at physical
 address, enables paging, jumps to higher-half virtual address, then
 removes identity mapping. Implement modular HAL that wires arch, board,
