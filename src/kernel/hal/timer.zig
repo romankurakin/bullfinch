@@ -9,16 +9,11 @@
 const builtin = @import("builtin");
 
 const fdt = @import("../fdt/fdt.zig");
-const hal = @import("hal.zig");
 
 const arch_timer = switch (builtin.cpu.arch) {
     .aarch64 => @import("../arch/arm64/timer.zig"),
     .riscv64 => @import("../arch/riscv64/timer.zig"),
     else => @compileError("Unsupported architecture"),
-};
-
-const panic_msg = struct {
-    const NO_DTB = "TIMER: no DTB available";
 };
 
 /// Timer frequency in Hz. Must call initFrequency() before use.
@@ -32,9 +27,8 @@ pub const now = arch_timer.now;
 /// Set next timer interrupt deadline (absolute counter value).
 pub const setDeadline = arch_timer.setDeadline;
 
-/// Enable timer interrupts. Gets DTB from HAL and passes to arch timer.
-pub fn start() void {
-    const dtb = hal.getDtb() orelse @panic(panic_msg.NO_DTB);
+/// Enable timer interrupts. DTB needed for ARM64 GIC configuration.
+pub fn start(dtb: fdt.Fdt) void {
     arch_timer.start(dtb);
 }
 

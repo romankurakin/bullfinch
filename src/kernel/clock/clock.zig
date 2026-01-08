@@ -17,8 +17,9 @@
 //! TODO(smp): next_tick/scheduler_tick need protection if modified from multiple cores
 
 const console = @import("../console/console.zig");
-const fmt = @import("../trap/fmt.zig");
+const fdt = @import("../fdt/fdt.zig");
 const hal = @import("../hal/hal.zig");
+const trap = @import("../trap/trap.zig");
 
 /// Tick rate for scheduler and periodic work (100 Hz = 10ms ticks).
 pub const TICK_RATE_HZ: u64 = 100;
@@ -36,7 +37,8 @@ var tick_count: u64 = 0;
 var scheduler_tick: ?*const fn () void = null;
 
 /// Initialize clock subsystem. Timer frequency must be initialized first.
-pub fn init() void {
+/// DTB needed for timer interrupt configuration on ARM64.
+pub fn init(dtb: fdt.Fdt) void {
     ticks_per_interval = hal.timer.frequency() / TICK_RATE_HZ;
 
     const now = hal.timer.now();
@@ -44,7 +46,7 @@ pub fn init() void {
     hal.timer.setDeadline(next_tick);
 
     // Deadline must be set before enabling interrupts
-    hal.timer.start();
+    hal.timer.start(dtb);
 }
 
 /// Register scheduler tick callback. Called once per tick for preemption.
@@ -85,7 +87,7 @@ pub inline fn getTickCount() u64 {
 
 /// Print tick count for debugging (no allocations).
 pub fn printStatus() void {
-    const dec = fmt.formatDecimal(tick_count);
+    const dec = trap.fmt.formatDecimal(tick_count);
     console.print("Clock: ");
     console.print(dec.buf[0..dec.len]);
     console.print(" ticks\n");
