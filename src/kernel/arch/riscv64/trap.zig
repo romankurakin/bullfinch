@@ -15,13 +15,15 @@
 //!
 //! See RISC-V Privileged Specification, Chapter 4 (Supervisor-Level ISA).
 
-const kernel = @import("../../kernel.zig");
+const clock = @import("../../clock/clock.zig");
+const console = @import("../../console/console.zig");
+const trap = @import("../../trap/trap.zig");
 
 const panic_msg = struct {
     const UNHANDLED = "TRAP: unhandled";
 };
 
-const print = kernel.console.print;
+const print = console.print;
 
 /// Saved register context during trap. Layout must match assembly save/restore order.
 /// RISC-V calling convention: a0-a7 arguments, s0-s11 callee-saved, ra return address.
@@ -363,7 +365,7 @@ export fn handleTrap(ctx: *TrapContext) void {
 
 /// Timer interrupt handler called from timerEntry assembly.
 export fn handleTimerIrq() void {
-    kernel.clock.handleTimerIrq();
+    clock.handleTimerIrq();
 }
 
 fn dumpTrap(ctx: *const TrapContext, cause: TrapCause) void {
@@ -390,9 +392,9 @@ fn dumpTrap(ctx: *const TrapContext, cause: TrapCause) void {
         "s9", "s10", "s11", "t3", "t4", "t5", "t6",
     };
     for (reg_names, 0..) |name, i| {
-        print(&kernel.trap.formatRegName(name));
+        print(&trap.fmt.formatRegName(name));
         print("0x");
-        print(&kernel.trap.formatHex(ctx.regs[i]));
+        print(&trap.fmt.formatHex(ctx.regs[i]));
         if ((i + 1) % 4 == 0) {
             print("\n");
         } else {
@@ -402,9 +404,9 @@ fn dumpTrap(ctx: *const TrapContext, cause: TrapCause) void {
 }
 
 fn printKeyRegister(name: []const u8, value: u64) void {
-    print(&kernel.trap.formatRegName(name));
+    print(&trap.fmt.formatRegName(name));
     print("0x");
-    print(&kernel.trap.formatHex(value));
+    print(&trap.fmt.formatHex(value));
 }
 
 /// Initialize trap handling by installing stvec (Vectored mode).

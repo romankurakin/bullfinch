@@ -16,8 +16,9 @@
 //! TODO(smp): tick_count needs atomic access or per-CPU counters
 //! TODO(smp): next_tick/scheduler_tick need protection if modified from multiple cores
 
+const console = @import("../console/console.zig");
+const fmt = @import("../trap/fmt.zig");
 const hal = @import("../hal/hal.zig");
-const kernel = @import("../kernel.zig");
 
 /// Tick rate for scheduler and periodic work (100 Hz = 10ms ticks).
 pub const TICK_RATE_HZ: u64 = 100;
@@ -84,8 +85,8 @@ pub inline fn getTickCount() u64 {
 
 /// Print tick count for debugging (no allocations).
 pub fn printStatus() void {
-    const dec = kernel.trap.formatDecimal(tick_count);
-    kernel.console.print("Clock: ");
-    kernel.console.print(dec.buf[0..dec.len]);
-    kernel.console.print(" ticks\n");
+    const dec = fmt.formatDecimal(tick_count);
+    console.print("Clock: ");
+    console.print(dec.buf[0..dec.len]);
+    console.print(" ticks\n");
 }
