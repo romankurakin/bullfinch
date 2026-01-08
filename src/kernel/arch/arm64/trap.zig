@@ -14,15 +14,17 @@
 //!
 //! See ARM Architecture Reference Manual, Chapter D1 (The AArch64 Exception Model).
 
+const clock = @import("../../clock/clock.zig");
+const console = @import("../../console/console.zig");
 const gic = @import("gic.zig");
-const kernel = @import("../../kernel.zig");
+const trap = @import("../../trap/trap.zig");
 
 const panic_msg = struct {
     const UNHANDLED = "TRAP: unhandled";
     const UNHANDLED_IRQ = "TRAP: unhandled interrupt";
 };
 
-const print = kernel.console.print;
+const print = console.print;
 
 /// Saved register context during trap. Layout must match assembly save/restore order.
 /// ARM calling convention: x0-x7 arguments, x19-x28 callee-saved, x29 frame pointer, x30 link register.
@@ -309,7 +311,7 @@ export fn handleIrq() void {
     if (intid == SPURIOUS_INTID) return;
 
     switch (intid) {
-        TIMER_PPI => kernel.clock.handleTimerIrq(),
+        TIMER_PPI => clock.handleTimerIrq(),
         else => @panic(panic_msg.UNHANDLED_IRQ),
     }
 
@@ -355,9 +357,9 @@ fn dumpTrap(ctx: *const TrapContext, ec: TrapClass) void {
         "x24", "x25", "x26", "x27", "x28", "x29", "x30",
     };
     for (reg_names, 0..) |reg_name, i| {
-        print(&kernel.trap.formatRegName(reg_name));
+        print(&trap.fmt.formatRegName(reg_name));
         print("0x");
-        print(&kernel.trap.formatHex(ctx.regs[i]));
+        print(&trap.fmt.formatHex(ctx.regs[i]));
         if ((i + 1) % 4 == 0) {
             print("\n");
         } else {
@@ -367,9 +369,9 @@ fn dumpTrap(ctx: *const TrapContext, ec: TrapClass) void {
 }
 
 fn printKeyRegister(name: []const u8, value: u64) void {
-    print(&kernel.trap.formatRegName(name));
+    print(&trap.fmt.formatRegName(name));
     print("0x");
-    print(&kernel.trap.formatHex(value));
+    print(&trap.fmt.formatHex(value));
 }
 
 /// Initialize trap handling by installing the vector table.

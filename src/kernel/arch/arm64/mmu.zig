@@ -21,16 +21,17 @@
 const builtin = @import("builtin");
 const std = @import("std");
 
-const kernel = @import("../../kernel.zig");
+const memory = @import("../../memory/memory.zig");
+const mmu_types = @import("../../mmu/mmu.zig");
 
 const is_aarch64 = builtin.cpu.arch == .aarch64;
 
-pub const PAGE_SIZE = kernel.memory.PAGE_SIZE;
-pub const PAGE_SHIFT = kernel.memory.PAGE_SHIFT;
-pub const ENTRIES_PER_TABLE = kernel.memory.ENTRIES_PER_TABLE;
-pub const PageFlags = kernel.mmu.PageFlags;
-pub const MapError = kernel.mmu.MapError;
-pub const UnmapError = kernel.mmu.UnmapError;
+pub const PAGE_SIZE = memory.PAGE_SIZE;
+pub const PAGE_SHIFT = memory.PAGE_SHIFT;
+pub const ENTRIES_PER_TABLE = memory.ENTRIES_PER_TABLE;
+pub const PageFlags = mmu_types.PageFlags;
+pub const MapError = mmu_types.MapError;
+pub const UnmapError = mmu_types.UnmapError;
 
 /// Kernel virtual base address (39-bit VA upper half, TTBR1 region).
 /// Physical addresses are mapped to virtual = physical + KERNEL_VIRT_BASE.
