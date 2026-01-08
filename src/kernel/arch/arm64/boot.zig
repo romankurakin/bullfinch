@@ -21,8 +21,8 @@ extern fn kmain() noreturn;
 
 export fn _start() linksection(".text.boot") callconv(.naked) noreturn {
     asm volatile (
-    // Bootloader passes DTB pointer in x0 (ARM64 boot protocol).
-    // Save it to callee-saved register before we clobber x0.
+        // Bootloader passes DTB pointer in x0 (ARM64 boot protocol).
+        // Save it to callee-saved register before we clobber x0.
         \\ mov x19, x0
 
         // Set up stack pointer (PC-relative addressing for position independence)

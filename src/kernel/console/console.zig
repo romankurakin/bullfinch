@@ -8,41 +8,25 @@
 
 const builtin = @import("builtin");
 
-const backend = switch (builtin.cpu.arch) {
+const uart = switch (builtin.cpu.arch) {
     .aarch64 => @import("../arch/arm64/uart.zig"),
     .riscv64 => @import("../arch/riscv64/uart.zig"),
     else => @compileError("Unsupported architecture"),
 };
 
-const board = @import("board");
-
-var uart_base: usize = switch (builtin.cpu.arch) {
-    .aarch64 => board.UART_PHYS,
-    .riscv64 => 0,
-    else => unreachable,
-};
-
 /// Initialize console output.
 pub fn init() void {
-    switch (builtin.cpu.arch) {
-        .aarch64 => backend.initDefault(uart_base),
-        .riscv64 => backend.init(),
-        else => unreachable,
-    }
+    uart.init();
 }
 
-/// Update UART base address (for physical to virtual transition).
-pub fn setBase(addr: usize) void {
-    uart_base = addr;
+/// Post-MMU transition: switch to virtual addresses if needed.
+pub fn postMmuInit() void {
+    uart.postMmuInit();
 }
 
 /// Print string to console.
 pub fn print(s: []const u8) void {
-    switch (builtin.cpu.arch) {
-        .aarch64 => backend.print(uart_base, s),
-        .riscv64 => backend.print(s),
-        else => unreachable,
-    }
+    uart.print(s);
 }
 
 /// Print a u64 value in hexadecimal.
