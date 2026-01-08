@@ -15,6 +15,7 @@ just test             # run all tests
 - just
 - Zig
 - QEMU
+- LLVM
 
 ## License
 
