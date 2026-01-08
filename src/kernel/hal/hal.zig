@@ -24,8 +24,8 @@ const builtin = @import("builtin");
 const std = @import("std");
 
 const board = @import("board");
+const console = @import("../console/console.zig");
 const fdt = @import("../fdt/fdt.zig");
-pub const console = @import("../console/console.zig");
 pub const timer = @import("timer.zig");
 
 const arch = switch (builtin.cpu.arch) {
