@@ -58,10 +58,9 @@ export fn kmain() noreturn {
 
     // Get DTB once and pass to all functions that need it
     const dtb = hal.getDtb() orelse @panic(panic_msg.NO_DTB);
-
     printDtbInfo(dtb);
 
-    // Initialize physical memory manager
+    // Initialize subsystems
     pmm.init(dtb);
     console.print("PMM: ");
     console.printDec(pmm.freeCount());
@@ -72,7 +71,8 @@ export fn kmain() noreturn {
     clock.init(dtb);
     console.print("Clock initialized\n");
 
-    console.print("Waiting for timer ticks");
+    // Verify timer interrupts work
+    console.print("\nTest timer for 10 ticks");
     const target_ticks: u64 = 10;
     while (clock.getTickCount() < target_ticks) {
         hal.waitForInterrupt();
@@ -82,9 +82,10 @@ export fn kmain() noreturn {
     console.printDec(clock.getTickCount());
     console.print(" ticks\n");
 
+    // Verify PMM integrity
     debug.dumpPmmLeaks();
 
-    console.print("Boot complete. Halting.\n");
+    console.print("\nBoot complete, halting\n");
     hal.halt();
 }
 

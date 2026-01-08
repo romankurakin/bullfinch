@@ -13,6 +13,15 @@ pub const PAGE_SHIFT: u6 = 12;
 /// Number of entries per page table (512 for 4KB pages with 8-byte PTEs).
 pub const ENTRIES_PER_TABLE: usize = 512;
 
+comptime {
+    if (PAGE_SIZE == 0 or (PAGE_SIZE & (PAGE_SIZE - 1)) != 0)
+        @compileError("PAGE_SIZE must be a power of 2");
+    if ((@as(usize, 1) << PAGE_SHIFT) != PAGE_SIZE)
+        @compileError("PAGE_SHIFT must equal log2(PAGE_SIZE)");
+    if (ENTRIES_PER_TABLE * 8 != PAGE_SIZE)
+        @compileError("ENTRIES_PER_TABLE * 8 must equal PAGE_SIZE");
+}
+
 test "PAGE_SIZE is 4KB" {
     try std.testing.expectEqual(@as(usize, 4096), PAGE_SIZE);
     try std.testing.expectEqual(@as(usize, 1) << PAGE_SHIFT, PAGE_SIZE);
