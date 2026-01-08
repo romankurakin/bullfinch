@@ -7,7 +7,11 @@
 //! For a full driver (with RX, interrupts, flow control), this would be moved to
 //! userspace. The kernel would just provide MMIO VMOs and IRQ capabilities.
 
+const board = @import("board");
+const mmu = @import("mmu.zig");
 const mmio = @import("mmio.zig");
+
+var uart_base: usize = board.UART_PHYS;
 
 const panic_msg = struct {
     const NOT_ENABLED = "UART: not enabled";
@@ -38,8 +42,8 @@ pub const InitConfig = struct {
     baud: u32 = 115_200,
 };
 
-inline fn waitTxReady(base: usize) void {
-    while ((mmio.read32(base + FR) & FR_TXFF) != 0) {}
+inline fn waitTxReady() void {
+    while ((mmio.read32(uart_base + FR) & FR_TXFF) != 0) {}
 }
 
 /// Compute PL011 baud rate divisors (16x oversampling: divisor = clk / (16 * baud)).
@@ -59,8 +63,8 @@ pub fn computeDivisors(uartclk_hz: u32, baud: u32) struct { ibrd: u32, fbrd: u32
     return .{ .ibrd = @intCast(ibrd), .fbrd = @intCast(fbrd) };
 }
 
-/// Initialize UART (disable, configure baud rate + line control, enable).
-pub fn init(base: usize, config: InitConfig) void {
+/// Initialize UART with custom config.
+fn initWithConfig(base: usize, config: InitConfig) void {
     while ((mmio.read32(base + FR) & FR_BUSY) != 0) {} // Wait for TX to complete
     mmio.write32(base + CR, 0); // Disable UART for config
     mmio.write32(base + ICR, 0x7FF); // Clear interrupts
@@ -74,23 +78,29 @@ pub fn init(base: usize, config: InitConfig) void {
     asm volatile ("dsb ish"); // Ensure write reaches hardware
 }
 
-pub fn initDefault(base: usize) void {
-    init(base, .{});
+/// Initialize UART with default config at physical address.
+pub fn init() void {
+    initWithConfig(uart_base, .{});
+}
+
+/// Post-MMU transition: switch to virtual UART address.
+pub fn postMmuInit() void {
+    uart_base = mmu.physToVirt(board.UART_PHYS);
 }
 
 /// Print string to UART.
-pub fn print(base: usize, s: []const u8) void {
-    if ((mmio.read32(base + CR) & CR_ENABLED) != CR_ENABLED) {
+pub fn print(s: []const u8) void {
+    if ((mmio.read32(uart_base + CR) & CR_ENABLED) != CR_ENABLED) {
         @panic(panic_msg.NOT_ENABLED);
     }
 
     for (s) |byte| {
-        waitTxReady(base);
+        waitTxReady();
         if (byte == '\n') {
-            mmio.write32(base + DR, '\r');
-            waitTxReady(base);
+            mmio.write32(uart_base + DR, '\r');
+            waitTxReady();
         }
-        mmio.write32(base + DR, byte);
+        mmio.write32(uart_base + DR, byte);
     }
 }
 

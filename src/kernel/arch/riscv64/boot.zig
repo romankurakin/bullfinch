@@ -18,8 +18,8 @@ extern fn kmain() noreturn;
 
 export fn _start() linksection(".text.boot") callconv(.naked) noreturn {
     asm volatile (
-    // Initialize Global Pointer (gp) register.
-    // This is critical for Release builds where global access is optimized
+        // Initialize Global Pointer (gp) register.
+        // This is critical for release builds where global access is optimized
         \\ .option push
         \\ .option norelax
         \\ la gp, __global_pointer$
@@ -59,15 +59,3 @@ export fn _start() linksection(".text.boot") callconv(.naked) noreturn {
 
 /// DTB pointer saved during boot, before physInit.
 pub export var dtb_ptr: usize = 0;
-
-/// Reload Global Pointer (gp) register.
-/// Must be called after switching to virtual memory to ensure gp points to
-/// the virtual address of global variables, not the physical address used during boot.
-pub fn reloadGlobalPointer() void {
-    asm volatile (
-        \\ .option push
-        \\ .option norelax
-        \\ la gp, __global_pointer$
-        \\ .option pop
-    );
-}

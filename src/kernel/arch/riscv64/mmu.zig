@@ -569,6 +569,18 @@ pub fn removeIdentityMapping() void {
     Tlb.flushAll();
 }
 
+/// Post-MMU initialization for RISC-V.
+/// Reloads Global Pointer (gp) register to point to virtual addresses.
+/// GP was set during physical boot; must be updated after MMU enables higher-half.
+pub fn postMmuInit() void {
+    asm volatile (
+        \\ .option push
+        \\ .option norelax
+        \\ la gp, __global_pointer$
+        \\ .option pop
+    );
+}
+
 test "Pte size and layout" {
     try std.testing.expectEqual(@as(usize, 8), @sizeOf(Pte));
     try std.testing.expectEqual(@as(usize, 64), @bitSizeOf(Pte));

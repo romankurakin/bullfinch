@@ -6,8 +6,11 @@
 
 const sbi = @import("sbi.zig");
 
-/// Initialize UART. No-op on RISC-V since SBI handles console setup.
+/// Initialize UART. No-op since SBI handles console setup.
 pub fn init() void {}
+
+/// Post-MMU transition. No-op since SBI handles addressing.
+pub fn postMmuInit() void {}
 
 /// Print string to console via SBI firmware.
 pub fn print(s: []const u8) void {

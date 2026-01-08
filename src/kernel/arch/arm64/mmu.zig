@@ -656,6 +656,10 @@ pub fn removeIdentityMapping() void {
     Tlb.flushLocal();
 }
 
+/// Post-MMU initialization for ARM64. No-op since ARM64 doesn't need
+/// register adjustments after switching to virtual addresses.
+pub fn postMmuInit() void {}
+
 test "Pte size and layout" {
     try std.testing.expectEqual(@as(usize, 8), @sizeOf(Pte));
     try std.testing.expectEqual(@as(usize, 64), @bitSizeOf(Pte));
