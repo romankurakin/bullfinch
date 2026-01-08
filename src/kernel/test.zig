@@ -10,7 +10,6 @@ const fdt = @import("fdt/fdt.zig");
 const memory = @import("memory/memory.zig");
 const mmu = @import("mmu/mmu.zig");
 const pmm = @import("pmm/pmm.zig");
-const pmm_test = @import("pmm/pmm_test.zig");
 const trap = @import("trap/trap.zig");
 
 comptime {
@@ -24,6 +23,5 @@ comptime {
     _ = memory;
     _ = mmu;
     _ = pmm;
-    _ = pmm_test;
     _ = trap;
 }
