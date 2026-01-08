@@ -14,8 +14,6 @@
 //!
 //! Release build has no bitmap, minimal overhead.
 //!
-//! SMP: init() runs on primary core only. allocPage/freePage need external locking.
-//!
 //! TODO(smp): Add spinlock protecting regions array and free lists
 //! TODO(smp): Consider per-CPU page caches to reduce lock contention
 

@@ -8,14 +8,14 @@
 //!
 //! Phase 1 (physical addresses):
 //! - Init hardware (UART at physical address)
-//! - Enable MMU (both identity and higher-half mappings active)
 //! - Init trap vector (physical address, catches early crashes)
+//! - Enable MMU (both identity and higher-half mappings active)
 //! - Jump to higher-half
 //!
 //! Phase 2 (virtual addresses):
 //! - Reinit trap vector (now uses virtual address)
 //! - Switch UART to virtual address
-//! - Remove identity mapping (security: no low-address access to kernel)
+//! - Remove identity mapping (no low-address access to kernel)
 //!
 //! This sequence allows the kernel to be linked at high addresses while booting
 //! from physical addresses where the bootloader placed us.
@@ -87,18 +87,20 @@ comptime {
 }
 
 /// Physical-mode initialization. Called from boot.zig before jumping to higher-half.
-/// Initializes console, MMU (with identity + higher-half mappings), and traps.
+/// Initializes console, traps, and MMU (with identity + higher-half mappings).
 /// Returns to caller which then switches SP and jumps to kmain.
 pub export fn physInit() void {
     console.init();
     console.print("\nHardware initialized\n");
 
+    // Install trap vectors early so MMU faults can be caught and debugged.
+    // Uses PC-relative addressing, works at physical addresses.
+    arch.trap.init();
+    console.print("Trap handling initialized\n");
+
     // Pass DTB pointer so MMU can map enough to cover it
     arch.mmu.init(board.KERNEL_PHYS_LOAD, boot.dtb_ptr);
     console.print("MMU enabled\n");
-
-    arch.trap.init();
-    console.print("Trap handling initialized\n");
 }
 
 /// Kernel virtual base address, exported for boot.zig to use when jumping to higher-half.
@@ -120,12 +122,11 @@ pub fn virtInit() void {
     // Reinit trap vector to virtual address, must happen before removing identity mapping
     arch.trap.init();
 
-    // Switch console to virtual address
-    switch (builtin.cpu.arch) {
-        .aarch64 => console.setBase(arch.mmu.physToVirt(board.UART_PHYS)),
-        .riscv64 => arch.boot.reloadGlobalPointer(),
-        else => unreachable,
-    }
+    // Arch-specific post-MMU fixups (RISC-V reloads GP register)
+    arch.mmu.postMmuInit();
+
+    // Switch console to virtual UART address (ARM64 only, RISC-V uses SBI)
+    console.postMmuInit();
 
     // Expand physmap to cover all RAM (read size from DTB)
     if (getDtb()) |dtb| {
