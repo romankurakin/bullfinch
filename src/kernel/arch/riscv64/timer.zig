@@ -9,6 +9,7 @@
 //!
 //! See RISC-V SBI Specification, Chapter 6 (Timer Extension).
 
+const fdt = @import("../../fdt/fdt.zig");
 const sbi = @import("sbi.zig");
 
 /// Timer frequency in Hz. Set by initFrequency() before use.
@@ -52,7 +53,8 @@ inline fn enableGlobalInterrupts() void {
 /// Enable timer interrupts and global interrupt delivery.
 /// Caller must set a deadline via setDeadline() before calling this,
 /// otherwise stale mtimecmp could trigger immediate interrupt storm.
-pub fn start() void {
+/// DTB parameter unused on RISC-V (interface parity with ARM64).
+pub fn start(_: fdt.Fdt) void {
     enableTimerInterrupt();
     enableGlobalInterrupts();
 }

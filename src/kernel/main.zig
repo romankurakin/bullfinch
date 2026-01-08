@@ -7,9 +7,11 @@
 const builtin = @import("builtin");
 const std = @import("std");
 
-const kernel = @import("kernel.zig");
-const pmm = @import("pmm/pmm.zig");
+const clock = @import("clock/clock.zig");
+const debug = @import("debug/debug.zig");
+const fdt = @import("fdt/fdt.zig");
 const hal = @import("hal/hal.zig");
+const pmm = @import("pmm/pmm.zig");
 
 const panic_msg = struct {
     const NO_DTB = "BOOT: no DTB - cannot discover hardware";
@@ -26,16 +28,16 @@ const arch_name = switch (builtin.target.cpu.arch) {
     else => "Unknown",
 };
 
-fn printDtbInfo(dtb: kernel.fdt.Fdt) void {
+fn printDtbInfo(dtb: fdt.Fdt) void {
     hal.console.print("CPUs: ");
-    hal.console.printDec(kernel.fdt.getCpuCount(dtb));
+    hal.console.printDec(fdt.getCpuCount(dtb));
     hal.console.print("\n");
 
     hal.console.print("RAM: ");
-    hal.console.printDec(kernel.fdt.getTotalMemory(dtb) / (1024 * 1024));
+    hal.console.printDec(fdt.getTotalMemory(dtb) / (1024 * 1024));
     hal.console.print(" MB\n");
 
-    var reserved = kernel.fdt.getReservedRegions(dtb);
+    var reserved = fdt.getReservedRegions(dtb);
     while (reserved.next()) |region| {
         hal.console.print("Reserved: ");
         hal.console.printHex(region.base);
@@ -66,20 +68,20 @@ export fn kmain() noreturn {
     hal.console.printDec(pmm.totalPages());
     hal.console.print(" pages free\n");
 
-    kernel.clock.init();
+    clock.init();
     hal.console.print("Clock initialized\n");
 
     hal.console.print("Waiting for timer ticks");
     const target_ticks: u64 = 10;
-    while (kernel.clock.getTickCount() < target_ticks) {
+    while (clock.getTickCount() < target_ticks) {
         hal.waitForInterrupt();
     }
     hal.console.print(" done\n");
     hal.console.print("Clock: ");
-    hal.console.printDec(kernel.clock.getTickCount());
+    hal.console.printDec(clock.getTickCount());
     hal.console.print(" ticks\n");
 
-    kernel.debug.dumpPmmLeaks();
+    debug.dumpPmmLeaks();
 
     hal.console.print("Boot complete. Halting.\n");
     hal.halt();

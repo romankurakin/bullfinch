@@ -18,10 +18,8 @@
 
 const fdt = @import("../../fdt/fdt.zig");
 const gic = @import("gic.zig");
-const hal = @import("../../hal/hal.zig");
 
 const panic_msg = struct {
-    const NO_DTB = "TIMER: no DTB for GIC discovery";
     const GIC_NOT_FOUND = "TIMER: GIC not found in DTB";
 };
 
@@ -66,8 +64,8 @@ inline fn enableIrq() void {
 }
 
 /// Enable timer interrupts and global interrupt delivery.
-pub fn start() void {
-    const dtb = hal.getDtb() orelse @panic(panic_msg.NO_DTB);
+/// DTB is required to discover GIC configuration.
+pub fn start(dtb: fdt.Fdt) void {
     const gic_info = fdt.getGicInfo(dtb) orelse @panic(panic_msg.GIC_NOT_FOUND);
     gic.init(.{
         .version = gic_info.version,
