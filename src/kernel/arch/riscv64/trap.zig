@@ -452,9 +452,19 @@ pub inline fn halt() noreturn {
     while (true) asm volatile ("wfi");
 }
 
-/// Disable all interrupts.
-pub inline fn disableInterrupts() void {
+/// Disable all interrupts. Returns previous interrupt state.
+pub inline fn disableInterrupts() bool {
+    var sstatus: u64 = undefined;
+    asm volatile ("csrr %[sstatus], sstatus"
+        : [sstatus] "=r" (sstatus),
+    );
     asm volatile ("csrci sstatus, 0x2");
+    return (sstatus & 0x2) != 0; // Returns true if SIE was enabled
+}
+
+/// Enable interrupts.
+pub inline fn enableInterrupts() void {
+    asm volatile ("csrsi sstatus, 0x2");
 }
 
 test "TrapContext size and layout" {

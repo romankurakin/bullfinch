@@ -1,6 +1,9 @@
 # CLAUDE.md
 
-Bullfinch is an educational microkernel inspired by MINIX 3 and Zircon, designed to prioritize clarity, correctness, and comprehension over raw performance. ARM64 and RISC-V architectures are supported, with a focus on modularity and safety through capabilities.
+Bullfinch is an educational microkernel inspired by MINIX 3 and Zircon, designed
+to prioritize clarity, correctness, and comprehension over raw performance.
+ARM64 and RISC-V architectures are supported, with a focus on modularity and
+safety through capabilities.
 
 ## Commands
 
@@ -90,7 +93,8 @@ if (!found_memory) {
 
 ### Comments
 
-**Always document:** safety reasoning, architecture quirks, spec refs, non-obvious "why", tricky bits
+**Always document:** safety reasoning, architecture quirks, spec refs,
+non-obvious "why", tricky bits
 
 **Never document:** obvious "what", Zig basics, self-explanatory code
 
@@ -118,7 +122,8 @@ Follow Conventional Commits: `<type>(<scope>): <subject>`
 
 **Scopes:** boot, mem, mmu, cap, arm64, riscv, arch, kernel, hal, ci, build
 
-**Format:** Subject line + blank line + 3-4 sentence body explaining what and why. Use prose, not bullet points.
+**Format:** Subject line + blank line + 3-4 sentence body explaining what and
+why. Use prose, not bullet points.
 
 ```text
 feat(mmu): implement virtual memory with higher-half kernel mapping
@@ -169,9 +174,13 @@ and common modules without circular dependencies.
 
 ## Error Philosophy
 
-**Kernel space:** Return errors for recoverable conditions (resource exhaustion, user mistakes, transient failures). Use `@panic()` when kernel invariants are violated, architectural requirements broken, or state corrupted. Users never cause kernel panics.
+**Kernel space:** Return errors for recoverable conditions (resource exhaustion,
+user mistakes, transient failures). Use `@panic()` when kernel invariants are
+violated, architectural requirements broken, or state corrupted. Users never
+cause kernel panics.
 
-**Userspace:** Errors are normal program flow. Process can crash/exit on unrecoverable errors without affecting kernel or other processes.
+**Userspace:** Errors are normal program flow. Process can crash/exit on
+unrecoverable errors without affecting kernel or other processes.
 
 ## Architecture Review Points
 
@@ -197,7 +206,8 @@ src/kernel/
 
 **Inline tests (preferred):** Tests live in the same file as implementation.
 
-**Root import system:** `test.zig` imports arch test roots and `kernel.zig`. Modules must be in this import chain for their tests to run.
+**Root import system:** `test.zig` imports arch test roots and `kernel.zig`.
+Modules must be in this import chain for their tests to run.
 
 ### Test Naming
 

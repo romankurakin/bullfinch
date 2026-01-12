@@ -1,6 +1,8 @@
 # Bullfinch
 
-Educational microkernel in Zig for ARM64 + RISC-V, inspired by MINIX 3 and Zircon. Named after the bird that thrives in harsh northern winters — built for learning, not production.
+Educational microkernel in Zig for ARM64 + RISC-V, inspired by MINIX 3 and
+Zircon. Named after the bird that thrives in harsh northern winters — built for
+learning, not production.
 
 ## Quick Start
 

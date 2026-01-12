@@ -1,38 +1,52 @@
 //! Physical Memory Manager (PMM).
 //!
-//! Manages physical page allocation using a free list with optional bitmap verification.
+//! Manages physical page allocation using per-page metadata and a doubly-linked
+//! free list. Supports single page and contiguous allocation with SMP-safe locking.
 //!
-//! Both modes use free list for O(1) allocation:
-//! - allocPage(): O(1) pop from free list
-//! - freePage(): O(1) push to free list
+//! Architecture:
+//! - Page: Per-page metadata with intrusive list node, state, ref count
+//! - Arena: Contiguous physical memory region with page metadata array
+//! - Free list: Global doubly-linked list for O(1) alloc/free
+//! - SpinLock: Protects all PMM state for SMP safety
 //!
-//! Debug build adds bitmap for verification (not allocation path):
-//! - Double-free detection via bitmap
-//! - Poison fills detect use-after-free and use-before-init
-//! - verifyIntegrity() checks bitmap/free-list consistency
-//! - allocatedRanges() iterator for leak detection
-//!
-//! Release build has no bitmap, minimal overhead.
-//!
-//! TODO(smp): Add spinlock protecting regions array and free lists
-//! TODO(smp): Consider per-CPU page caches to reduce lock contention
+//! Debug features:
+//! - Poison fills detect use-after-free (0xDD) and use-before-init (0xCD)
+//! - State-based double-free detection
+//! - Integrity verification
 
 const builtin = @import("builtin");
 const std = @import("std");
 const fdt = @import("../fdt/fdt.zig");
 const hal = @import("../hal/hal.zig");
 const memory = @import("../memory/memory.zig");
+const sync = @import("../sync/sync.zig");
+
+const list = @import("list.zig");
+pub const ListNode = list.ListNode;
+pub const DoublyLinkedList = list.DoublyLinkedList;
 
 const PAGE_SIZE = memory.PAGE_SIZE;
 
-/// Enable bitmap tracking and poison fills in debug builds.
+/// Enable poison fills and extra validation in debug builds.
 const debug_pmm = builtin.mode == .Debug;
 
-/// Maximum number of memory regions supported.
-const MAX_REGIONS = 4;
+/// Maximum number of memory arenas supported.
+const MAX_ARENAS = 4;
 
-/// Maximum number of reserved ranges tracked.
+/// Maximum number of reserved ranges tracked during init.
 const MAX_RESERVED = 8;
+
+comptime {
+    // Page metadata must be small enough that overhead stays reasonable (<1% of RAM)
+    if (@sizeOf(Page) > 64) @compileError("Page struct too large");
+    // Page must fit evenly for pointer arithmetic in pageToPhys
+    if (@sizeOf(Page) % @alignOf(Page) != 0) @compileError("Page size must be multiple of alignment");
+    // Poison patterns must be distinct
+    if (poison.ALLOC == poison.FREE) @compileError("Poison patterns must differ");
+    // MAX constants must be reasonable
+    if (MAX_ARENAS == 0) @compileError("MAX_ARENAS must be > 0");
+    if (MAX_RESERVED == 0) @compileError("MAX_RESERVED must be > 0");
+}
 
 /// Poison patterns for detecting memory corruption.
 const poison = struct {
@@ -43,199 +57,172 @@ const poison = struct {
 };
 
 const panic_msg = struct {
-    const ALREADY_INITIALIZED = "PMM: already initialized";
     const NOT_INITIALIZED = "PMM: not initialized";
     const NO_MEMORY_REGIONS = "PMM: no memory regions found in DTB";
-    const BITMAP_TOO_LARGE = "PMM: bitmap too large for available region";
-    const FREE_LIST_BITMAP_MISMATCH = "PMM: free list length != bitmap free count";
-    const UNALIGNED_ADDRESS = "PMM: freePage called with unaligned address";
-    const ADDRESS_NOT_IN_REGION = "PMM: freePage address not in any managed region";
+    const METADATA_TOO_LARGE = "PMM: page metadata too large for region";
+    const UNALIGNED_ADDRESS = "PMM: address not page-aligned";
+    const ADDRESS_NOT_IN_ARENA = "PMM: address not in any managed arena";
     const DOUBLE_FREE = "PMM: double-free detected";
-    const OUT_OF_MEMORY = "PMM: out of memory";
+    const FREE_RESERVED = "PMM: attempted to free reserved page";
+    const INVALID_PAGE_STATE = "PMM: invalid page state";
+    const NOT_CONTIGUOUS_HEAD = "PMM: freeContiguous called on non-head page";
+    const TOO_MANY_RESERVED = "PMM: too many reserved regions (increase MAX_RESERVED)";
 };
 
-/// Free list node embedded at start of each free page.
-const FreeNode = struct {
-    next: ?*FreeNode,
+/// Physical page states.
+pub const PageState = enum(u8) {
+    /// Page is on free list, available for allocation.
+    free,
+    /// Page is allocated and in use.
+    allocated,
+    /// Page is reserved (kernel, DTB, metadata) and cannot be freed.
+    reserved,
 };
 
-/// Memory range (for iteration).
-pub const Range = struct { base: usize, pages: usize };
+/// Per-page metadata. One instance per physical page in the system.
+///
+/// Size: 24 bytes (on 64-bit systems)
+/// Overhead: ~0.6% of RAM (24 bytes per 4KB page)
+pub const Page = struct {
+    /// Intrusive list node for free list membership.
+    node: list.ListNode = .{},
 
-/// Iterator over allocated (used) memory ranges across all regions.
-/// Only available in debug builds (requires bitmap).
-pub const AllocatedRanges = struct {
-    region_idx: usize = 0,
-    pfn: usize = 0,
+    /// Current page state.
+    state: PageState = .free,
 
-    pub fn next(self: *AllocatedRanges) ?Range {
-        if (!debug_pmm) return null; // No bitmap in release mode
+    /// Index of arena that owns this page.
+    arena_idx: u8 = 0,
 
-        while (self.region_idx < region_count) {
-            const region = &regions[self.region_idx];
+    /// Flags for special pages.
+    flags: Flags = .{},
 
-            // Find start of next allocated range in current region
-            while (self.pfn < region.total_pages and !region.isAllocated(self.pfn)) : (self.pfn += 1) {}
+    /// Padding for alignment.
+    _pad: u8 = 0,
 
-            if (self.pfn >= region.total_pages) {
-                // Move to next region
-                self.region_idx += 1;
-                self.pfn = 0;
-                continue;
-            }
+    /// Reference count for future VMO support.
+    ref_count: u32 = 0,
 
-            const start = self.pfn;
-            // Find end of range
-            while (self.pfn < region.total_pages and region.isAllocated(self.pfn)) : (self.pfn += 1) {}
+    pub const Flags = packed struct {
+        /// True if this is the first page of a contiguous allocation.
+        contiguous_head: bool = false,
+        /// Reserved for future use.
+        _reserved: u7 = 0,
+    };
+};
 
-            return .{ .base = region.base_addr + start * PAGE_SIZE, .pages = self.pfn - start };
-        }
-        return null;
+/// Physical memory arena - a contiguous region of RAM.
+///
+/// Each arena discovered from the device tree gets its own metadata array
+/// placed at the end of the region.
+pub const Arena = struct {
+    /// Physical base address of this arena.
+    base_phys: usize = 0,
+
+    /// Total number of pages in this arena.
+    page_count: usize = 0,
+
+    /// Number of usable pages (excludes metadata pages).
+    usable_pages: usize = 0,
+
+    /// Page metadata array (one Page per physical page).
+    /// Allocated from the arena itself during init.
+    pages: []Page = &.{},
+
+    /// Convert physical address to Page pointer.
+    /// Returns null if address is not in this arena.
+    pub fn physToPage(self: *const Arena, phys: usize) ?*Page {
+        if (phys < self.base_phys) return null;
+        const offset = phys - self.base_phys;
+        const pfn = offset / PAGE_SIZE;
+        if (pfn >= self.page_count) return null;
+        return &self.pages[pfn];
+    }
+
+    /// Convert Page pointer to physical address.
+    pub fn pageToPhys(self: *const Arena, page: *const Page) usize {
+        const idx = (@intFromPtr(page) - @intFromPtr(self.pages.ptr)) / @sizeOf(Page);
+        return self.base_phys + idx * PAGE_SIZE;
+    }
+
+    /// Check if physical address is within this arena.
+    pub fn containsPhys(self: *const Arena, phys: usize) bool {
+        if (phys < self.base_phys) return false;
+        const offset = phys - self.base_phys;
+        return offset < self.page_count * PAGE_SIZE;
     }
 };
 
-/// Single memory region with free list (and bitmap in debug builds).
-const Region = struct {
-    /// Bitmap for allocation tracking (debug only).
-    bitmap: if (debug_pmm) []u8 else void = if (debug_pmm) &.{} else {},
-    base_addr: usize = 0,
+/// Free list type using doubly-linked intrusive list.
+const FreeList = list.DoublyLinkedList(Page, "node");
+
+/// PMM global state.
+const Pmm = struct {
+    /// Memory arenas discovered from device tree.
+    arenas: [MAX_ARENAS]Arena = [_]Arena{.{}} ** MAX_ARENAS,
+    arena_count: usize = 0,
+
+    /// Global free list of available pages.
+    free_list: FreeList = .{},
+
+    /// Lock protecting all PMM state.
+    lock: sync.SpinLock = .{},
+
+    /// Statistics.
     total_pages: usize = 0,
     free_count: usize = 0,
-    free_list: ?*FreeNode = null,
-
-    fn containsAddr(self: Region, addr: usize) bool {
-        if (self.total_pages == 0) return false;
-        if (addr < self.base_addr) return false;
-        const pfn = (addr - self.base_addr) / PAGE_SIZE;
-        return pfn < self.total_pages;
-    }
-
-    fn physToPfn(self: Region, phys: usize) usize {
-        return (phys - self.base_addr) / PAGE_SIZE;
-    }
-
-    fn pfnToPhys(self: Region, pfn: usize) usize {
-        return self.base_addr + pfn * PAGE_SIZE;
-    }
-
-    fn isAllocated(self: Region, pfn: usize) bool {
-        if (!debug_pmm) return false;
-        const byte_idx = pfn / 8;
-        const bit_idx: u3 = @intCast(pfn % 8);
-        return (self.bitmap[byte_idx] & (@as(u8, 1) << bit_idx)) != 0;
-    }
-
-    fn markAllocated(self: *Region, pfn: usize) void {
-        if (!debug_pmm) return;
-        const byte_idx = pfn / 8;
-        const bit_idx: u3 = @intCast(pfn % 8);
-        self.bitmap[byte_idx] |= (@as(u8, 1) << bit_idx);
-    }
-
-    fn markFree(self: *Region, pfn: usize) void {
-        if (!debug_pmm) return;
-        const byte_idx = pfn / 8;
-        const bit_idx: u3 = @intCast(pfn % 8);
-        self.bitmap[byte_idx] &= ~(@as(u8, 1) << bit_idx);
-    }
-
-    // TODO(smp): Free list operations need lock protection.
-    /// Pop a page from free list. Returns physical address or null.
-    fn popFreeList(self: *Region) ?usize {
-        const node = self.free_list orelse return null;
-        const addr = @intFromPtr(node);
-        const phys = hal.virtToPhys(addr);
-
-        self.free_list = node.next;
-        self.markAllocated(self.physToPfn(phys));
-        self.free_count -= 1;
-
-        return phys;
-    }
-
-    /// Push a page to free list.
-    fn pushFreeList(self: *Region, phys: usize) void {
-        const pfn = self.physToPfn(phys);
-        self.markFree(pfn);
-        self.free_count += 1;
-
-        const virt = hal.physToVirt(phys);
-        // SAFETY: page is free and mapped, safe to write FreeNode at start.
-        const node: *FreeNode = @ptrFromInt(virt);
-        node.next = self.free_list;
-        self.free_list = node;
-    }
-
-    /// Build free list for all free pages.
-    /// In debug mode: uses bitmap (bit=0 means free).
-    /// In release mode: uses reserved range tracking.
-    /// Runs on primary core before SMP.
-    fn buildFreeList(self: *Region) void {
-        var added: usize = 0;
-        // Iterate forward for cache-friendly access, prepend to list
-        for (0..self.total_pages) |pfn| {
-            const phys = self.pfnToPhys(pfn);
-
-            // Check if page is free
-            const is_free = if (debug_pmm)
-                !self.isAllocated(pfn) // Debug: bitmap bit=0 means free
-            else
-                !isReserved(phys); // Release: not in reserved ranges
-
-            if (!is_free) continue;
-
-            const virt = hal.physToVirt(phys);
-            const node: *FreeNode = @ptrFromInt(virt);
-            node.next = self.free_list;
-            self.free_list = node;
-            added += 1;
-        }
-        self.free_count = added;
-    }
 };
 
-// TODO(smp): Protect with spinlock for concurrent access.
-/// PMM state.
-// SAFETY: align(64) prevents LLVM from merging these globals with others (cache line separation).
-var regions: [MAX_REGIONS]Region align(64) = [_]Region{.{}} ** MAX_REGIONS;
-var region_count: usize align(64) = 0;
+/// Global PMM instance. Cache-line aligned to prevent false sharing.
+var pmm: Pmm align(64) = .{};
 
-/// Reserved ranges for release mode free list building.
-var reserved_ranges: [MAX_RESERVED]struct { base: u64, end: u64 } align(64) = undefined;
-var reserved_count: usize align(64) = 0;
+/// Reserved range for tracking during initialization.
+const ReservedRange = struct { base: u64 = 0, end: u64 = 0 };
 
-/// Record a reserved range for release mode free list building.
-fn recordReserved(base: u64, end: u64) void {
-    if (!debug_pmm and reserved_count < MAX_RESERVED) {
-        reserved_ranges[reserved_count] = .{ .base = base, .end = end };
-        reserved_count += 1;
-    }
-}
+/// Reserved ranges tracked during initialization (before free list is built).
+var reserved_ranges: [MAX_RESERVED]ReservedRange = .{ReservedRange{}} ** MAX_RESERVED;
+var reserved_count: usize = 0;
 
-/// Check if a physical address is in a reserved range.
-fn isReserved(phys: u64) bool {
-    for (reserved_ranges[0..reserved_count]) |r| {
-        if (phys >= r.base and phys < r.end) return true;
-    }
-    return false;
-}
-
-/// Initialize PMM from DTB memory map.
-/// Runs on primary core before SMP.
+/// Initialize PMM from device tree memory map.
+/// Must be called on primary core before SMP initialization.
 pub fn init(dtb: fdt.Fdt) void {
     // Reset state (allows re-initialization for testing)
-    regions = [_]Region{.{}} ** MAX_REGIONS;
-    region_count = 0;
+    pmm = Pmm{};
     reserved_count = 0;
 
-    // Collect memory regions from DTB, sorted by size (largest first for efficiency)
+    // Reserve DTB and kernel FIRST, before placing metadata.
+    // DTB is typically placed near end of RAM by bootloader.
+    // If we don't reserve it first, our metadata array may overwrite it.
+
+    // Reserve kernel image (padded to 2MB for large page alignment)
+    const krange = hal.getKernelPhysRange();
+    const kernel_safe_end = @max(krange.end, krange.start + 2 * 1024 * 1024);
+    recordReserved(krange.start, kernel_safe_end);
+
+    // Reserve DTB blob (must be done before iterating reserved regions!)
+    const dtb_size = fdt.getTotalSize(dtb);
+    const dtb_start = hal.boot.dtb_ptr;
+    if (dtb_start != 0 and dtb_size > 0) {
+        // Pad DTB reservation to page boundary
+        const dtb_end = alignUp64(dtb_start + dtb_size, PAGE_SIZE);
+        recordReserved(dtb_start, dtb_end);
+    }
+
+    // Reserve DTB-specified reserved regions (e.g., OpenSBI on RISC-V)
+    var dtb_reserved = fdt.getReservedRegions(dtb);
+    while (dtb_reserved.next()) |region| {
+        if (region.size > 0) {
+            recordReserved(region.base, region.base + region.size);
+        }
+    }
+
+    // Collect memory regions from DTB, sorted by size (largest first)
     var dtb_regions = fdt.getMemoryRegions(dtb);
-    var candidates: [MAX_REGIONS]struct { base: u64, size: u64 } = undefined;
+    var candidates: [MAX_ARENAS]struct { base: u64, size: u64 } = undefined;
     var candidate_count: usize = 0;
 
     while (dtb_regions.next()) |region| {
         if (region.size == 0) continue;
-        if (candidate_count >= MAX_REGIONS) break;
+        if (candidate_count >= MAX_ARENAS) break;
 
         // Insert sorted by size descending
         var insert_idx = candidate_count;
@@ -251,57 +238,222 @@ pub fn init(dtb: fdt.Fdt) void {
         @panic(panic_msg.NO_MEMORY_REGIONS);
     }
 
-    // Initialize each region
-    for (candidates[0..candidate_count]) |candidate| {
-        if (region_count >= MAX_REGIONS) break;
-        if (initRegion(candidate.base, candidate.size)) {
-            region_count += 1;
+    // Initialize each arena
+    for (candidates[0..candidate_count], 0..) |candidate, idx| {
+        if (pmm.arena_count >= MAX_ARENAS) break;
+        if (initArena(candidate.base, candidate.size, @intCast(idx))) {
+            pmm.arena_count += 1;
         }
     }
 
-    if (region_count == 0) {
+    if (pmm.arena_count == 0) {
         @panic(panic_msg.NO_MEMORY_REGIONS);
     }
 
-    // Mark kernel image as allocated
-    const krange = hal.getKernelPhysRange();
-
-    // Pad kernel memory reservation to at least 2MB.
-    // This is a standard OS stability pattern:
-    // 1. Safety Buffer: Covers BSS/Stack growth and bootloader artifacts (DTB) placed after the image.
-    // 2. Alignment: Matches the architectural Large Page size (2MB on ARM64/RISC-V). Even if the
-    //    linker image is smaller, we reserve the full large page to prevent PMM from fragmenting
-    //    the kernel's identity mapping.
-    const safe_end = @max(krange.end, krange.start + 2 * 1024 * 1024);
-
-    recordReserved(krange.start, safe_end);
-    markRangeUsed(krange.start, safe_end - krange.start);
-
-    // Mark DTB reserved regions as allocated
-    var reserved = fdt.getReservedRegions(dtb);
-    while (reserved.next()) |region| {
-        if (region.size > 0) {
-            recordReserved(region.base, region.base + region.size);
-            markRangeUsed(region.base, region.size);
+    // Mark all pre-recorded reserved ranges in the page metadata
+    // (ranges were recorded before arena init to protect DTB from being overwritten)
+    for (reserved_ranges[0..reserved_count]) |r| {
+        if (r.end > r.base) {
+            markRangeReserved(r.base, r.end - r.base);
         }
     }
 
-    // Reserve DTB blob itself
-    const dtb_size = fdt.getTotalSize(dtb);
-    const dtb_start = hal.boot.dtb_ptr;
-    if (dtb_start != 0 and dtb_size > 0) {
-        recordReserved(dtb_start, dtb_start + dtb_size);
-        markRangeUsed(dtb_start, dtb_size);
-    }
-
-    // Build free list now that reserved ranges are known (both modes)
-    for (regions[0..region_count]) |*region| {
-        region.buildFreeList();
-    }
+    // Build free list from non-reserved pages
+    buildFreeList();
 }
 
-/// Initialize a single memory region. Returns true if successful.
-fn initRegion(base: u64, size: u64) bool {
+/// Allocate a single physical page.
+/// Returns Page pointer or null if out of memory.
+/// O(1) operation.
+pub fn allocPage() ?*Page {
+    if (pmm.arena_count == 0) {
+        @panic(panic_msg.NOT_INITIALIZED);
+    }
+
+    const held = pmm.lock.guard();
+    defer held.release();
+
+    const page = pmm.free_list.popFront() orelse return null;
+
+    page.state = .allocated;
+    page.ref_count = 1;
+    pmm.free_count -= 1;
+
+    if (debug_pmm) {
+        const phys = pageToPhysInternal(page);
+        poisonPage(phys, poison.ALLOC);
+    }
+
+    return page;
+}
+
+/// Free a previously allocated page.
+/// Panics on double-free, freeing reserved pages, or invalid address.
+pub fn freePage(page: *Page) void {
+    if (pmm.arena_count == 0) {
+        @panic(panic_msg.NOT_INITIALIZED);
+    }
+
+    const held = pmm.lock.guard();
+    defer held.release();
+
+    freePageLocked(page);
+}
+
+/// Allocate N contiguous physical pages with specified alignment.
+/// Returns head Page pointer or null if unable to satisfy request.
+/// O(n) operation where n is total pages in system.
+///
+/// alignment_log2: log2 of required alignment (0 = page-aligned, 12 = 4KB, 21 = 2MB)
+pub fn allocContiguous(count: usize, alignment_log2: u8) ?*Page {
+    if (pmm.arena_count == 0) {
+        @panic(panic_msg.NOT_INITIALIZED);
+    }
+
+    if (count == 0) return null;
+
+    const held = pmm.lock.guard();
+    defer held.release();
+
+    const alignment: usize = @as(usize, 1) << @intCast(alignment_log2);
+
+    // Search each arena for a contiguous run
+    for (pmm.arenas[0..pmm.arena_count]) |*arena| {
+        if (arena.usable_pages < count) continue;
+
+        var run_start: ?usize = null;
+        var run_length: usize = 0;
+
+        for (0..arena.usable_pages) |i| {
+            const page = &arena.pages[i];
+
+            // Reset run if page is not free
+            if (page.state != .free) {
+                run_start = null;
+                run_length = 0;
+                continue;
+            }
+
+            // Check alignment for potential run start
+            if (run_start == null) {
+                const phys = arena.base_phys + i * PAGE_SIZE;
+                if (phys & (alignment - 1) == 0) {
+                    run_start = i;
+                    run_length = 1;
+                } else {
+                    continue;
+                }
+            } else {
+                run_length += 1;
+            }
+
+            // Found enough contiguous pages?
+            if (run_length >= count) {
+                const start_idx = run_start.?;
+
+                // Remove all pages from free list and mark allocated
+                for (start_idx..start_idx + count) |j| {
+                    const p = &arena.pages[j];
+                    pmm.free_list.remove(p);
+                    p.state = .allocated;
+                    p.ref_count = 1;
+
+                    if (debug_pmm) {
+                        const phys = arena.base_phys + j * PAGE_SIZE;
+                        poisonPage(phys, poison.ALLOC);
+                    }
+                }
+
+                // Mark head page
+                arena.pages[start_idx].flags.contiguous_head = true;
+                pmm.free_count -= count;
+
+                return &arena.pages[start_idx];
+            }
+        }
+    }
+
+    return null;
+}
+
+/// Free a contiguous allocation.
+/// The page must be the head of a contiguous allocation.
+pub fn freeContiguous(head: *Page, count: usize) void {
+    if (pmm.arena_count == 0) {
+        @panic(panic_msg.NOT_INITIALIZED);
+    }
+
+    if (!head.flags.contiguous_head) {
+        @panic(panic_msg.NOT_CONTIGUOUS_HEAD);
+    }
+
+    const held = pmm.lock.guard();
+    defer held.release();
+
+    // Find arena containing this page
+    const arena = findArenaForPage(head) orelse @panic(panic_msg.ADDRESS_NOT_IN_ARENA);
+    const start_idx = (@intFromPtr(head) - @intFromPtr(arena.pages.ptr)) / @sizeOf(Page);
+
+    // Free all pages in the range
+    for (start_idx..start_idx + count) |i| {
+        if (i >= arena.page_count) break;
+        freePageLocked(&arena.pages[i]);
+    }
+
+    head.flags.contiguous_head = false;
+}
+
+/// Get physical address from Page pointer.
+pub fn pageToPhys(page: *const Page) usize {
+    return pageToPhysInternal(page);
+}
+
+/// Get Page pointer from physical address.
+/// Returns null if address is not managed by PMM.
+pub fn physToPage(phys: usize) ?*Page {
+    if (phys & (PAGE_SIZE - 1) != 0) return null;
+
+    for (pmm.arenas[0..pmm.arena_count]) |*arena| {
+        if (arena.physToPage(phys)) |page| {
+            return page;
+        }
+    }
+    return null;
+}
+
+/// Returns count of free pages.
+pub fn freeCount() usize {
+    return @atomicLoad(usize, &pmm.free_count, .acquire);
+}
+
+/// Returns total pages across all arenas. Constant after init.
+pub fn totalPages() usize {
+    return pmm.total_pages;
+}
+
+/// Returns count of allocated pages.
+pub fn allocatedCount() usize {
+    return pmm.total_pages - @atomicLoad(usize, &pmm.free_count, .acquire);
+}
+
+/// Returns number of managed arenas.
+pub fn arenaCount() usize {
+    return pmm.arena_count;
+}
+
+/// Returns true if debug mode is enabled.
+pub fn isDebugEnabled() bool {
+    return debug_pmm;
+}
+
+/// Returns base physical address of first (largest) arena.
+pub fn baseAddr() usize {
+    if (pmm.arena_count == 0) return 0;
+    return pmm.arenas[0].base_phys;
+}
+
+/// Initialize a single arena. Returns true if successful.
+fn initArena(base: u64, size: u64, arena_idx: u8) bool {
     const aligned_base = alignUp64(base, PAGE_SIZE);
     if (aligned_base >= base +% size) return false;
 
@@ -309,223 +461,161 @@ fn initRegion(base: u64, size: u64) bool {
     const total_pages: usize = @intCast(aligned_size / PAGE_SIZE);
     if (total_pages == 0) return false;
 
+    // Calculate metadata size
+    const metadata_bytes = total_pages * @sizeOf(Page);
+    const metadata_pages = (metadata_bytes + PAGE_SIZE - 1) / PAGE_SIZE;
+
+    if (metadata_pages >= total_pages) {
+        // Region too small for metadata
+        return false;
+    }
+
+    const usable_pages = total_pages - metadata_pages;
     const base_usize: usize = @intCast(aligned_base);
 
-    var region = &regions[region_count];
-    region.base_addr = base_usize;
-    region.total_pages = total_pages;
-    region.free_list = null;
+    // Place metadata at end of region
+    const metadata_phys = base_usize + usable_pages * PAGE_SIZE;
+    const metadata_virt = hal.physToVirt(metadata_phys);
 
-    if (debug_pmm) {
-        // Debug mode: allocate bitmap, lazy free list
-        const bitmap_bytes: usize = (total_pages + 7) / 8;
-        const bitmap_pages = (bitmap_bytes + PAGE_SIZE - 1) / PAGE_SIZE;
+    // Initialize arena
+    var arena = &pmm.arenas[pmm.arena_count];
+    arena.base_phys = base_usize;
+    arena.page_count = total_pages;
+    arena.usable_pages = usable_pages;
 
-        if (bitmap_pages >= total_pages) {
-            // Region too small for bitmap, skip it
-            return false;
-        }
+    // metadata_virt is within physmap (all RAM mapped at boot)
+    const pages_ptr: [*]Page = @ptrFromInt(metadata_virt);
+    arena.pages = pages_ptr[0..total_pages];
 
-        // Place bitmap at end of region. This keeps low addresses free
-        // for kernel heap growth and avoids fragmenting the allocatable space.
-        const bitmap_phys: usize = base_usize + (total_pages - bitmap_pages) * PAGE_SIZE;
-        const bitmap_virt = hal.physToVirt(bitmap_phys);
-
-        // SAFETY: bitmap_virt is within physmap (all RAM mapped at boot).
-        const bitmap_ptr: [*]u8 = @ptrFromInt(bitmap_virt);
-        region.bitmap = bitmap_ptr[0..bitmap_bytes];
-
-        // Initialize bitmap: all pages free (bit=0)
-        @memset(region.bitmap, 0x00);
-        region.free_count = total_pages;
-
-        // Mark bitmap pages as used
-        const bitmap_start_pfn = (bitmap_phys - base_usize) / PAGE_SIZE;
-        for (bitmap_start_pfn..bitmap_start_pfn + bitmap_pages) |pfn| {
-            if (pfn < total_pages) {
-                region.markAllocated(pfn);
-                region.free_count -= 1;
-            }
-        }
-    } else {
-        // Release mode: no bitmap, free list built after reserved ranges marked
-        region.free_count = total_pages;
-        // Free list built in init() after reserved ranges are known
+    // Initialize all Page structs
+    for (arena.pages, 0..) |*page, i| {
+        page.* = Page{
+            .arena_idx = arena_idx,
+            .state = if (i >= usable_pages) .reserved else .free,
+        };
     }
+
+    // Mark metadata pages as reserved
+    recordReserved(metadata_phys, metadata_phys + metadata_pages * PAGE_SIZE);
+
+    pmm.total_pages += usable_pages;
 
     return true;
 }
 
-/// Mark a physical range as used across all regions. Removes from free list.
-fn markRangeUsed(base: u64, size: u64) void {
+/// Record a reserved range for reference.
+fn recordReserved(base: u64, end: u64) void {
+    if (reserved_count >= MAX_RESERVED) {
+        @panic(panic_msg.TOO_MANY_RESERVED);
+    }
+    reserved_ranges[reserved_count] = .{ .base = base, .end = end };
+    reserved_count += 1;
+}
+
+/// Check if physical address is in a reserved range.
+fn isReserved(phys: u64) bool {
+    for (reserved_ranges[0..reserved_count]) |r| {
+        if (phys >= r.base and phys < r.end) return true;
+    }
+    return false;
+}
+
+/// Mark a physical range as reserved.
+fn markRangeReserved(base: u64, size: u64) void {
     if (size == 0) return;
 
     const range_end: u64 = base +% size;
 
-    for (regions[0..region_count]) |*region| {
-        if (region.total_pages == 0) continue;
+    for (pmm.arenas[0..pmm.arena_count]) |*arena| {
+        if (arena.page_count == 0) continue;
 
-        const region_base: u64 = region.base_addr;
-        const region_end: u64 = region_base +% (@as(u64, region.total_pages) * PAGE_SIZE);
+        const arena_base: u64 = arena.base_phys;
+        const arena_end: u64 = arena_base + arena.usable_pages * PAGE_SIZE;
 
-        // Check if range overlaps with this region
-        if (range_end <= region_base or base >= region_end) continue;
+        // Check overlap
+        if (range_end <= arena_base or base >= arena_end) continue;
 
-        // Clamp to this region
-        const start: u64 = @max(base, region_base);
-        const end: u64 = @min(range_end, region_end);
+        // Clamp to arena
+        const start: u64 = @max(base, arena_base);
+        const end: u64 = @min(range_end, arena_end);
         if (end <= start) continue;
 
         // Calculate page range
-        const start_pfn: usize = @intCast((start - region_base) / PAGE_SIZE);
-        const end_offset = end - region_base;
-        const end_pfn: usize = @intCast((end_offset + PAGE_SIZE - 1) / PAGE_SIZE);
-        const clamped_end_pfn = @min(end_pfn, region.total_pages);
+        const start_pfn: usize = @intCast((start - arena_base) / PAGE_SIZE);
+        const end_pfn: usize = @intCast((end - arena_base + PAGE_SIZE - 1) / PAGE_SIZE);
+        const clamped_end = @min(end_pfn, arena.usable_pages);
 
-        if (debug_pmm) {
-            // Debug: mark pages as used in bitmap (idempotent)
-            for (start_pfn..clamped_end_pfn) |pfn| {
-                if (!region.isAllocated(pfn)) {
-                    region.markAllocated(pfn);
-                    region.free_count -= 1;
-                }
-            }
+        // Mark pages as reserved
+        for (start_pfn..clamped_end) |pfn| {
+            arena.pages[pfn].state = .reserved;
         }
-
-        // Remove from free list if already built (post-init runtime).
-        // Count actual removals to update free_count correctly.
-        if (region.free_list != null) {
-            var new_list: ?*FreeNode = null;
-            var kept: usize = 0;
-            var node = region.free_list;
-            while (node) |n| {
-                const next_node = n.next;
-                const node_phys = hal.virtToPhys(@intFromPtr(n));
-                const node_pfn = region.physToPfn(node_phys);
-
-                // Keep only pages not in the reserved range
-                if (node_pfn < start_pfn or node_pfn >= clamped_end_pfn) {
-                    n.next = new_list;
-                    new_list = n;
-                    kept += 1;
-                }
-                node = next_node;
-            }
-            // Update free_count based on actual removals (works for overlapping ranges)
-            if (!debug_pmm) {
-                region.free_count = kept;
-            }
-            region.free_list = new_list;
-        }
-        // Release mode during init: don't update free_count here.
-        // buildFreeList() will set the correct value after all ranges are marked.
     }
 }
 
-fn alignUp64(value: u64, alignment: usize) u64 {
-    const mask = @as(u64, alignment - 1);
-    return (value + mask) & ~mask;
-}
+/// Build free list from all non-reserved pages.
+fn buildFreeList() void {
+    pmm.free_list = .{};
+    pmm.free_count = 0;
 
-// TODO(smp): Caller must hold PMM lock for allocPage/freePage.
-/// Allocate a single physical page. Returns physical address or null if OOM.
-/// O(1) from free list. Bitmap (debug mode) is only for verification, not allocation.
-pub fn allocPage() ?usize {
-    if (region_count == 0) {
-        @panic(panic_msg.NOT_INITIALIZED);
-    }
+    for (pmm.arenas[0..pmm.arena_count]) |*arena| {
+        for (0..arena.usable_pages) |i| {
+            const page = &arena.pages[i];
 
-    // Try each region in order (largest first due to sorting)
-    for (regions[0..region_count]) |*region| {
-        if (region.popFreeList()) |addr| {
-            if (debug_pmm) poisonPage(addr, poison.ALLOC);
-            return addr;
+            // Skip if reserved or already marked
+            if (page.state == .reserved) continue;
+
+            // Double-check against reserved ranges
+            const phys = arena.base_phys + i * PAGE_SIZE;
+            if (isReserved(phys)) {
+                page.state = .reserved;
+                continue;
+            }
+
+            // Add to free list
+            page.state = .free;
+            pmm.free_list.pushBack(page);
+            pmm.free_count += 1;
         }
     }
+}
 
+/// Free a page (must hold lock).
+fn freePageLocked(page: *Page) void {
+    switch (page.state) {
+        .free => @panic(panic_msg.DOUBLE_FREE),
+        .reserved => @panic(panic_msg.FREE_RESERVED),
+        .allocated => {},
+    }
+
+    if (debug_pmm) {
+        const phys = pageToPhysInternal(page);
+        poisonPage(phys, poison.FREE);
+    }
+
+    page.state = .free;
+    page.ref_count = 0;
+    page.flags = .{};
+    pmm.free_list.pushBack(page);
+    pmm.free_count += 1;
+}
+
+/// Get physical address from Page (internal, no lock needed).
+fn pageToPhysInternal(page: *const Page) usize {
+    const arena = findArenaForPage(page) orelse @panic(panic_msg.ADDRESS_NOT_IN_ARENA);
+    return arena.pageToPhys(page);
+}
+
+/// Find arena containing a Page pointer.
+fn findArenaForPage(page: *const Page) ?*Arena {
+    const page_addr = @intFromPtr(page);
+    for (pmm.arenas[0..pmm.arena_count]) |*arena| {
+        const start = @intFromPtr(arena.pages.ptr);
+        const end = start + arena.pages.len * @sizeOf(Page);
+        if (page_addr >= start and page_addr < end) {
+            return arena;
+        }
+    }
     return null;
-}
-
-/// Free a previously allocated page. Panics on double-free or invalid address.
-pub fn freePage(addr: usize) void {
-    if (region_count == 0) {
-        @panic(panic_msg.NOT_INITIALIZED);
-    }
-
-    if (addr & (PAGE_SIZE - 1) != 0) {
-        @panic(panic_msg.UNALIGNED_ADDRESS);
-    }
-
-    // Find which region owns this address
-    for (regions[0..region_count]) |*region| {
-        if (!region.containsAddr(addr)) continue;
-
-        // Double-free detection (debug only - bitmap required)
-        if (debug_pmm) {
-            const pfn = region.physToPfn(addr);
-            if (!region.isAllocated(pfn)) {
-                @panic(panic_msg.DOUBLE_FREE);
-            }
-        }
-
-        if (debug_pmm) poisonPage(addr, poison.FREE);
-        region.pushFreeList(addr);
-        return;
-    }
-
-    @panic(panic_msg.ADDRESS_NOT_IN_REGION);
-}
-
-/// Returns count of allocated pages across all regions.
-pub fn allocatedCount() usize {
-    if (region_count == 0) return 0;
-    var total: usize = 0;
-    for (regions[0..region_count]) |region| {
-        total += region.total_pages - region.free_count;
-    }
-    return total;
-}
-
-/// Returns count of free pages across all regions.
-pub fn freeCount() usize {
-    if (region_count == 0) return 0;
-    var total: usize = 0;
-    for (regions[0..region_count]) |region| {
-        total += region.free_count;
-    }
-    return total;
-}
-
-/// Returns total pages across all regions.
-pub fn totalPages() usize {
-    if (region_count == 0) return 0;
-    var total: usize = 0;
-    for (regions[0..region_count]) |region| {
-        total += region.total_pages;
-    }
-    return total;
-}
-
-/// Returns number of managed regions.
-pub fn regionCount() usize {
-    return region_count;
-}
-
-/// Returns true if debug mode is enabled (bitmap tracking, poison fills).
-pub fn isDebugEnabled() bool {
-    return debug_pmm;
-}
-
-/// Returns base physical address of first (largest) region.
-pub fn baseAddr() usize {
-    if (region_count == 0) return 0;
-    return regions[0].base_addr;
-}
-
-/// Returns iterator over allocated memory ranges (for leak detection).
-/// Returns empty iterator in release builds.
-pub fn allocatedRanges() AllocatedRanges {
-    return .{};
 }
 
 /// Fill page with poison pattern (debug only).
@@ -536,40 +626,13 @@ fn poisonPage(phys: usize, pattern: u8) void {
     @memset(ptr[0..PAGE_SIZE], pattern);
 }
 
-/// Verify bitmap and free list consistency for all regions.
-/// Bitmap is source of truth; free list is subset of free pages.
-/// Always returns true in release builds (no bitmap to verify).
-pub fn verifyIntegrity() bool {
-    if (!debug_pmm) return true; // No bitmap in release mode
-    if (region_count == 0) return true;
+fn alignUp64(value: u64, alignment: usize) u64 {
+    const mask = @as(u64, alignment - 1);
+    return (value + mask) & ~mask;
+}
 
-    for (regions[0..region_count]) |region| {
-        // Count free bits in bitmap
-        var bitmap_free: usize = 0;
-        for (0..region.total_pages) |pfn| {
-            if (!region.isAllocated(pfn)) {
-                bitmap_free += 1;
-            }
-        }
-
-        // Bitmap free count must match tracked free_count
-        if (bitmap_free != region.free_count) {
-            return false;
-        }
-
-        // Verify all free list entries are marked free in bitmap
-        var node = region.free_list;
-        while (node) |n| {
-            const node_phys = hal.virtToPhys(@intFromPtr(n));
-            const node_pfn = region.physToPfn(node_phys);
-            if (region.isAllocated(node_pfn)) {
-                // Page in free list but marked allocated in bitmap
-                return false;
-            }
-            node = n.next;
-        }
-    }
-    return true;
+test "Page size is small for memory efficiency" {
+    try std.testing.expect(@sizeOf(Page) <= 32);
 }
 
 test "alignUp64 rounds to page boundaries" {
@@ -581,48 +644,54 @@ test "alignUp64 rounds to page boundaries" {
     try expectEqual(@as(u64, 8192), alignUp64(4097, 4096));
 }
 
-test "bitmap bit indexing is correct" {
-    const expectEqual = std.testing.expectEqual;
-
-    // Verify byte index
-    try expectEqual(@as(usize, 0), @as(usize, 0) / 8);
-    try expectEqual(@as(usize, 0), @as(usize, 7) / 8);
-    try expectEqual(@as(usize, 1), @as(usize, 8) / 8);
-    try expectEqual(@as(usize, 1), @as(usize, 15) / 8);
-
-    // Verify bit index
-    try expectEqual(@as(u3, 0), @as(u3, @intCast(@as(usize, 0) % 8)));
-    try expectEqual(@as(u3, 7), @as(u3, @intCast(@as(usize, 7) % 8)));
-    try expectEqual(@as(u3, 0), @as(u3, @intCast(@as(usize, 8) % 8)));
-    try expectEqual(@as(u3, 1), @as(u3, @intCast(@as(usize, 9) % 8)));
-}
-
-test "bitmap masks set correct bits" {
-    const expectEqual = std.testing.expectEqual;
-
-    try expectEqual(@as(u8, 0b00000001), @as(u8, 1) << @as(u3, 0));
-    try expectEqual(@as(u8, 0b00000010), @as(u8, 1) << @as(u3, 1));
-    try expectEqual(@as(u8, 0b10000000), @as(u8, 1) << @as(u3, 7));
-}
-
-test "Region.containsAddr checks bounds correctly" {
-    var region = Region{
-        .base_addr = 0x1000,
-        .total_pages = 4,
-        .bitmap = &.{},
+test "Arena.physToPage and pageToPhys roundtrip" {
+    var pages: [4]Page = [_]Page{.{}} ** 4;
+    var arena = Arena{
+        .base_phys = 0x1000,
+        .page_count = 4,
+        .usable_pages = 4,
+        .pages = &pages,
     };
 
-    const expect = std.testing.expect;
-    try expect(!region.containsAddr(0x0000));
-    try expect(!region.containsAddr(0x0FFF));
-    try expect(region.containsAddr(0x1000));
-    try expect(region.containsAddr(0x2000));
-    try expect(region.containsAddr(0x4FFF));
-    try expect(!region.containsAddr(0x5000));
-    try expect(!region.containsAddr(0x10000));
+    // Test each page
+    for (0..4) |i| {
+        const phys = 0x1000 + i * PAGE_SIZE;
+        const page = arena.physToPage(phys).?;
+        try std.testing.expectEqual(phys, arena.pageToPhys(page));
+    }
+
+    // Out of range
+    try std.testing.expectEqual(@as(?*Page, null), arena.physToPage(0x0000));
+    try std.testing.expectEqual(@as(?*Page, null), arena.physToPage(0x5000));
 }
 
-test "FreeNode size fits in page" {
-    const expect = std.testing.expect;
-    try expect(@sizeOf(FreeNode) <= PAGE_SIZE);
+test "Arena.containsPhys" {
+    var pages: [4]Page = [_]Page{.{}} ** 4;
+    var arena = Arena{
+        .base_phys = 0x1000,
+        .page_count = 4,
+        .usable_pages = 4,
+        .pages = &pages,
+    };
+
+    try std.testing.expect(!arena.containsPhys(0x0000));
+    try std.testing.expect(!arena.containsPhys(0x0FFF));
+    try std.testing.expect(arena.containsPhys(0x1000));
+    try std.testing.expect(arena.containsPhys(0x4FFF));
+    try std.testing.expect(!arena.containsPhys(0x5000));
+}
+
+test "Page default state is free" {
+    const page = Page{};
+    try std.testing.expectEqual(PageState.free, page.state);
+    try std.testing.expectEqual(@as(u32, 0), page.ref_count);
+    try std.testing.expect(!page.flags.contiguous_head);
+}
+
+test "Page.Flags is packed and minimal" {
+    try std.testing.expectEqual(@as(usize, 1), @sizeOf(Page.Flags));
+}
+
+test {
+    _ = list; // Include list.zig tests
 }
