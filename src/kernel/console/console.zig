@@ -7,12 +7,15 @@
 //! userspace. The kernel will just provide MMIO VMOs and IRQ capabilities.
 
 const builtin = @import("builtin");
+const sync = @import("../sync/sync.zig");
 
 const uart = switch (builtin.cpu.arch) {
     .aarch64 => @import("../arch/arm64/uart.zig"),
     .riscv64 => @import("../arch/riscv64/uart.zig"),
     else => @compileError("Unsupported architecture"),
 };
+
+var lock: sync.SpinLock = .{};
 
 /// Initialize console output.
 pub fn init() void {
@@ -26,11 +29,16 @@ pub fn postMmuInit() void {
 
 /// Print string to console.
 pub fn print(s: []const u8) void {
+    lock.acquire();
+    defer lock.release();
     uart.print(s);
 }
 
 /// Print a u64 value in hexadecimal.
 pub fn printHex(value: u64) void {
+    lock.acquire();
+    defer lock.release();
+
     const hex_chars = "0123456789abcdef";
     var buf: [18]u8 = undefined; // "0x" + 16 hex digits
     buf[0] = '0';
@@ -41,13 +49,16 @@ pub fn printHex(value: u64) void {
         buf[i] = hex_chars[@intCast(v & 0xF)];
         v >>= 4;
     }
-    print(&buf);
+    uart.print(&buf);
 }
 
 /// Print a decimal number.
 pub fn printDec(value: u64) void {
+    lock.acquire();
+    defer lock.release();
+
     if (value == 0) {
-        print("0");
+        uart.print("0");
         return;
     }
     var buf: [20]u8 = undefined; // Max u64 is 20 digits
@@ -57,5 +68,5 @@ pub fn printDec(value: u64) void {
         buf[i - 1] = @intCast('0' + (v % 10));
         v /= 10;
     }
-    print(buf[i..20]);
+    uart.print(buf[i..20]);
 }
