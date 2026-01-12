@@ -517,12 +517,14 @@ fn allocPageTable(allocator: std.mem.Allocator) ?usize {
 }
 
 /// Unmap a 4KB page at the given virtual address.
-/// Returns the physical address that was mapped, or null if not mapped.
+/// Returns the physical address that was mapped.
 /// Does NOT flush TLB - caller must do that after unmapping (allows batching).
 /// TODO(smp): Caller must hold page table lock.
-pub fn unmapPage(root: *PageTable, vaddr: usize) ?usize {
-    const entry = walk(root, vaddr) orelse return null;
-    if (!entry.isValid()) return null;
+pub fn unmapPage(root: *PageTable, vaddr: usize) UnmapError!usize {
+    if (!VirtAddr.isCanonical(vaddr)) return UnmapError.NotCanonical;
+
+    const entry = walk(root, vaddr) orelse return UnmapError.NotMapped;
+    if (!entry.isValid()) return UnmapError.NotMapped;
 
     const paddr = entry.physAddr();
     entry.* = Pte.INVALID;
@@ -532,8 +534,8 @@ pub fn unmapPage(root: *PageTable, vaddr: usize) ?usize {
 
 /// Unmap a 4KB page and immediately flush TLB for that address.
 /// Convenience wrapper when batching is not needed.
-pub fn unmapPageAndFlush(root: *PageTable, vaddr: usize) ?usize {
-    const paddr = unmapPage(root, vaddr) orelse return null;
+pub fn unmapPageAndFlush(root: *PageTable, vaddr: usize) UnmapError!usize {
+    const paddr = try unmapPage(root, vaddr);
     Tlb.flushAddr(vaddr);
     return paddr;
 }
@@ -809,4 +811,14 @@ test "physToVirt and virtToPhys are inverses" {
     const original: usize = 0x40080000;
     const round_trip = virtToPhys(physToVirt(original));
     try std.testing.expectEqual(original, round_trip);
+}
+
+test "unmapPage returns NotMapped for unmapped address" {
+    var root = PageTable.EMPTY;
+    try std.testing.expectError(UnmapError.NotMapped, unmapPage(&root, 0x40001000));
+}
+
+test "unmapPage returns NotCanonical for non-canonical addresses" {
+    var root = PageTable.EMPTY;
+    try std.testing.expectError(UnmapError.NotCanonical, unmapPage(&root, 0x0000_0080_0000_0000));
 }
