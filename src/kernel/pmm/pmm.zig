@@ -3,16 +3,26 @@
 //! Manages physical page allocation using per-page metadata and a doubly-linked
 //! free list. Supports single page and contiguous allocation with SMP-safe locking.
 //!
-//! Architecture:
-//! - Page: Per-page metadata with intrusive list node, state, ref count
-//! - Arena: Contiguous physical memory region with page metadata array
-//! - Free list: Global doubly-linked list for O(1) alloc/free
-//! - SpinLock: Protects all PMM state for SMP safety
+//! Each Page struct (24 bytes) tracks one 4KB physical page. Pages are grouped
+//! into Arenas discovered from the DTB. Metadata lives at end of each arena to
+//! keep low addresses free for DMA. Overhead is ~0.6% of RAM.
 //!
-//! Debug features:
-//! - Poison fills detect use-after-free (0xDD) and use-before-init (0xCD)
-//! - State-based double-free detection
-//! - Integrity verification
+//! - allocPage / freePage: O(1)
+//! - allocContiguous: O(n) scan for N consecutive free pages
+//! - pageToPhys / physToPage: O(1) pointer arithmetic
+//!
+//! Debug builds enable poison fills (0xCD alloc, 0xDD free) and double-free detection.
+//!
+//! ```
+//! // Single page:
+//! const page = pmm.allocPage() orelse return error.OutOfMemory;
+//! defer pmm.freePage(page);
+//! const phys = pmm.pageToPhys(page);
+//!
+//! // Contiguous (e.g., 16KB stack):
+//! const pages = pmm.allocContiguous(4, 0) orelse return error.OutOfMemory;
+//! defer pmm.freeContiguous(pages, 4);
+//! ```
 
 const builtin = @import("builtin");
 const std = @import("std");
@@ -21,9 +31,9 @@ const hal = @import("../hal/hal.zig");
 const memory = @import("../memory/memory.zig");
 const sync = @import("../sync/sync.zig");
 
-const list = @import("list.zig");
-pub const ListNode = list.ListNode;
-pub const DoublyLinkedList = list.DoublyLinkedList;
+const lib = @import("../lib/lib.zig");
+pub const ListNode = lib.ListNode;
+pub const DoublyLinkedList = lib.DoublyLinkedList;
 
 const PAGE_SIZE = memory.PAGE_SIZE;
 
@@ -37,8 +47,8 @@ const MAX_ARENAS = 4;
 const MAX_RESERVED = 8;
 
 comptime {
-    // Page metadata must be small enough that overhead stays reasonable (<1% of RAM)
-    if (@sizeOf(Page) > 64) @compileError("Page struct too large");
+    // Page metadata must stay at 24 bytes (~0.6% overhead per 4KB page)
+    if (@sizeOf(Page) > 24) @compileError("Page struct too large (max 24 bytes)");
     // Page must fit evenly for pointer arithmetic in pageToPhys
     if (@sizeOf(Page) % @alignOf(Page) != 0) @compileError("Page size must be multiple of alignment");
     // Poison patterns must be distinct
@@ -80,12 +90,10 @@ pub const PageState = enum(u8) {
 };
 
 /// Per-page metadata. One instance per physical page in the system.
-///
-/// Size: 24 bytes (on 64-bit systems)
-/// Overhead: ~0.6% of RAM (24 bytes per 4KB page)
+/// Size is enforced at compile time to keep overhead low (~0.6% of RAM).
 pub const Page = struct {
     /// Intrusive list node for free list membership.
-    node: list.ListNode = .{},
+    node: ListNode = .{},
 
     /// Current page state.
     state: PageState = .free,
@@ -153,7 +161,7 @@ pub const Arena = struct {
 };
 
 /// Free list type using doubly-linked intrusive list.
-const FreeList = list.DoublyLinkedList(Page, "node");
+const FreeList = DoublyLinkedList(Page, "node");
 
 /// PMM global state.
 const Pmm = struct {
@@ -631,8 +639,8 @@ fn alignUp64(value: u64, alignment: usize) u64 {
     return (value + mask) & ~mask;
 }
 
-test "Page size is small for memory efficiency" {
-    try std.testing.expect(@sizeOf(Page) <= 32);
+test "Page size is 24 bytes" {
+    try std.testing.expectEqual(@as(usize, 24), @sizeOf(Page));
 }
 
 test "alignUp64 rounds to page boundaries" {
@@ -693,5 +701,5 @@ test "Page.Flags is packed and minimal" {
 }
 
 test {
-    _ = list; // Include list.zig tests
+    _ = lib; // Include lib tests
 }
