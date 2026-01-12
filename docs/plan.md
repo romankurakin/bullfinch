@@ -4,19 +4,24 @@ Architecture: ARM64 and RISC-V with hardware abstraction layer
 
 Kernel Type: MINIX-style microkernel, small kernel with userspace services
 
-Capability Model: Zircon-inspired capabilities (simplified for educational use, seL4 ideas referenced)
+Capability Model: Zircon-inspired capabilities (simplified for educational use,
+seL4 ideas referenced)
 
 User Programs: WebAssembly runtime with WASI. No POSIX compatibility layer.
 
-Process Model: Spawn-only (no fork). Explicit capability passing at process creation.
+Process Model: Spawn-only (no fork). Explicit capability passing at process
+creation.
 
-Thread Model: Zircon-style separation — process owns address space and handle table, threads execute within process.
+Thread Model: Zircon-style separation — process owns address space and handle
+table, threads execute within process.
 
-Development Environment: Cross-compile from host. QEMU for initial testing, then real hardware (Raspberry Pi 5, Orange RV2).
+Development Environment: Cross-compile from host. QEMU for initial testing, then
+real hardware (Raspberry Pi 5, Orange RV2).
 
 Goal: Educational OS for personal learning, not production use.
 
-Named after the bullfinch, a northern bird that flourishes in harsh conditions — a symbol of resilience and grace.
+Named after the bullfinch, a northern bird that flourishes in harsh conditions —
+a symbol of resilience and grace.
 
 ---
 
@@ -26,7 +31,8 @@ Named after the bullfinch, a northern bird that flourishes in harsh conditions �
 
 #### Rung 0-1: Toolchain and Boot
 
-Set up cross-compilation for both architectures. Implement UART output and boot banner. Define HAL interfaces before implementing either architecture.
+Set up cross-compilation for both architectures. Implement UART output and boot
+banner. Define HAL interfaces before implementing either architecture.
 
 Reading:
 
@@ -35,7 +41,8 @@ Reading:
 
 #### Rung 2: Exception Handling
 
-Implement trap handlers for both architectures with register dumps. Add kernel debug output infrastructure (printf, panic).
+Implement trap handlers for both architectures with register dumps. Add kernel
+debug output infrastructure (printf, panic).
 
 Reading:
 
@@ -45,7 +52,8 @@ Reading:
 
 #### Rung 3: MMU and Abstraction Layer
 
-Enable paging with identity mapping. Introduce HAL isolating architecture-specific code for MMU.
+Enable paging with identity mapping. Introduce HAL isolating
+architecture-specific code for MMU.
 
 Reading:
 
@@ -55,7 +63,9 @@ Reading:
 
 #### Rung 4: Timer and Clock Services
 
-Implement timer interrupts. Add basic clock syscalls for monotonic time. Timer hardware generates IRQs that trigger tick handlers — required for preemptive scheduling in Phase 2.
+Implement timer interrupts. Add basic clock syscalls for monotonic time. Timer
+hardware generates IRQs that trigger tick handlers — required for preemptive
+scheduling in Phase 2.
 
 Reading:
 
@@ -66,7 +76,10 @@ Reading:
 
 #### Rung 5: Device Tree Parsing
 
-Integrate libfdt to parse Flattened Device Tree (FDT/DTB) and discover hardware at runtime. Extract memory regions, interrupt controller configuration (GIC/PLIC), and peripheral addresses. Required before physical memory allocator — must know available RAM and reserved regions from DTB.
+Integrate libfdt to parse Flattened Device Tree (FDT/DTB) and discover hardware
+at runtime. Extract memory regions, interrupt controller configuration
+(GIC/PLIC), and peripheral addresses. Required before physical memory allocator
+— must know available RAM and reserved regions from DTB.
 
 Reading:
 
@@ -75,11 +88,12 @@ Reading:
 
 ---
 
-### Phase 2: Memory and Scheduling
+### Phase 2: Memory, Scheduling, and SMP
 
 #### Rung 6: Physical Memory Allocator
 
-Implement page allocator with leak detection. Research allocator strategies (bitmap, buddy, free list).
+Implement page allocator with leak detection. Research allocator strategies
+(bitmap, buddy, free list).
 
 Reading:
 
@@ -87,7 +101,9 @@ Reading:
 
 #### Rung 7: Kernel Object Allocator
 
-Implement slab or pool allocator for fixed-size kernel object allocation. All kernel objects (tasks, handles, VMOs, channels) need efficient allocation.
+Implement slab or pool allocator for fixed-size kernel object allocation. All
+kernel objects (tasks, handles, VMOs, channels) need efficient allocation.
+Include contiguous page allocator for multi-page objects (stacks).
 
 Reading:
 
@@ -95,7 +111,10 @@ Reading:
 
 #### Rung 8: Task Structures and Scheduler
 
-Define task/thread data structures. Document which registers to save per architecture. Build scheduler — start cooperative, add preemptive using timer interrupts. Implement direct process switch for IPC optimization (sender donates timeslice to receiver).
+Define task/thread data structures. Document which registers to save per
+architecture. Build scheduler — start cooperative, add preemptive using timer
+interrupts. Implement direct process switch for IPC optimization (sender donates
+timeslice to receiver).
 
 Reading:
 
@@ -111,67 +130,100 @@ Reading:
 
 - OSDI3 Sections 4.3, 4.5, 4.7-4.8 (virtual memory, MINIX memory manager)
 
+#### Rung 10: Symmetric Multiprocessing (SMP)
+
+Enable secondary CPU cores. Per-CPU stacks via kernel allocator, per-CPU
+scheduler queues, TLB shootdown via IPI. Requires kernel allocator,
+scheduler, and per-task VM to be complete first.
+
+Reading:
+
+- OSTEP Chapters 27-29 (Concurrency)
+- ARM PSCI specification
+- RISC-V SBI HSM extension
+
+#### Rung 11: Tickless Scheduling
+
+Remove periodic timer interrupts when CPU is idle or running single task.
+Timer fires only for actual deadlines (sleep, timeout, timeslice end). Reduces
+power consumption and improves latency. Per-CPU timer management required.
+
+Reading:
+
+- Linux NO_HZ documentation
+- "Tickless kernel" LWN articles
+
 ---
 
 ### Phase 3: Capability System and Core Kernel Objects
 
-#### Rung 10: Kernel Object Model
+#### Rung 12: Kernel Object Model
 
-Establish core pattern: kernel objects are reference-counted, destroyed at zero. All system resources represented as capabilities — no hidden kernel resources.
+Establish core pattern: kernel objects are reference-counted, destroyed at zero.
+All system resources represented as capabilities — no hidden kernel resources.
 
 Reading:
 
 - Zircon kernel object documentation
 - seL4 manual (object lifecycle, capability spaces)
 
-#### Rung 11: Handle Tables
+#### Rung 13: Handle Tables
 
-Implement per-process handle table. Handles are indices into per-process tables, each entry contains pointer to kernel object plus rights bitmap.
+Implement per-process handle table. Handles are indices into per-process tables,
+each entry contains pointer to kernel object plus rights bitmap.
 
 Reading:
 
 - OSDI3 Section 5.6.7 (file descriptors)
 - Zircon handle documentation
 
-#### Rung 12: Rights and Validation
+#### Rung 14: Rights and Validation
 
-Add rights to handle entries. Implement validation in syscall paths. Rights are per-handle, not per-object — same object can have multiple handles with different rights.
+Add rights to handle entries. Implement validation in syscall paths. Rights are
+per-handle, not per-object — same object can have multiple handles with
+different rights.
 
 Reading:
 
 - OSDI3 Section 5.5 (protection mechanisms)
 - Zircon rights documentation
 
-#### Rung 13: Derivation and Revocation
+#### Rung 15: Derivation and Revocation
 
-Handle derivation with attenuation (can only remove rights, never add). Research revocation strategies (seL4 CDT vs Zircon flat model).
+Handle derivation with attenuation (can only remove rights, never add). Research
+revocation strategies (seL4 CDT vs Zircon flat model).
 
 Reading:
 
 - seL4 manual (capability derivation, CDT)
 - capDL paper
 
-#### Rung 14: Memory Objects (VMOs)
+#### Rung 16: Memory Objects (VMOs)
 
-Implement VMO kernel object for physical memory management. Support mapping and direct access. VMOs must precede IPC — IPC buffers are memory-backed. Process creation requires VMO for vDSO mapping.
+Implement VMO kernel object for physical memory management. Support mapping and
+direct access. VMOs must precede IPC — IPC buffers are memory-backed. Process
+creation requires VMO for vDSO mapping.
 
 Reading:
 
 - OSTEP Chapter 19 (TLBs)
 - Zircon VMO documentation
 
-#### Rung 15: Address Space Management (VMAR)
+#### Rung 17: Address Space Management (VMAR)
 
-Implement virtual memory address region management. Processes map VMOs into their address space through VMAR operations.
+Implement virtual memory address region management. Processes map VMOs into
+their address space through VMAR operations.
 
 Reading:
 
 - Zircon VMAR documentation
 - seL4 VSpace management
 
-#### Rung 16: Synchronous IPC
+#### Rung 18: Synchronous IPC
 
-Build message-passing IPC. Liedtke's research: IPC is the central organizing principle. Key optimizations: direct process switch, register-based message passing, lazy scheduling, combined syscalls (call = send+receive).
+Build message-passing IPC. Liedtke's research: IPC is the central organizing
+principle. Key optimizations: direct process switch, register-based message
+passing, lazy scheduling, combined syscalls (call = send+receive).
 
 Reading:
 
@@ -179,35 +231,40 @@ Reading:
 - Liedtke SOSP 1995 (On µ-Kernel Construction)
 - OSDI3 Section 2.2 (MINIX message passing)
 
-#### Rung 17: Handle Transfer
+#### Rung 19: Handle Transfer
 
-Extend IPC to move handles between processes. Handle removed from sender table, added to receiver table atomically.
+Extend IPC to move handles between processes. Handle removed from sender table,
+added to receiver table atomically.
 
 Reading:
 
 - Zircon channel documentation (handle transfer)
 
-#### Rung 18: Async Notifications
+#### Rung 20: Async Notifications
 
-Implement notification object for async signaling. Used for event notification without full IPC weight — essential for interrupt delivery. Userspace builds synchronization primitives (mutexes) on top of notifications + atomics.
+Implement notification object for async signaling. Used for event notification
+without full IPC weight — essential for interrupt delivery. Userspace builds
+synchronization primitives (mutexes) on top of notifications + atomics.
 
 Reading:
 
 - seL4 manual (Notification objects)
 - Zircon signals documentation
 
-#### Rung 19: Fault Handling
+#### Rung 21: Fault Handling
 
-Define fault delivery to userspace via IPC. Research seL4 fault endpoints vs Zircon exception channels.
+Define fault delivery to userspace via IPC. Research seL4 fault endpoints vs
+Zircon exception channels.
 
 Reading:
 
 - Zircon exception handling
 - seL4 fault endpoints
 
-#### Rung 20: Hardware IRQ Objects
+#### Rung 22: Hardware IRQ Objects
 
-Bind hardware interrupts to notifications. Kernel ISR masks interrupt, signals notification. Userspace driver waits, handles, acks to unmask.
+Bind hardware interrupts to notifications. Kernel ISR masks interrupt, signals
+notification. Userspace driver waits, handles, acks to unmask.
 
 Reading:
 
@@ -216,17 +273,20 @@ Reading:
 - seL4 IRQHandler documentation
 - RISC-V PLIC, ARM GIC specs
 
-#### Rung 21: Memory Sharing
+#### Rung 23: Memory Sharing
 
-VMO sharing via handle duplication with reference counting. Research COW clone semantics (optional).
+VMO sharing via handle duplication with reference counting. Research COW clone
+semantics (optional).
 
 Reading:
 
 - Zircon VMO clone documentation
 
-#### Rung 22: Process Creation
+#### Rung 24: Process Creation
 
-Implement spawn syscall. Program loading is entirely userspace — kernel provides building blocks only. Parent passes all needed capabilities at spawn — no global namespace, no service discovery.
+Implement spawn syscall. Program loading is entirely userspace — kernel provides
+building blocks only. Parent passes all needed capabilities at spawn — no global
+namespace, no service discovery.
 
 Reading:
 
@@ -237,36 +297,43 @@ Reading:
 
 ### Phase 4: Core Services in Userspace
 
-### Rung 23: Initial Bootstrap
+#### Rung 25: Initial Bootstrap
 
-Kernel creates init process with bootstrap channel containing all initial capabilities (root job, vDSO VMO, boot image VMO). Init implements ELF loader, spawns core services, passes capabilities explicitly.
+Kernel creates init process with bootstrap channel containing all initial
+capabilities (root job, vDSO VMO, boot image VMO). Init implements ELF loader,
+spawns core services, passes capabilities explicitly.
 
 Reading:
 
 - Zircon userboot documentation
 - seL4 BootInfo structure
 
-#### Rung 24: Process Manager
+#### Rung 26: Process Manager
 
-Userspace process lifecycle server. Handles spawn requests, creates process via kernel syscalls, passes capability set to new process. No PIDs — capabilities are the only process naming.
+Userspace process lifecycle server. Handles spawn requests, creates process via
+kernel syscalls, passes capability set to new process. No PIDs — capabilities
+are the only process naming.
 
 Reading:
 
 - OSDI3 Section 2.3 (MINIX PM)
 - Zircon process creation
 
-### Rung 25: Device Manager
+#### Rung 27: Device Manager
 
-Device enumeration from devicetree. Distribute IRQ capabilities and MMIO regions (as VMOs) to drivers. Start with UART as first userspace driver.
+Device enumeration from devicetree. Distribute IRQ capabilities and MMIO regions
+(as VMOs) to drivers. Start with UART as first userspace driver.
 
 Reading:
 
 - OSDI3 Section 3.5 (MINIX drivers)
 - Zircon driver model
 
-### Rung 26: Filesystem Server
+#### Rung 28: Filesystem Server
 
-Implement simple filesystem server (ramfs initially). Apps get channel to filesystem directly at spawn — no VFS routing layer. Filesystem server IS the interface.
+Implement simple filesystem server (ramfs initially). Apps get channel to
+filesystem directly at spawn — no VFS routing layer. Filesystem server IS the
+interface.
 
 Reading:
 
@@ -277,32 +344,34 @@ Reading:
 
 ### Phase 5: User Programs (WASM/WASI)
 
-### Rung 27: WASM Runtime Integration
+#### Rung 29: WASM Runtime Integration
 
-Embed WASM interpreter as userspace process. wasm3 recommended — lightweight (~64KB), pure C, no JIT complexity. Map WASM linear memory to VMO.
+Embed WASM interpreter as userspace process. Map WASM linear memory to VMO.
 
 Reading:
 
 - WASM specification
-- wasm3 embedding documentation
 
-### Rung 28: WASI Syscall Layer
+#### Rung 30: WASI Syscall Layer
 
-Implement WASI subset. WASI aligns with capability model: file access requires passing descriptors with permissions, each WASI capability maps to microkernel handle.
+Implement WASI subset. WASI aligns with capability model: file access requires
+passing descriptors with permissions, each WASI capability maps to microkernel
+handle.
 
 Reading:
 
 - WASI specification
 
-### Rung 29: First WASM Application
+#### Rung 31: First WASM Application
 
-Hello world end-to-end: kernel -> init -> PM -> WASM runtime -> .wasm -> WASI fd_write -> filesystem channel -> UART driver -> output.
+Hello world end-to-end: kernel -> init -> PM -> WASM runtime -> .wasm -> WASI
+fd_write -> filesystem channel -> UART driver -> output.
 
 ---
 
 ## Phase 6: Hardening and Extensions (Future)
 
-TBD: multi-core, tickless scheduling, real filesystems, network stack, virtio drivers, hardware testing.
+TBD: real filesystems, network stack, virtio drivers, hardware testing.
 
 ---
 
@@ -311,7 +380,7 @@ TBD: multi-core, tickless scheduling, real filesystems, network stack, virtio dr
 ### Core Operating Systems
 
 - OSTEP — <https://pages.cs.wisc.edu/~remzi/OSTEP>
-- OSDI3 — Operating Systems: Design & Implementation, 3rd ed. (Tanenbaum/Woodhull)
+- OSDI3 — Operating Systems: Design & Implementation
 - Plan 9 Papers — <https://plan9.io/wiki/plan9/papers/index.html>
 
 ### Architecture

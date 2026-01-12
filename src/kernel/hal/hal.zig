@@ -39,6 +39,7 @@ pub const mmu = arch.mmu;
 pub const trap = arch.trap;
 
 pub const disableInterrupts = arch.trap.disableInterrupts;
+pub const enableInterrupts = arch.trap.enableInterrupts;
 pub const flushTlb = arch.mmu.Tlb.flushAll;
 pub const flushTlbAddr = arch.mmu.Tlb.flushAddr;
 pub const halt = arch.trap.halt;
@@ -91,16 +92,16 @@ comptime {
 /// Returns to caller which then switches SP and jumps to kmain.
 pub export fn physInit() void {
     console.init();
-    console.print("\nHardware initialized\n");
+    console.print("\nBOOT: hardware initialized\n");
 
     // Install trap vectors early so MMU faults can be caught and debugged.
     // Uses PC-relative addressing, works at physical addresses.
     arch.trap.init();
-    console.print("Trap handling initialized\n");
+    console.print("BOOT: trap vectors installed\n");
 
     // Pass DTB pointer so MMU can map enough to cover it
     arch.mmu.init(board.KERNEL_PHYS_LOAD, boot.dtb_ptr);
-    console.print("MMU enabled\n");
+    console.print("BOOT: MMU enabled\n");
 }
 
 /// Kernel virtual base address, exported for boot.zig to use when jumping to higher-half.
@@ -117,7 +118,7 @@ pub fn getDtb() ?fdt.Fdt {
 
 /// Finalizes address space transition and initializes timer hardware.
 pub fn virtInit() void {
-    console.print("Running in higher-half virtual address space\n");
+    console.print("BOOT: running in higher-half\n");
 
     // Reinit trap vector to virtual address, must happen before removing identity mapping
     arch.trap.init();
@@ -135,7 +136,7 @@ pub fn virtInit() void {
     }
 
     arch.mmu.removeIdentityMapping();
-    console.print("Identity mapping removed\n");
+    console.print("BOOT: identity mapping removed\n");
 
     // Initialize timer frequency (ARM64 reads register, RISC-V uses DTB)
     const timer_freq = if (getDtb()) |dtb| fdt.getTimerFrequency(dtb) orelse 0 else 0;
