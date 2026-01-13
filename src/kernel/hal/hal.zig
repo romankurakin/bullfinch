@@ -92,16 +92,16 @@ comptime {
 /// Returns to caller which then switches SP and jumps to kmain.
 pub export fn physInit() void {
     console.init();
-    console.print("\nBOOT: hardware initialized\n");
+    console.print("\n[1] UART: console ready\n");
 
     // Install trap vectors early so MMU faults can be caught and debugged.
     // Uses PC-relative addressing, works at physical addresses.
     arch.trap.init();
-    console.print("BOOT: trap vectors installed\n");
+    console.print("[2] TRAP: exception vectors set\n");
 
     // Pass DTB pointer so MMU can map enough to cover it
     arch.mmu.init(board.KERNEL_PHYS_LOAD, boot.dtb_ptr);
-    console.print("BOOT: MMU enabled\n");
+    console.print("[3] MMU: paging enabled\n");
 }
 
 /// Kernel virtual base address, exported for boot.zig to use when jumping to higher-half.
@@ -118,7 +118,7 @@ pub fn getDtb() ?fdt.Fdt {
 
 /// Finalizes address space transition and initializes timer hardware.
 pub fn virtInit() void {
-    console.print("BOOT: running in higher-half\n");
+    console.print("[4] VIRT: higher-half mapping active\n");
 
     // Reinit trap vector to virtual address, must happen before removing identity mapping
     arch.trap.init();
@@ -136,7 +136,7 @@ pub fn virtInit() void {
     }
 
     arch.mmu.removeIdentityMapping();
-    console.print("BOOT: identity mapping removed\n");
+    console.print("[5] VIRT: identity mapping removed\n");
 
     // Initialize timer frequency (ARM64 reads register, RISC-V uses DTB)
     const timer_freq = if (getDtb()) |dtb| fdt.getTimerFrequency(dtb) orelse 0 else 0;

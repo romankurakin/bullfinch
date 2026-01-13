@@ -19,14 +19,19 @@ qemu-arm64: build-arm64
 qemu-riscv64: build-riscv64
     qemu-system-riscv64 -machine virt -smp 2 -m 2G -nographic -bios default -kernel zig-out/bin/kernel-riscv64
 
-# Smoke test ARM64 - build and run briefly to check boot
-smoke-arm64: build-arm64
+# Smoke test - build and run both architectures with pass/fail detection
+smoke: build-arm64 build-riscv64
     llvm-objcopy -O binary zig-out/bin/kernel-arm64 zig-out/bin/kernel-arm64.bin
-    bash -c 'output=$(qemu-system-aarch64 -machine virt,gic-version=3 -cpu cortex-a76 -smp 2 -m 2G -nographic -kernel zig-out/bin/kernel-arm64.bin 2>&1 & pid=$!; sleep 5; kill $pid; wait $pid 2>/dev/null); echo "$output"'
+    zig build smoke
 
-# Smoke test RISC-V - build and run briefly to check boot
-smoke-riscv64: build-riscv64
-    bash -c 'output=$(qemu-system-riscv64 -machine virt -smp 2 -m 2G -nographic -bios default -kernel zig-out/bin/kernel-riscv64 2>&1 & pid=$!; sleep 3; kill $pid; wait $pid 2>/dev/null); echo "$output"'
+# Peek at ARM64 boot output (runs briefly, useful for LLM agents)
+peek-arm64: build-arm64
+    llvm-objcopy -O binary zig-out/bin/kernel-arm64 zig-out/bin/kernel-arm64.bin
+    bash -c 'output=$(qemu-system-aarch64 -machine virt,gic-version=3 -cpu cortex-a76 -smp 2 -m 2G -nographic -kernel zig-out/bin/kernel-arm64.bin 2>&1 & pid=$!; sleep 2; kill $pid; wait $pid 2>/dev/null); echo "$output"'
+
+# Peek at RISC-V boot output (runs briefly, useful for LLM agents)
+peek-riscv64: build-riscv64
+    bash -c 'output=$(qemu-system-riscv64 -machine virt -smp 2 -m 2G -nographic -bios default -kernel zig-out/bin/kernel-riscv64 2>&1 & pid=$!; sleep 2; kill $pid; wait $pid 2>/dev/null); echo "$output"'
 
 # Format code
 fmt:
@@ -69,14 +74,14 @@ qemu-arm64-release: build-arm64-release
 qemu-riscv64-release: build-riscv64-release
     qemu-system-riscv64 -machine virt -smp 2 -m 2G -nographic -bios default -kernel zig-out/bin/kernel-riscv64
 
-# Smoke test ARM64 (release)
-smoke-arm64-release: build-arm64-release
+# Peek at ARM64 release boot output
+peek-arm64-release: build-arm64-release
     llvm-objcopy -O binary zig-out/bin/kernel-arm64 zig-out/bin/kernel-arm64.bin
-    bash -c 'output=$(qemu-system-aarch64 -machine virt,gic-version=3 -cpu cortex-a76 -smp 2 -m 2G -nographic -kernel zig-out/bin/kernel-arm64.bin 2>&1 & pid=$!; sleep 5; kill $pid; wait $pid 2>/dev/null); echo "$output"'
+    bash -c 'output=$(qemu-system-aarch64 -machine virt,gic-version=3 -cpu cortex-a76 -smp 2 -m 2G -nographic -kernel zig-out/bin/kernel-arm64.bin 2>&1 & pid=$!; sleep 2; kill $pid; wait $pid 2>/dev/null); echo "$output"'
 
-# Smoke test RISC-V (release)
-smoke-riscv64-release: build-riscv64-release
-    bash -c 'output=$(qemu-system-riscv64 -machine virt -smp 2 -m 2G -nographic -bios default -kernel zig-out/bin/kernel-riscv64 2>&1 & pid=$!; sleep 3; kill $pid; wait $pid 2>/dev/null); echo "$output"'
+# Peek at RISC-V release boot output
+peek-riscv64-release: build-riscv64-release
+    bash -c 'output=$(qemu-system-riscv64 -machine virt -smp 2 -m 2G -nographic -bios default -kernel zig-out/bin/kernel-riscv64 2>&1 & pid=$!; sleep 2; kill $pid; wait $pid 2>/dev/null); echo "$output"'
 
 # Disassemble kernel (ARM64)
 disasm-arm64: build-arm64

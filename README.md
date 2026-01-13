@@ -9,7 +9,8 @@ learning, not production.
 ```bash
 just build-arm64      # or build-riscv64
 just qemu-arm64       # or qemu-riscv64
-just test             # run all tests
+just smoke            # smoke test both architectures
+just test             # run unit tests
 ```
 
 ## Requirements

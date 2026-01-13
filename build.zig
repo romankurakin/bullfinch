@@ -78,4 +78,28 @@ pub fn build(b: *std.Build) void {
         .filters = if (test_filter) |f| &.{f} else &.{},
     });
     test_step.dependOn(&b.addRunArtifact(kernel_tests).step);
+
+    // Smoke test runner (runs on host, spawns QEMU)
+    const smoke_step = b.step("smoke", "Run smoke tests");
+    const test_markers_module = b.createModule(.{
+        .root_source_file = b.path("src/kernel/test_markers.zig"),
+        .target = native_target,
+    });
+    const smoke_module = b.createModule(.{
+        .root_source_file = b.path("tests/smoke.zig"),
+        .target = native_target,
+        .optimize = .Debug,
+        .imports = &.{
+            .{ .name = "test_markers", .module = test_markers_module },
+        },
+    });
+    const smoke_exe = b.addExecutable(.{
+        .name = "smoke",
+        .root_module = smoke_module,
+    });
+    const run_smoke = b.addRunArtifact(smoke_exe);
+    if (b.args) |args| {
+        run_smoke.addArgs(args);
+    }
+    smoke_step.dependOn(&run_smoke.step);
 }
