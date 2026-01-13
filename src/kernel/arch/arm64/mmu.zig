@@ -18,13 +18,10 @@
 //! TODO(smp): Implement per-CPU page table locks
 //! TODO(smp): Use ASID for per-process TLB management (currently ASID=0)
 
-const builtin = @import("builtin");
 const std = @import("std");
 
 const memory = @import("../../memory/memory.zig");
 const mmu_types = @import("../../mmu/mmu.zig");
-
-const is_aarch64 = builtin.cpu.arch == .aarch64;
 
 pub const PAGE_SIZE = memory.PAGE_SIZE;
 pub const PAGE_SHIFT = memory.PAGE_SHIFT;
@@ -260,14 +257,13 @@ pub const Tcr = struct {
     pub const DEFAULT: u64 = build();
 
     pub fn read() u64 {
-        if (is_aarch64) return asm volatile ("mrs %[ret], tcr_el1"
+        return asm volatile ("mrs %[ret], tcr_el1"
             : [ret] "=r" (-> u64),
         );
-        return 0;
     }
 
     pub fn write(value: u64) void {
-        if (is_aarch64) asm volatile ("msr tcr_el1, %[val]"
+        asm volatile ("msr tcr_el1, %[val]"
             :
             : [val] "r" (value),
         );
@@ -290,24 +286,24 @@ const Sctlr = struct {
 
 /// Data barrier ensures stores complete before TLB invalidation.
 inline fn storeBarrier() void {
-    if (is_aarch64) asm volatile ("dsb ishst");
+    asm volatile ("dsb ishst");
 }
 
 inline fn fullBarrier() void {
-    if (is_aarch64) asm volatile ("dsb ish");
+    asm volatile ("dsb ish");
 }
 
 /// Flushes pipeline after MMU configuration changes.
 inline fn instructionBarrier() void {
-    if (is_aarch64) asm volatile ("isb");
+    asm volatile ("isb");
 }
 
 inline fn tlbFlushAll() void {
-    if (is_aarch64) asm volatile ("tlbi alle1is");
+    asm volatile ("tlbi alle1is");
 }
 
 inline fn tlbFlushLocal() void {
-    if (is_aarch64) asm volatile ("tlbi vmalle1");
+    asm volatile ("tlbi vmalle1");
 }
 
 // TODO(smp): After secondary cores are online, always use broadcast (flushAll).
@@ -326,7 +322,7 @@ pub const Tlb = struct {
     pub inline fn flushAddr(vaddr: usize) void {
         const va_operand = (vaddr >> 12) & 0xFFFFFFFFFFF;
         storeBarrier();
-        if (is_aarch64) asm volatile ("tlbi vale1is, %[va]"
+        asm volatile ("tlbi vale1is, %[va]"
             :
             : [va] "r" (va_operand),
         );
@@ -348,7 +344,7 @@ pub const Tlb = struct {
     pub fn flushAsid(asid: u16) void {
         const operand = @as(u64, asid) << 48;
         storeBarrier();
-        if (is_aarch64) asm volatile ("tlbi aside1is, %[asid]"
+        asm volatile ("tlbi aside1is, %[asid]"
             :
             : [asid] "r" (operand),
         );
@@ -361,7 +357,7 @@ pub const Tlb = struct {
         const va_bits = (vaddr >> 12) & 0xFFFFFFFFFFF;
         const operand = (@as(u64, asid) << 48) | va_bits;
         storeBarrier();
-        if (is_aarch64) asm volatile ("tlbi vae1is, %[op]"
+        asm volatile ("tlbi vae1is, %[op]"
             :
             : [op] "r" (operand),
         );
