@@ -56,7 +56,7 @@ pub const SpinLock = struct {
     /// Acquire lock with interrupt safety. Disables interrupts, acquires lock,
     /// returns guard that restores interrupts on release.
     pub fn guard(self: *Self) Held {
-        const irq_was_enabled = hal.disableInterrupts();
+        const irq_was_enabled = hal.trap.disableInterrupts();
         self.acquire();
         return Held{ .lock = self, .irq_was_enabled = irq_was_enabled };
     }
@@ -68,7 +68,7 @@ pub const SpinLock = struct {
         pub fn release(self: Held) void {
             self.lock.release();
             if (self.irq_was_enabled) {
-                hal.enableInterrupts();
+                hal.trap.enableInterrupts();
             }
         }
     };

@@ -301,12 +301,10 @@ const SPURIOUS_INTID: u32 = 1023;
 
 const TIMER_PPI = gic.TIMER_PPI;
 
-/// Handle IRQ - acknowledge, dispatch via comptime switch, end-of-interrupt.
-/// All handlers must be known at compile time for zero-overhead dispatch.
+/// Handle IRQ - acknowledge, dispatch, end-of-interrupt.
 export fn handleIrq() void {
     const intid = gic.acknowledge();
 
-    // Spurious interrupts need no EOI
     if (intid == SPURIOUS_INTID) return;
 
     switch (intid) {

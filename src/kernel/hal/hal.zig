@@ -26,6 +26,7 @@ const std = @import("std");
 const board = @import("board");
 const console = @import("../console/console.zig");
 const fdt = @import("../fdt/fdt.zig");
+pub const interrupt = @import("interrupt.zig");
 pub const timer = @import("timer.zig");
 
 const arch = switch (builtin.cpu.arch) {
@@ -38,20 +39,11 @@ pub const boot = arch.boot;
 pub const mmu = arch.mmu;
 pub const trap = arch.trap;
 
-pub const disableInterrupts = arch.trap.disableInterrupts;
-pub const enableInterrupts = arch.trap.enableInterrupts;
-pub const flushTlb = arch.mmu.Tlb.flushAll;
-pub const flushTlbAddr = arch.mmu.Tlb.flushAddr;
-pub const halt = arch.trap.halt;
-pub const physToVirt = arch.mmu.physToVirt;
-pub const virtToPhys = arch.mmu.virtToPhys;
-pub const waitForInterrupt = arch.trap.waitForInterrupt;
-
 /// Kernel physical memory range (load address to end of image).
 pub fn getKernelPhysRange() struct { start: usize, end: usize } {
     return .{
         .start = board.KERNEL_PHYS_LOAD,
-        .end = virtToPhys(board.kernelEnd()),
+        .end = mmu.virtToPhys(board.kernelEnd()),
     };
 }
 
@@ -111,7 +103,7 @@ pub export const KERNEL_VIRT_BASE: usize = arch.mmu.KERNEL_VIRT_BASE;
 /// DTB is accessed via higher-half mapping of original bootloader location.
 pub fn getDtb() ?fdt.Fdt {
     if (boot.dtb_ptr == 0) return null;
-    const dtb: fdt.Fdt = @ptrFromInt(physToVirt(boot.dtb_ptr));
+    const dtb: fdt.Fdt = @ptrFromInt(mmu.physToVirt(boot.dtb_ptr));
     fdt.checkHeader(dtb) catch return null;
     return dtb;
 }
