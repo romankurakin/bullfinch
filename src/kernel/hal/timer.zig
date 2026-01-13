@@ -27,7 +27,13 @@ pub const now = arch_timer.now;
 /// Set next timer interrupt deadline (absolute counter value).
 pub const setDeadline = arch_timer.setDeadline;
 
-/// Enable timer interrupts. DTB needed for ARM64 GIC configuration.
+/// Initialize interrupt controller. Must be called before start().
+/// ARM64: initializes GIC. RISC-V: no-op (SBI handles interrupts).
+pub fn initInterrupts(dtb: fdt.Fdt) void {
+    arch_timer.initInterrupts(dtb);
+}
+
+/// Enable timer interrupts. Caller must call initInterrupts() first.
 pub fn start(dtb: fdt.Fdt) void {
     arch_timer.start(dtb);
 }

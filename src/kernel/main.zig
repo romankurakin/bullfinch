@@ -92,6 +92,7 @@ export fn kmain() noreturn {
     console.print(" pages free\n");
     testPmm();
 
+    hal.timer.initInterrupts(dtb);
     clock.init(dtb);
     console.print("[8] CLK: timer ready\n");
     testClock();
