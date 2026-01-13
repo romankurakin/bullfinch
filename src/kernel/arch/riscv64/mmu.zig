@@ -17,13 +17,10 @@
 //! TODO(smp): Send IPI to other harts for TLB shootdown via SBI
 //! TODO(smp): Use ASID for per-process TLB management (currently ASID=0)
 
-const builtin = @import("builtin");
 const std = @import("std");
 
 const memory = @import("../../memory/memory.zig");
 const mmu_types = @import("../../mmu/mmu.zig");
-
-const is_riscv64 = builtin.cpu.arch == .riscv64;
 
 pub const PAGE_SIZE = memory.PAGE_SIZE;
 pub const PAGE_SHIFT = memory.PAGE_SHIFT;
@@ -198,17 +195,14 @@ pub const Satp = packed struct(u64) {
 
     /// Read current SATP register value.
     pub fn read() Satp {
-        if (is_riscv64) {
-            return @bitCast(asm volatile ("csrr %[ret], satp"
-                : [ret] "=r" (-> u64),
-            ));
-        }
-        return .{};
+        return @bitCast(asm volatile ("csrr %[ret], satp"
+            : [ret] "=r" (-> u64),
+        ));
     }
 
     /// Write SATP register to change address translation mode.
     pub fn write(self: Satp) void {
-        if (is_riscv64) asm volatile ("csrw satp, %[val]"
+        asm volatile ("csrw satp, %[val]"
             :
             : [val] "r" (@as(u64, @bitCast(self))),
         );
@@ -222,7 +216,7 @@ comptime {
 /// Memory barrier for page table updates.
 /// Required after PTE writes to ensure visibility before sfence.vma.
 inline fn fence() void {
-    if (is_riscv64) asm volatile ("fence rw, rw");
+    asm volatile ("fence rw, rw");
 }
 
 // Note: sfence.vma is local-only on RISC-V.
@@ -233,14 +227,14 @@ pub const Tlb = struct {
     /// TODO(smp): Send IPI to other harts to trigger remote sfence.
     pub inline fn flushAll() void {
         fence();
-        if (is_riscv64) asm volatile ("sfence.vma zero, zero");
+        asm volatile ("sfence.vma zero, zero");
     }
 
     /// Invalidate cached translation for a specific virtual address (local hart only).
     /// TODO(smp): Send IPI to other harts for address-specific shootdown.
     pub inline fn flushAddr(vaddr: usize) void {
         fence();
-        if (is_riscv64) asm volatile ("sfence.vma %[addr], zero"
+        asm volatile ("sfence.vma %[addr], zero"
             :
             : [addr] "r" (vaddr),
         );
@@ -250,14 +244,14 @@ pub const Tlb = struct {
     /// Provided for API consistency with ARM64.
     pub inline fn flushLocal() void {
         fence();
-        if (is_riscv64) asm volatile ("sfence.vma zero, zero");
+        asm volatile ("sfence.vma zero, zero");
     }
 
     /// Invalidate all cached translations for a specific address space.
     /// TODO(smp): Use this for efficient process teardown with ASID.
     pub inline fn flushAsid(asid: u16) void {
         fence();
-        if (is_riscv64) asm volatile ("sfence.vma zero, %[asid]"
+        asm volatile ("sfence.vma zero, %[asid]"
             :
             : [asid] "r" (@as(usize, asid)),
         );
@@ -266,7 +260,7 @@ pub const Tlb = struct {
     /// Invalidate cached translation for a specific virtual address and address space.
     pub inline fn flushAddrAsid(vaddr: usize, asid: u16) void {
         fence();
-        if (is_riscv64) asm volatile ("sfence.vma %[addr], %[asid]"
+        asm volatile ("sfence.vma %[addr], %[asid]"
             :
             : [addr] "r" (vaddr),
               [asid] "r" (@as(usize, asid)),
