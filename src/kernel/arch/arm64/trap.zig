@@ -299,8 +299,7 @@ export fn irqEntry() callconv(.naked) noreturn {
 /// Spurious interrupt ID returned by GIC when no interrupt is pending.
 const SPURIOUS_INTID: u32 = 1023;
 
-/// Timer PPI interrupt ID (EL1 physical timer).
-const TIMER_PPI: u32 = 30;
+const TIMER_PPI = gic.TIMER_PPI;
 
 /// Handle IRQ - acknowledge, dispatch via comptime switch, end-of-interrupt.
 /// All handlers must be known at compile time for zero-overhead dispatch.

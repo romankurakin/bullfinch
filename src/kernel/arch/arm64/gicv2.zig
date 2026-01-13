@@ -9,8 +9,11 @@
 //!
 //! See ARM GIC-400 Technical Reference Manual.
 
+const gic = @import("gic.zig");
 const mmio = @import("mmio.zig");
 const mmu = @import("mmu.zig");
+
+const TIMER_PPI = gic.TIMER_PPI;
 
 const GICC_CTLR: usize = 0x000;
 const GICC_EOIR: usize = 0x010;
@@ -20,8 +23,6 @@ const GICC_PMR: usize = 0x004;
 const GICD_CTLR: usize = 0x000;
 const GICD_IPRIORITYR: usize = 0x400;
 const GICD_ISENABLER: usize = 0x100;
-
-const TIMER_PPI: u32 = 30;
 
 var gicd_base: usize = 0;
 var gicc_base: usize = 0;

@@ -15,6 +15,10 @@ const panic_msg = struct {
     const UNSUPPORTED_VERSION = "GIC: unsupported version";
 };
 
+/// EL1 physical timer PPI interrupt ID.
+/// PPIs 16-31 are private to each core. CNTP (physical timer) is architecturally PPI 30.
+pub const TIMER_PPI: u32 = 30;
+
 /// GIC configuration discovered from DTB.
 pub const GicInfo = struct {
     version: u8,
