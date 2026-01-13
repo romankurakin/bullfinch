@@ -21,6 +21,11 @@
           ];
 
           shellHook = ''
+            # Workaround: Zig cache access in Nix sandbox
+            # Issue: https://github.com/NixOS/nixpkgs/issues/270415
+            # Fix: https://github.com/NixOS/nixpkgs/pull/310588
+            export ZIG_GLOBAL_CACHE_DIR="''${ZIG_GLOBAL_CACHE_DIR:-$PWD/zig-cache}"
+
             echo "Bullfinch development environment"
             echo "Just: $(just --version)"
             echo "Zig: $(zig version)"
