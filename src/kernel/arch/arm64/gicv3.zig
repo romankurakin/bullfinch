@@ -9,8 +9,11 @@
 //!
 //! See ARM GIC Architecture Specification, Chapter 12 (GIC Programmer's Model).
 
+const gic = @import("gic.zig");
 const mmio = @import("mmio.zig");
 const mmu = @import("mmu.zig");
+
+const TIMER_PPI = gic.TIMER_PPI;
 
 const GICD_CTLR: usize = 0x0000;
 const GICD_CTLR_ARE_NS: u32 = 1 << 4;
@@ -24,8 +27,6 @@ const GICR_ISENABLER0: usize = 0x0100;
 const GICR_WAKER_CHILDREN_ASLEEP: u32 = 1 << 2;
 const GICR_WAKER_PROCESSOR_SLEEP: u32 = 1 << 1;
 
-const TIMER_PPI: u32 = 30;
-
 var gicd_base: usize = 0;
 var gicr_base: usize = 0;
 
@@ -37,6 +38,9 @@ pub fn init(gicd_phys: u64, gicr_phys: u64) void {
     const ctlr = mmio.read32(gicd_base + GICD_CTLR);
     mmio.write32(gicd_base + GICD_CTLR, ctlr | GICD_CTLR_ARE_NS | GICD_CTLR_ENABLE_G1NS);
 
+    // Wake redistributor - clear PROCESSOR_SLEEP and wait for CHILDREN_ASLEEP to clear.
+    // Per GIC spec, this completes within a few cycles once sleep is cleared.
+    // On real hardware this is near-instant; QEMU completes it synchronously.
     const waker = mmio.read32(gicr_base + GICR_WAKER);
     mmio.write32(gicr_base + GICR_WAKER, waker & ~GICR_WAKER_PROCESSOR_SLEEP);
     while (mmio.read32(gicr_base + GICR_WAKER) & GICR_WAKER_CHILDREN_ASLEEP != 0) {}
