@@ -46,6 +46,9 @@ const MAX_ARENAS = 4;
 /// Maximum number of reserved ranges tracked during init.
 const MAX_RESERVED = 8;
 
+/// Kernel image reservation padding for large page (2MB) alignment.
+const KERNEL_RESERVE_PAD = 2 * 1024 * 1024;
+
 comptime {
     // Page metadata capped at 24 bytes (~0.6% overhead per 4KB page).
     // Currently 19 bytes + padding = 24 bytes due to 8-byte alignment.
@@ -200,9 +203,9 @@ pub fn init(dtb: fdt.Fdt) void {
     // DTB is typically placed near end of RAM by bootloader.
     // If we don't reserve it first, our metadata array may overwrite it.
 
-    // Reserve kernel image (padded to 2MB for large page alignment)
+    // Reserve kernel image
     const krange = hal.getKernelPhysRange();
-    const kernel_safe_end = @max(krange.end, krange.start + 2 * 1024 * 1024);
+    const kernel_safe_end = @max(krange.end, krange.start + KERNEL_RESERVE_PAD);
     recordReserved(krange.start, kernel_safe_end);
 
     // Reserve DTB blob (must be done before iterating reserved regions!)
@@ -395,10 +398,22 @@ pub fn allocContiguous(count: usize, alignment_log2: u8) ?*Page {
     return null;
 }
 
+/// Errors returned by freeContiguous.
+pub const FreeContiguousError = error{
+    /// Page is not the head of a contiguous allocation.
+    NotContiguousHead,
+    /// Address is not within any managed arena.
+    AddressNotInArena,
+    /// Page in range is not in allocated state (double-free or wrong count).
+    NotAllocated,
+    /// Invalid page state (nested contiguous_head detected).
+    InvalidPageState,
+};
+
 /// Free a contiguous allocation.
 /// The page must be the head of a contiguous allocation.
 /// Caller must pass the exact count used during allocation.
-pub fn freeContiguous(head: *Page, count: usize) void {
+pub fn freeContiguous(head: *Page, count: usize) FreeContiguousError!void {
     if (pmm.arena_count == 0) {
         @panic(panic_msg.NOT_INITIALIZED);
     }
@@ -406,29 +421,29 @@ pub fn freeContiguous(head: *Page, count: usize) void {
     if (count == 0) return;
 
     if (!head.flags.contiguous_head) {
-        @panic(panic_msg.NOT_CONTIGUOUS_HEAD);
+        return error.NotContiguousHead;
     }
 
     const held = pmm.lock.guard();
     defer held.release();
 
     // Find arena containing this page
-    const arena = findArenaForPage(head) orelse @panic(panic_msg.ADDRESS_NOT_IN_ARENA);
+    const arena = findArenaForPage(head) orelse return error.AddressNotInArena;
     const start_idx = (@intFromPtr(head) - @intFromPtr(arena.pages.ptr)) / @sizeOf(Page);
 
     // Validate all pages in range are allocated (not free/reserved) before freeing any.
     // This catches caller errors like wrong count or double-free of contiguous range.
     for (start_idx..start_idx + count) |i| {
         if (i >= arena.usable_pages) {
-            @panic(panic_msg.ADDRESS_NOT_IN_ARENA);
+            return error.AddressNotInArena;
         }
         const page = &arena.pages[i];
         if (page.state != .allocated) {
-            @panic(panic_msg.CONTIGUOUS_NOT_ALLOCATED);
+            return error.NotAllocated;
         }
         // Ensure no nested contiguous_head (except the first page)
         if (i != start_idx and page.flags.contiguous_head) {
-            @panic(panic_msg.INVALID_PAGE_STATE);
+            return error.InvalidPageState;
         }
     }
 

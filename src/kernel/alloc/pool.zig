@@ -1,7 +1,8 @@
 //! Fixed-Size Object Pool Allocator.
 //!
-//! Multi-page pool for kernel objects with O(1) alloc and O(1) free. Objects
-//! are cache-line aligned (64B) to prevent false sharing on SMP.
+//! Multi-page pool for kernel objects. Alloc is O(bitmap_words) where bitmap
+//! fits in 1-2 words for typical objects; free is O(1). Objects are cache-line
+//! aligned (64B) to prevent false sharing on SMP.
 //!
 //! See Bonwick, "The Slab Allocator" (USENIX Summer 1994).
 //!
@@ -34,11 +35,16 @@ const memory = @import("../memory/memory.zig");
 
 const PAGE_SIZE = memory.PAGE_SIZE;
 
-const panic_msg = struct {
-    const MISALIGNED_FREE = "POOL: free of misaligned pointer";
-    const METADATA_SLOT_FREE = "POOL: free of slab metadata slot";
-    const OUT_OF_BOUNDS_FREE = "POOL: free of out-of-bounds pointer";
-    const DOUBLE_FREE = "POOL: double-free detected";
+/// Errors returned by pool free operations.
+pub const FreeError = error{
+    /// Pointer not aligned to object boundary.
+    MisalignedPointer,
+    /// Attempted to free slab metadata slot.
+    MetadataSlot,
+    /// Pointer outside valid slot range.
+    OutOfBounds,
+    /// Slot already free (double-free).
+    DoubleFree,
 };
 
 /// Enable extra validation in debug builds.
@@ -50,6 +56,9 @@ const CACHE_LINE_SIZE = 64;
 
 /// Back-pointer size at start of each slab page.
 const BACKPTR_SIZE = @sizeOf(usize);
+
+/// Minimum slabs to keep allocated to prevent thrashing at alloc/free boundary.
+const MIN_SLABS = 1;
 
 /// Page allocator function type. Returns directly-mapped address or null.
 pub const PageAllocFn = *const fn () ?usize;
@@ -287,7 +296,7 @@ pub fn Pool(comptime T: type) type {
         }
 
         /// Return object to pool.
-        pub fn free(self: *Self, obj: *T) void {
+        pub fn free(self: *Self, obj: *T) FreeError!void {
             self.lock.acquire();
             defer self.lock.release();
 
@@ -303,15 +312,15 @@ pub fn Pool(comptime T: type) type {
             const offset = obj_addr - storage_base;
 
             if (offset % object_size != 0) {
-                @panic(panic_msg.MISALIGNED_FREE);
+                return error.MisalignedPointer;
             }
 
             const slot_idx = offset / object_size;
             if (slot_idx == 0) {
-                @panic(panic_msg.METADATA_SLOT_FREE);
+                return error.MetadataSlot;
             }
             if (slot_idx >= objects_per_slab) {
-                @panic(panic_msg.OUT_OF_BOUNDS_FREE);
+                return error.OutOfBounds;
             }
 
             const word_idx = slot_idx / 64;
@@ -319,7 +328,7 @@ pub fn Pool(comptime T: type) type {
             const bit_mask = @as(u64, 1) << bit_idx;
 
             if (slab.bitmap[word_idx] & bit_mask != 0) {
-                @panic(panic_msg.DOUBLE_FREE);
+                return error.DoubleFree;
             }
 
             if (debug_kernel) {
@@ -332,10 +341,11 @@ pub fn Pool(comptime T: type) type {
             slab.free_count += 1;
             self.total_allocated -= 1;
 
-            // Slab completely empty - return page to PMM
+            // Slab completely empty - return page to PMM unless at minimum.
+            // Keeping MIN_SLABS avoids thrashing when near alloc/free boundary.
             const max_free = objects_per_slab - 1; // slot 0 holds SlabData
             const is_empty = slab.free_count == max_free;
-            if (is_empty) {
+            if (is_empty and self.slab_count > MIN_SLABS) {
                 self.unlinkSlab(slab);
                 self.slab_count -= 1;
                 // Poison backptr to catch use-after-free
@@ -415,10 +425,10 @@ test "Pool alloc and free" {
 
     try testing.expectEqual(@as(usize, 2), pool.totalAllocated());
 
-    pool.free(obj1);
+    try pool.free(obj1);
     try testing.expectEqual(@as(usize, 1), pool.totalAllocated());
 
-    pool.free(obj2);
+    try pool.free(obj2);
     try testing.expectEqual(@as(usize, 0), pool.totalAllocated());
 }
 
@@ -444,7 +454,7 @@ test "Pool grows with multiple slabs" {
 
     // Free all
     for (objs[0..count]) |obj| {
-        pool.free(obj);
+        try pool.free(obj);
     }
 
     try testing.expectEqual(@as(usize, 0), pool.totalAllocated());
@@ -466,8 +476,8 @@ test "Pool free finds correct slab via back-pointer" {
     obj2.value = 0xCAFEBABE;
 
     // Free in reverse order - tests that back-pointer lookup works
-    pool.free(obj2);
-    pool.free(obj1);
+    try pool.free(obj2);
+    try pool.free(obj1);
 
     try testing.expectEqual(@as(usize, 0), pool.totalAllocated());
 }
@@ -491,7 +501,7 @@ test "Pool reuses freed slot from full slab" {
 
     // Free one object
     const freed_addr = @intFromPtr(objs[0]);
-    pool.free(objs[0]);
+    try pool.free(objs[0]);
 
     // Next alloc should reuse the freed slot (slab became current on free)
     const reused = pool.alloc() orelse return error.AllocFailed;
@@ -499,7 +509,7 @@ test "Pool reuses freed slot from full slab" {
     try testing.expectEqual(@as(usize, 1), pool.slabCount());
 }
 
-test "Pool reclaims empty slab" {
+test "Pool reclaims empty slab when above MIN_SLABS" {
     resetTestPages();
 
     const TestObj = extern struct { value: u64, padding: [56]u8 };
@@ -507,20 +517,28 @@ test "Pool reclaims empty slab" {
 
     var pool = TestPool.init(testAllocPage, testFreePage);
 
-    const obj1 = pool.alloc() orelse return error.AllocFailed;
-    const obj2 = pool.alloc() orelse return error.AllocFailed;
+    // Fill first slab completely to force second slab allocation
+    const cap = TestPool.capacity_per_slab - 1; // -1 for SlabData in slot 0
+    var slab1_objs: [63]*TestObj = undefined; // max possible capacity
+    for (slab1_objs[0..cap]) |*slot| {
+        slot.* = pool.alloc() orelse return error.AllocFailed;
+    }
+
+    // Allocate one more to create second slab
+    const slab2_obj = pool.alloc() orelse return error.AllocFailed;
+    try testing.expectEqual(@as(usize, 2), pool.slabCount());
+
+    const second_slab_page = @intFromPtr(&test_pages[1]);
+
+    // Free the object in second slab - slab should be reclaimed (above MIN_SLABS)
+    try pool.free(slab2_obj);
 
     try testing.expectEqual(@as(usize, 1), pool.slabCount());
-    const slab_page = @intFromPtr(&test_pages[0]);
-
-    // Free all - slab should be reclaimed
-    pool.free(obj1);
-    pool.free(obj2);
-
-    try testing.expectEqual(@as(usize, 0), pool.slabCount());
-    try testing.expectEqual(@as(usize, 0), pool.totalAllocated());
-
-    // Verify page was actually returned to PMM
     try testing.expectEqual(@as(usize, 1), test_freed_count);
-    try testing.expectEqual(slab_page, test_freed_pages[0]);
+    try testing.expectEqual(second_slab_page, test_freed_pages[0]);
+
+    // Clean up first slab
+    for (slab1_objs[0..cap]) |obj| {
+        try pool.free(obj);
+    }
 }
