@@ -1,7 +1,15 @@
 //! Kernel test root.
 
-const arm64 = @import("arch/arm64/test.zig");
-const riscv64 = @import("arch/riscv64/test.zig");
+const builtin = @import("builtin");
+
+// Architecture-specific tests contain inline assembly that only compiles for
+// their target architecture. Import only the matching arch to allow `zig build test`
+// to run on any host without cross-compilation guards in individual modules.
+const arch_test = switch (builtin.cpu.arch) {
+    .aarch64 => @import("arch/arm64/test.zig"),
+    .riscv64 => @import("arch/riscv64/test.zig"),
+    else => struct {},
+};
 
 const alloc = @import("alloc/alloc.zig");
 const clock = @import("clock/clock.zig");
@@ -15,8 +23,7 @@ const sync = @import("sync/sync.zig");
 const trap = @import("trap/trap.zig");
 
 comptime {
-    _ = arm64;
-    _ = riscv64;
+    _ = arch_test;
 
     _ = alloc;
     _ = clock;
