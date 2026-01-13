@@ -34,6 +34,11 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Shared modules
+    const test_markers_module = b.createModule(.{
+        .root_source_file = b.path("src/shared/test_markers.zig"),
+    });
+
     // Single kernel module with board dependency.
     const kernel_module = b.createModule(.{
         .root_source_file = b.path("src/kernel/main.zig"),
@@ -41,6 +46,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "board", .module = board_module },
+            .{ .name = "test_markers", .module = test_markers_module },
         },
     });
 
@@ -81,10 +87,6 @@ pub fn build(b: *std.Build) void {
 
     // Smoke test runner (runs on host, spawns QEMU)
     const smoke_step = b.step("smoke", "Run smoke tests");
-    const test_markers_module = b.createModule(.{
-        .root_source_file = b.path("src/kernel/test_markers.zig"),
-        .target = native_target,
-    });
     const smoke_module = b.createModule(.{
         .root_source_file = b.path("tests/smoke.zig"),
         .target = native_target,
