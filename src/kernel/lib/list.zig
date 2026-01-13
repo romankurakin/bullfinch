@@ -9,9 +9,18 @@
 //! - O(1) remove (given pointer to element)
 //! - No memory allocation (nodes embedded in elements)
 //! - Cache-friendly (no pointer chasing for node metadata)
+//!
+//! Debug builds include checks to catch misuse (e.g. removing unlinked items).
 
 const std = @import("std");
 const builtin = @import("builtin");
+
+const panic_msg = struct {
+    const REMOVE_UNLINKED = "List: remove called on unlinked item";
+};
+
+/// Enable extra validation in debug builds.
+const debug_kernel = builtin.mode == .Debug;
 
 /// Intrusive list node to embed in your structure.
 ///
@@ -121,13 +130,13 @@ pub fn DoublyLinkedList(comptime T: type, comptime node_field: []const u8) type 
         pub fn remove(self: *Self, item: *T) void {
             const node = getNode(item);
 
-            // Debug check: item should be linked (head/tail, or have prev/next)
-            if (builtin.mode == .Debug) {
+            // Item should be linked (head/tail, or have prev/next)
+            if (debug_kernel) {
                 const is_head = self.head == item;
                 const is_tail = self.tail == item;
                 const has_links = node.prev != null or node.next != null;
                 if (!is_head and !is_tail and !has_links) {
-                    @panic("list: remove called on unlinked item");
+                    @panic(panic_msg.REMOVE_UNLINKED);
                 }
             }
 
