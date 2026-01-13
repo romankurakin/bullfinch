@@ -59,7 +59,10 @@ fn testPmm() void {
         console.print("PMM: contiguous FAIL\n");
         return;
     };
-    pmm.freeContiguous(pages, 4);
+    pmm.freeContiguous(pages, 4) catch {
+        console.print("PMM: freeContiguous FAIL\n");
+        return;
+    };
 
     // Verify no leaks
     if (pmm.freeCount() != before) {
