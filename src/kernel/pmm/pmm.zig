@@ -81,7 +81,6 @@ const panic_msg = struct {
     const INVALID_PAGE_STATE = "PMM: invalid page state";
     const NOT_CONTIGUOUS_HEAD = "PMM: freeContiguous called on non-head page";
     const TOO_MANY_RESERVED = "PMM: too many reserved regions (increase MAX_RESERVED)";
-    const INVALID_ALIGNMENT = "PMM: alignment_log2 exceeds address space width";
     const CONTIGUOUS_NOT_ALLOCATED = "PMM: freeContiguous page not in allocated state";
     const ARENA_IDX_MISMATCH = "PMM: arena_idx mismatch - page not in indicated arena";
 };
@@ -324,10 +323,9 @@ pub fn allocContiguous(count: usize, alignment_log2: u8) ?*Page {
 
     if (count == 0) return null;
 
-    // Validate alignment to prevent undefined shift behavior
-    if (alignment_log2 >= @bitSizeOf(usize)) {
-        @panic(panic_msg.INVALID_ALIGNMENT);
-    }
+    // Reject invalid alignment to prevent undefined shift behavior.
+    // This could come from userspace via syscall, so return null not panic.
+    if (alignment_log2 >= @bitSizeOf(usize)) return null;
 
     const held = pmm.lock.guard();
     defer held.release();
