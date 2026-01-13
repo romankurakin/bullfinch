@@ -26,6 +26,8 @@ const mmu_types = @import("../../mmu/mmu.zig");
 pub const PAGE_SIZE = memory.PAGE_SIZE;
 pub const PAGE_SHIFT = memory.PAGE_SHIFT;
 pub const ENTRIES_PER_TABLE = memory.ENTRIES_PER_TABLE;
+const DTB_MAX_SIZE = memory.DTB_MAX_SIZE;
+const MIN_PHYSMAP_SIZE = memory.MIN_PHYSMAP_SIZE;
 pub const PageFlags = mmu_types.PageFlags;
 pub const MapError = mmu_types.MapError;
 pub const UnmapError = mmu_types.UnmapError;
@@ -564,8 +566,8 @@ pub fn init(kernel_phys_load: usize, dtb_ptr: usize) void {
 
     // Calculate mapping to cover both kernel and DTB
     const kernel_start = kernel_phys_load;
-    const dtb_end = if (dtb_ptr > 0) dtb_ptr + (1 << 20) else kernel_phys_load;
-    const map_end = @max(kernel_phys_load + (1 << 30), dtb_end);
+    const dtb_end = if (dtb_ptr > 0) dtb_ptr + DTB_MAX_SIZE else kernel_phys_load;
+    const map_end = @max(kernel_phys_load + MIN_PHYSMAP_SIZE, dtb_end);
     const start_gb = kernel_start >> 30;
     const end_gb = (map_end + (1 << 30) - 1) >> 30;
     physmap_end_gb = end_gb;

@@ -13,6 +13,15 @@ pub const PAGE_SHIFT: u6 = 12;
 /// Number of entries per page table (512 for 4KB pages with 8-byte PTEs).
 pub const ENTRIES_PER_TABLE: usize = 512;
 
+/// Maximum expected DTB size for boot reservation (1MB).
+/// Bootloaders typically place DTB near end of RAM; we reserve this much
+/// to ensure metadata placement doesn't overwrite it.
+pub const DTB_MAX_SIZE: usize = 1 << 20;
+
+/// Minimum physmap size during early boot (1GB).
+/// Ensures at least one gigapage is mapped before DTB parsing completes.
+pub const MIN_PHYSMAP_SIZE: usize = 1 << 30;
+
 comptime {
     if (PAGE_SIZE == 0 or (PAGE_SIZE & (PAGE_SIZE - 1)) != 0)
         @compileError("PAGE_SIZE must be a power of 2");
