@@ -138,6 +138,8 @@ removes identity mapping. Implement modular HAL that wires arch, board,
 and common modules without circular dependencies.
 ```
 
+**No agent attribution.** Do not add `Co-Authored-By` lines for AI assistants.
+
 ## Safety Checklist
 
 - [ ] No `undefined` without justification
