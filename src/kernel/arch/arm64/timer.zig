@@ -21,17 +21,23 @@ const gic = @import("gic.zig");
 
 const panic_msg = struct {
     const GIC_NOT_FOUND = "TIMER: GIC not found in DTB";
+    const ZERO_FREQUENCY = "TIMER: CNTFRQ_EL0 is zero (firmware bug)";
 };
+
+/// CNTP_CTL_EL0 bit: Enable timer.
+const CNTP_CTL_ENABLE: u64 = 1 << 0;
 
 /// Timer frequency in Hz. Read from CNTFRQ_EL0 register.
 pub var frequency: u64 = 0;
 
 /// Read frequency from CNTFRQ_EL0 (set by firmware at boot).
 /// The freq parameter is ignored - ARM64 reads the register directly.
+/// Panics if firmware left CNTFRQ_EL0 at zero (broken firmware).
 pub fn initFrequency(_: u64) void {
     frequency = asm volatile ("mrs %[freq], cntfrq_el0"
         : [freq] "=r" (-> u64),
     );
+    if (frequency == 0) @panic(panic_msg.ZERO_FREQUENCY);
 }
 
 /// Read current counter value in ticks.
@@ -53,7 +59,7 @@ pub inline fn setDeadline(absolute_ticks: u64) void {
 inline fn enableTimer() void {
     asm volatile ("msr cntp_ctl_el0, %[val]"
         :
-        : [val] "r" (@as(u64, 0x1)),
+        : [val] "r" (CNTP_CTL_ENABLE),
     );
     asm volatile ("isb");
 }
@@ -63,9 +69,9 @@ inline fn enableIrq() void {
     asm volatile ("msr daifclr, #2");
 }
 
-/// Enable timer interrupts and global interrupt delivery.
+/// Initialize interrupt controller. Must be called before start().
 /// DTB is required to discover GIC configuration.
-pub fn start(dtb: fdt.Fdt) void {
+pub fn initInterrupts(dtb: fdt.Fdt) void {
     const gic_info = fdt.getGicInfo(dtb) orelse @panic(panic_msg.GIC_NOT_FOUND);
     gic.init(.{
         .version = gic_info.version,
@@ -73,6 +79,11 @@ pub fn start(dtb: fdt.Fdt) void {
         .gicc_base = gic_info.gicc_base,
         .gicr_base = gic_info.gicr_base,
     });
+}
+
+/// Enable timer interrupts and global interrupt delivery.
+/// Caller must call initInterrupts() first.
+pub fn start(_: fdt.Fdt) void {
     gic.enableTimerInterrupt();
     enableTimer();
     enableIrq();

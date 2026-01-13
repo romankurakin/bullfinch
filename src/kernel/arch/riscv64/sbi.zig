@@ -7,13 +7,17 @@
 //! function ID in a6. Return value comes back in a0 (negative = error).
 //!
 //! See RISC-V SBI Specification.
+//!
+//! TODO(sbi): Probe extensions with sbi_probe_extension before use.
+//! TODO(sbi): Add IPI extension for SMP, HSM for hart management, RFENCE for TLB shootdown.
 
 const panic_msg = struct {
     const PUTCHAR_FAILED = "SBI: console putchar failed";
     const SET_TIMER_FAILED = "SBI: set_timer failed";
 };
 
-const EXT_TIMER: usize = 0x54494D45; // "TIME"
+/// SBI Timer Extension ID (ASCII "TIME").
+const EXT_TIMER: usize = 0x54494D45;
 
 /// SBI ecall with up to 3 arguments. Returns error if SBI returns negative value.
 pub fn call(eid: usize, fid: usize, arg0: usize, arg1: usize, arg2: usize) !usize {
