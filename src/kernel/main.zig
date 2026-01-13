@@ -13,6 +13,7 @@ const fdt = @import("fdt/fdt.zig");
 const hal = @import("hal/hal.zig");
 const pmm = @import("pmm/pmm.zig");
 const sync = @import("sync/sync.zig");
+const test_markers = @import("test_markers.zig");
 
 const panic_msg = struct {
     const NO_DTB = "BOOT: no DTB - cannot discover hardware";
@@ -24,20 +25,18 @@ comptime {
 }
 
 fn printDtbInfo(dtb: fdt.Fdt) void {
-    console.print("DTB: ");
+    // Count reserved regions
+    var reserved_count: usize = 0;
+    var reserved = fdt.getReservedRegions(dtb);
+    while (reserved.next()) |_| reserved_count += 1;
+
+    console.print("[6] DTB: ");
     console.printDec(fdt.getCpuCount(dtb));
     console.print(" CPUs, ");
     console.printDec(fdt.getTotalMemory(dtb) / (1024 * 1024));
-    console.print(" MB RAM\n");
-
-    var reserved = fdt.getReservedRegions(dtb);
-    while (reserved.next()) |region| {
-        console.print("DTB: reserved ");
-        console.printHex(region.base);
-        console.print("-");
-        console.printHex(region.base + region.size);
-        console.print("\n");
-    }
+    console.print(" MB RAM, ");
+    console.printDec(reserved_count);
+    console.print(" reserved regions\n");
 }
 
 fn testPmm() void {
@@ -68,15 +67,12 @@ fn testPmm() void {
         return;
     }
 
-    console.print("PMM: OK\n");
 }
 
 fn testClock() void {
-    console.print("CLK: waiting 10 ticks\n");
     while (clock.getTickCount() < 10) {
         hal.waitForInterrupt();
     }
-    console.print("CLK: timer OK\n");
 }
 
 /// Kernel main, called from boot.zig after MMU enables higher-half mapping.
@@ -87,7 +83,7 @@ export fn kmain() noreturn {
     printDtbInfo(dtb);
 
     pmm.init(dtb);
-    console.print("PMM: ");
+    console.print("[7] PMM: ");
     console.printDec(pmm.freeCount());
     console.print("/");
     console.printDec(pmm.totalPages());
@@ -95,9 +91,10 @@ export fn kmain() noreturn {
     testPmm();
 
     clock.init(dtb);
+    console.print("[8] CLK: timer ready\n");
     testClock();
 
-    console.print("\nBOOT: complete\n");
+    console.print("\n" ++ test_markers.BOOT_OK ++ "\n");
     hal.halt();
 }
 
@@ -108,7 +105,7 @@ pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, _: ?usize) noreturn {
     _ = hal.disableInterrupts();
     if (!panic_once.tryOnce()) hal.halt();
 
-    console.print("\nPanic: ");
+    console.print("\n" ++ test_markers.PANIC ++ " ");
     console.print(msg);
     console.print("\n");
     hal.halt();

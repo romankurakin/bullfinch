@@ -41,6 +41,9 @@ jobs:
       - name: Build RISC-V64
         run: nix develop -c just build-riscv64
 
+      - name: Smoke test (boot both architectures in QEMU)
+        run: nix develop -c just smoke
+
       - name: Run ARM64 tests
         run: nix develop -c just test-arm64
 

@@ -11,11 +11,14 @@ safety through capabilities.
 just build-arm64          # Build for ARM64
 just build-riscv64        # Build for RISC-V
 
-just qemu-arm64           # Run in QEMU (ARM64)
-just qemu-riscv64         # Run in QEMU (RISC-V)
+just qemu-arm64           # Run in QEMU (ARM64, interactive)
+just qemu-riscv64         # Run in QEMU (RISC-V, interactive)
 
-just smoke-arm64          # Quick boot test (ARM64)
-just smoke-riscv64        # Quick boot test (RISC-V)
+just peek-arm64           # Boot briefly, show console output
+just peek-riscv64         # Boot briefly, show console output
+
+just smoke                # Smoke test both architectures (pass/fail)
+just smoke-one arm64      # Smoke test single architecture
 
 just fmt                  # Format code
 just test                 # Run all tests
