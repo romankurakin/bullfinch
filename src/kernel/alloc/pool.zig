@@ -23,6 +23,9 @@
 //! Free masks the object pointer to page boundary, reads the back-pointer to
 //! find SlabData, calculates slot index via subtraction, and sets the bitmap
 //! bit. All O(1) operations.
+//!
+//! Debug builds include checks for double-free, misaligned free, and freeing
+//! unallocated pointers.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -31,6 +34,16 @@ const memory = @import("../memory/memory.zig");
 
 const PAGE_SIZE = memory.PAGE_SIZE;
 
+const panic_msg = struct {
+    const MISALIGNED_FREE = "POOL: free of misaligned pointer";
+    const METADATA_SLOT_FREE = "POOL: free of slab metadata slot";
+    const OUT_OF_BOUNDS_FREE = "POOL: free of out-of-bounds pointer";
+    const DOUBLE_FREE = "POOL: double-free detected";
+};
+
+/// Enable extra validation in debug builds.
+const debug_kernel = builtin.mode == .Debug;
+
 /// 64 bytes - standard cache line on ARM64 and modern x86.
 /// Ensures two objects never share a cache line (prevents false sharing).
 const CACHE_LINE_SIZE = 64;
@@ -38,7 +51,7 @@ const CACHE_LINE_SIZE = 64;
 /// Back-pointer size at start of each slab page.
 const BACKPTR_SIZE = @sizeOf(usize);
 
-/// Page allocator function type. Returns physical address or null.
+/// Page allocator function type. Returns directly-mapped address or null.
 pub const PageAllocFn = *const fn () ?usize;
 
 /// Page deallocator function type.
@@ -73,10 +86,7 @@ pub fn Pool(comptime T: type) type {
         break :blk max_objects;
     };
 
-    const bitmap_words = comptime blk: {
-        const n = objects_per_slab;
-        break :blk if (n == 0) 1 else (n + 63) / 64;
-    };
+    const bitmap_words = (objects_per_slab + 63) / 64;
 
     comptime {
         if (objects_per_slab == 0) @compileError("Object too large for single page");
@@ -104,15 +114,24 @@ pub fn Pool(comptime T: type) type {
         /// See Bonwick, "Magazines and Vmem" (USENIX 2001).
         lock: sync.SpinLock = .{},
 
-        /// Internal slab tracking data.
+        /// Internal slab tracking data. Lives in slot 0 of each slab page.
         const SlabData = struct {
-            page_phys: usize,
+            /// Page base address (must be directly mapped).
+            page_addr: usize,
+            /// Free slot bitmap. Bit semantics: 1 = free, 0 = allocated.
             bitmap: [bitmap_words]u64,
             free_count: usize,
             next: ?*SlabData,
             prev: ?*SlabData,
             in_partial_list: bool,
         };
+
+        comptime {
+            // SlabData must fit in slot 0 (one object_size worth of space)
+            if (@sizeOf(SlabData) > object_size) {
+                @compileError("SlabData too large for slot 0");
+            }
+        }
 
         /// Max objects per slab (compile-time constant).
         pub const capacity_per_slab = objects_per_slab;
@@ -161,7 +180,11 @@ pub fn Pool(comptime T: type) type {
         }
 
         fn allocFromSlab(self: *Self, slab: *SlabData) ?*T {
-            // Find first free slot via @ctz
+            if (debug_kernel) {
+                std.debug.assert(slab.free_count > 0);
+            }
+
+            // Find first free slot via @ctz (bit=1 means free)
             for (&slab.bitmap, 0..) |*word, word_idx| {
                 if (word.* == 0) continue;
 
@@ -180,11 +203,11 @@ pub fn Pool(comptime T: type) type {
                 }
 
                 // Get object pointer
-                const storage_base = slab.page_phys + usable_start;
+                const storage_base = slab.page_addr + usable_start;
                 const obj_addr = storage_base + slot_idx * object_size;
                 const obj: *T = @ptrFromInt(obj_addr);
 
-                if (comptime builtin.mode == .Debug) {
+                if (debug_kernel) {
                     const bytes: *[object_size]u8 = @ptrCast(obj);
                     @memset(bytes, 0);
                 }
@@ -226,10 +249,10 @@ pub fn Pool(comptime T: type) type {
         }
 
         fn allocNewSlab(self: *Self) ?*SlabData {
-            const page_phys = self.alloc_page() orelse return null;
+            const page_addr = self.alloc_page() orelse return null;
 
             // SlabData lives in slot 0, avoiding external allocator dependency
-            const slab_storage = page_phys + usable_start;
+            const slab_storage = page_addr + usable_start;
             const slab: *SlabData = @ptrFromInt(slab_storage);
 
             // Initialize bitmap: all 1s = all free, then mask unused bits
@@ -245,7 +268,7 @@ pub fn Pool(comptime T: type) type {
             bitmap[0] &= ~@as(u64, 1);
 
             slab.* = .{
-                .page_phys = page_phys,
+                .page_addr = page_addr,
                 .bitmap = bitmap,
                 .free_count = objects_per_slab - 1, // -1 because slot 0 used for SlabData
                 .next = null,
@@ -254,7 +277,7 @@ pub fn Pool(comptime T: type) type {
             };
 
             // Write back-pointer at page start for O(1) free lookup
-            const backptr: **SlabData = @ptrFromInt(page_phys);
+            const backptr: **SlabData = @ptrFromInt(page_addr);
             backptr.* = slab;
 
             self.linkSlab(slab);
@@ -280,18 +303,15 @@ pub fn Pool(comptime T: type) type {
             const offset = obj_addr - storage_base;
 
             if (offset % object_size != 0) {
-                if (comptime builtin.mode == .Debug) @panic("Pool: free of misaligned pointer");
-                return;
+                @panic(panic_msg.MISALIGNED_FREE);
             }
 
             const slot_idx = offset / object_size;
             if (slot_idx == 0) {
-                if (comptime builtin.mode == .Debug) @panic("Pool: free of slab metadata slot");
-                return;
+                @panic(panic_msg.METADATA_SLOT_FREE);
             }
             if (slot_idx >= objects_per_slab) {
-                if (comptime builtin.mode == .Debug) @panic("Pool: free of out-of-bounds pointer");
-                return;
+                @panic(panic_msg.OUT_OF_BOUNDS_FREE);
             }
 
             const word_idx = slot_idx / 64;
@@ -299,11 +319,10 @@ pub fn Pool(comptime T: type) type {
             const bit_mask = @as(u64, 1) << bit_idx;
 
             if (slab.bitmap[word_idx] & bit_mask != 0) {
-                if (comptime builtin.mode == .Debug) @panic("Pool: double-free detected");
-                return;
+                @panic(panic_msg.DOUBLE_FREE);
             }
 
-            if (comptime builtin.mode == .Debug) {
+            if (debug_kernel) {
                 const bytes: *[object_size]u8 = @ptrCast(obj);
                 @memset(bytes, 0xDD);
             }
@@ -319,21 +338,29 @@ pub fn Pool(comptime T: type) type {
             if (is_empty) {
                 self.unlinkSlab(slab);
                 self.slab_count -= 1;
-                self.free_page(slab.page_phys);
+                // Poison backptr to catch use-after-free
+                if (debug_kernel) {
+                    const poison_ptr: *usize = @ptrFromInt(slab.page_addr);
+                    poison_ptr.* = 0xDEAD_BEEF_DEAD_BEEF;
+                }
+                self.free_page(slab.page_addr);
                 return;
             }
 
-            // Slab was full, now has space - add back to partial list
+            // Slab was full (not in partial list), now has space - add back and
+            // make it current so next alloc finds it immediately
             if (was_full) {
                 self.linkSlab(slab);
                 self.current = slab;
             }
         }
 
+        /// Returns total allocated objects. Read without lock; may be stale.
         pub fn totalAllocated(self: *const Self) usize {
             return self.total_allocated;
         }
 
+        /// Returns number of allocated slabs. Read without lock; may be stale.
         pub fn slabCount(self: *const Self) usize {
             return self.slab_count;
         }

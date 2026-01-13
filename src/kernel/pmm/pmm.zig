@@ -38,7 +38,7 @@ pub const DoublyLinkedList = lib.DoublyLinkedList;
 const PAGE_SIZE = memory.PAGE_SIZE;
 
 /// Enable poison fills and extra validation in debug builds.
-const debug_pmm = builtin.mode == .Debug;
+const debug_kernel = builtin.mode == .Debug;
 
 /// Maximum number of memory arenas supported.
 const MAX_ARENAS = 4;
@@ -47,7 +47,8 @@ const MAX_ARENAS = 4;
 const MAX_RESERVED = 8;
 
 comptime {
-    // Page metadata must stay at 24 bytes (~0.6% overhead per 4KB page)
+    // Page metadata capped at 24 bytes (~0.6% overhead per 4KB page).
+    // Currently 19 bytes + padding = 24 bytes due to 8-byte alignment.
     if (@sizeOf(Page) > 24) @compileError("Page struct too large (max 24 bytes)");
     // Page must fit evenly for pointer arithmetic in pageToPhys
     if (@sizeOf(Page) % @alignOf(Page) != 0) @compileError("Page size must be multiple of alignment");
@@ -77,6 +78,9 @@ const panic_msg = struct {
     const INVALID_PAGE_STATE = "PMM: invalid page state";
     const NOT_CONTIGUOUS_HEAD = "PMM: freeContiguous called on non-head page";
     const TOO_MANY_RESERVED = "PMM: too many reserved regions (increase MAX_RESERVED)";
+    const INVALID_ALIGNMENT = "PMM: alignment_log2 exceeds address space width";
+    const CONTIGUOUS_NOT_ALLOCATED = "PMM: freeContiguous page not in allocated state";
+    const ARENA_IDX_MISMATCH = "PMM: arena_idx mismatch - page not in indicated arena";
 };
 
 /// Physical page states.
@@ -103,12 +107,6 @@ pub const Page = struct {
 
     /// Flags for special pages.
     flags: Flags = .{},
-
-    /// Padding for alignment.
-    _pad: u8 = 0,
-
-    /// Reference count for future VMO support.
-    ref_count: u32 = 0,
 
     pub const Flags = packed struct {
         /// True if this is the first page of a contiguous allocation.
@@ -137,8 +135,9 @@ pub const Arena = struct {
     pages: []Page = &.{},
 
     /// Convert physical address to Page pointer.
-    /// Returns null if address is not in this arena.
+    /// Returns null if address is not page-aligned or not in this arena.
     pub fn physToPage(self: *const Arena, phys: usize) ?*Page {
+        if (phys & (PAGE_SIZE - 1) != 0) return null;
         if (phys < self.base_phys) return null;
         const offset = phys - self.base_phys;
         const pfn = offset / PAGE_SIZE;
@@ -284,10 +283,9 @@ pub fn allocPage() ?*Page {
     const page = pmm.free_list.popFront() orelse return null;
 
     page.state = .allocated;
-    page.ref_count = 1;
     pmm.free_count -= 1;
 
-    if (debug_pmm) {
+    if (debug_kernel) {
         const phys = pageToPhysInternal(page);
         poisonPage(phys, poison.ALLOC);
     }
@@ -310,15 +308,23 @@ pub fn freePage(page: *Page) void {
 
 /// Allocate N contiguous physical pages with specified alignment.
 /// Returns head Page pointer or null if unable to satisfy request.
-/// O(n) operation where n is total pages in system.
+/// O(n) scan across all arenas; prefer allocPage() for single pages.
 ///
-/// alignment_log2: log2 of required alignment (0 = page-aligned, 12 = 4KB, 21 = 2MB)
+/// alignment_log2: log2 of physical address alignment for the first page.
+///                 Values <= 12 are effectively page-aligned (4KB minimum).
+///                 Use 21 for 2MB large-page alignment, 30 for 1GB.
+///                 Must be < @bitSizeOf(usize).
 pub fn allocContiguous(count: usize, alignment_log2: u8) ?*Page {
     if (pmm.arena_count == 0) {
         @panic(panic_msg.NOT_INITIALIZED);
     }
 
     if (count == 0) return null;
+
+    // Validate alignment to prevent undefined shift behavior
+    if (alignment_log2 >= @bitSizeOf(usize)) {
+        @panic(panic_msg.INVALID_ALIGNMENT);
+    }
 
     const held = pmm.lock.guard();
     defer held.release();
@@ -362,11 +368,16 @@ pub fn allocContiguous(count: usize, alignment_log2: u8) ?*Page {
                 // Remove all pages from free list and mark allocated
                 for (start_idx..start_idx + count) |j| {
                     const p = &arena.pages[j];
+
+                    // Verify page is actually free before removal
+                    if (debug_kernel) {
+                        std.debug.assert(p.state == .free);
+                    }
+
                     pmm.free_list.remove(p);
                     p.state = .allocated;
-                    p.ref_count = 1;
 
-                    if (debug_pmm) {
+                    if (debug_kernel) {
                         const phys = arena.base_phys + j * PAGE_SIZE;
                         poisonPage(phys, poison.ALLOC);
                     }
@@ -386,10 +397,13 @@ pub fn allocContiguous(count: usize, alignment_log2: u8) ?*Page {
 
 /// Free a contiguous allocation.
 /// The page must be the head of a contiguous allocation.
+/// Caller must pass the exact count used during allocation.
 pub fn freeContiguous(head: *Page, count: usize) void {
     if (pmm.arena_count == 0) {
         @panic(panic_msg.NOT_INITIALIZED);
     }
+
+    if (count == 0) return;
 
     if (!head.flags.contiguous_head) {
         @panic(panic_msg.NOT_CONTIGUOUS_HEAD);
@@ -402,13 +416,30 @@ pub fn freeContiguous(head: *Page, count: usize) void {
     const arena = findArenaForPage(head) orelse @panic(panic_msg.ADDRESS_NOT_IN_ARENA);
     const start_idx = (@intFromPtr(head) - @intFromPtr(arena.pages.ptr)) / @sizeOf(Page);
 
-    // Free all pages in the range
+    // Validate all pages in range are allocated (not free/reserved) before freeing any.
+    // This catches caller errors like wrong count or double-free of contiguous range.
     for (start_idx..start_idx + count) |i| {
-        if (i >= arena.page_count) break;
-        freePageLocked(&arena.pages[i]);
+        if (i >= arena.usable_pages) {
+            @panic(panic_msg.ADDRESS_NOT_IN_ARENA);
+        }
+        const page = &arena.pages[i];
+        if (page.state != .allocated) {
+            @panic(panic_msg.CONTIGUOUS_NOT_ALLOCATED);
+        }
+        // Ensure no nested contiguous_head (except the first page)
+        if (i != start_idx and page.flags.contiguous_head) {
+            @panic(panic_msg.INVALID_PAGE_STATE);
+        }
     }
 
+    // Clear contiguous_head flag before freeing (freePageLocked will clear all flags,
+    // but we clear it explicitly first for clarity)
     head.flags.contiguous_head = false;
+
+    // Now free all pages
+    for (start_idx..start_idx + count) |i| {
+        freePageLocked(&arena.pages[i]);
+    }
 }
 
 /// Get physical address from Page pointer.
@@ -447,11 +478,6 @@ pub fn allocatedCount() usize {
 /// Returns number of managed arenas.
 pub fn arenaCount() usize {
     return pmm.arena_count;
-}
-
-/// Returns true if debug mode is enabled.
-pub fn isDebugEnabled() bool {
-    return debug_pmm;
 }
 
 /// Returns base physical address of first (largest) arena.
@@ -595,13 +621,12 @@ fn freePageLocked(page: *Page) void {
         .allocated => {},
     }
 
-    if (debug_pmm) {
+    if (debug_kernel) {
         const phys = pageToPhysInternal(page);
         poisonPage(phys, poison.FREE);
     }
 
     page.state = .free;
-    page.ref_count = 0;
     page.flags = .{};
     pmm.free_list.pushBack(page);
     pmm.free_count += 1;
@@ -614,21 +639,29 @@ fn pageToPhysInternal(page: *const Page) usize {
 }
 
 /// Find arena containing a Page pointer.
+/// Uses the stored arena_idx for O(1) lookup instead of scanning.
 fn findArenaForPage(page: *const Page) ?*Arena {
-    const page_addr = @intFromPtr(page);
-    for (pmm.arenas[0..pmm.arena_count]) |*arena| {
+    const idx = page.arena_idx;
+    if (idx >= pmm.arena_count) return null;
+
+    const arena = &pmm.arenas[idx];
+
+    // Verify page pointer is actually in this arena's metadata
+    if (debug_kernel) {
+        const page_addr = @intFromPtr(page);
         const start = @intFromPtr(arena.pages.ptr);
         const end = start + arena.pages.len * @sizeOf(Page);
-        if (page_addr >= start and page_addr < end) {
-            return arena;
+        if (page_addr < start or page_addr >= end) {
+            @panic(panic_msg.ARENA_IDX_MISMATCH);
         }
     }
-    return null;
+
+    return arena;
 }
 
 /// Fill page with poison pattern (debug only).
 fn poisonPage(phys: usize, pattern: u8) void {
-    if (!debug_pmm) return;
+    if (!debug_kernel) return;
     const virt = hal.physToVirt(phys);
     const ptr: [*]u8 = @ptrFromInt(virt);
     @memset(ptr[0..PAGE_SIZE], pattern);
@@ -692,7 +725,6 @@ test "Arena.containsPhys" {
 test "Page default state is free" {
     const page = Page{};
     try std.testing.expectEqual(PageState.free, page.state);
-    try std.testing.expectEqual(@as(u32, 0), page.ref_count);
     try std.testing.expect(!page.flags.contiguous_head);
 }
 
