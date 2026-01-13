@@ -15,9 +15,16 @@ var uart_base: usize = board.UART_PHYS;
 
 const panic_msg = struct {
     const NOT_ENABLED = "UART: not enabled";
-    const BAUD_ZERO = "UART: baud must be non-zero";
-    const IBRD_OUT_OF_RANGE = "UART: IBRD out of range 1-65535";
-    const FBRD_OUT_OF_RANGE = "UART: FBRD out of range 0-63";
+};
+
+/// Errors from baud rate divisor calculation.
+pub const DivisorError = error{
+    /// Baud rate cannot be zero.
+    BaudZero,
+    /// Integer divisor out of valid range (1-65535).
+    IbrdOutOfRange,
+    /// Fractional divisor out of valid range (0-63).
+    FbrdOutOfRange,
 };
 
 // PL011 register offsets
@@ -48,8 +55,8 @@ inline fn waitTxReady() void {
 
 /// Compute PL011 baud rate divisors (16x oversampling: divisor = clk / (16 * baud)).
 /// Returns IBRD (1-65535) and FBRD (0-63, 6-bit fraction). Uses u64 to prevent overflow.
-pub fn computeDivisors(uartclk_hz: u32, baud: u32) struct { ibrd: u32, fbrd: u32 } {
-    if (baud == 0) @panic(panic_msg.BAUD_ZERO);
+pub fn computeDivisors(uartclk_hz: u32, baud: u32) DivisorError!struct { ibrd: u32, fbrd: u32 } {
+    if (baud == 0) return error.BaudZero;
 
     const denom = @as(u64, 16) * @as(u64, baud);
     const clk = @as(u64, uartclk_hz);
@@ -57,8 +64,8 @@ pub fn computeDivisors(uartclk_hz: u32, baud: u32) struct { ibrd: u32, fbrd: u32
     const remainder = clk - denom * ibrd;
     const fbrd = (remainder * 64 + denom / 2) / denom; // Round fractional part
 
-    if (ibrd < 1 or ibrd > 65535) @panic(panic_msg.IBRD_OUT_OF_RANGE);
-    if (fbrd > 63) @panic(panic_msg.FBRD_OUT_OF_RANGE);
+    if (ibrd < 1 or ibrd > 65535) return error.IbrdOutOfRange;
+    if (fbrd > 63) return error.FbrdOutOfRange;
 
     return .{ .ibrd = @intCast(ibrd), .fbrd = @intCast(fbrd) };
 }
@@ -69,7 +76,8 @@ fn initWithConfig(base: usize, config: InitConfig) void {
     mmio.write32(base + CR, 0); // Disable UART for config
     mmio.write32(base + ICR, 0x7FF); // Clear interrupts
 
-    const divs = computeDivisors(config.uartclk_hz, config.baud);
+    // Default config uses known-valid baud rates; panic if somehow invalid.
+    const divs = computeDivisors(config.uartclk_hz, config.baud) catch unreachable;
     mmio.write32(base + IBRD, divs.ibrd);
     mmio.write32(base + FBRD, divs.fbrd);
     mmio.write32(base + LCRH, LCRH_WLEN_8 | LCRH_FEN); // 8N1, FIFOs enabled
@@ -126,7 +134,7 @@ test "computeDivisors typical baud rates" {
     };
 
     for (cases) |case| {
-        const divs = computeDivisors(case.uartclk, case.baud);
+        const divs = try computeDivisors(case.uartclk, case.baud);
         try testing.expectEqual(case.ibrd, divs.ibrd);
         try testing.expectEqual(case.fbrd, divs.fbrd);
     }
@@ -135,11 +143,16 @@ test "computeDivisors typical baud rates" {
 test "computeDivisors handles rounding edge cases" {
     const std = @import("std");
     const testing = std.testing;
-    const divs = computeDivisors(7_372_800, 115_200);
+    const divs = try computeDivisors(7_372_800, 115_200);
     try testing.expectEqual(@as(u32, 4), divs.ibrd);
     try testing.expectEqual(@as(u32, 0), divs.fbrd);
 
-    const divs2 = computeDivisors(26_000_000, 115_200);
+    const divs2 = try computeDivisors(26_000_000, 115_200);
     try testing.expectEqual(@as(u32, 14), divs2.ibrd);
     try testing.expectEqual(@as(u32, 7), divs2.fbrd);
+}
+
+test "computeDivisors returns error for zero baud" {
+    const std = @import("std");
+    try std.testing.expectError(error.BaudZero, computeDivisors(24_000_000, 0));
 }
