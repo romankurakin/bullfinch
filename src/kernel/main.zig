@@ -13,7 +13,7 @@ const fdt = @import("fdt/fdt.zig");
 const hal = @import("hal/hal.zig");
 const pmm = @import("pmm/pmm.zig");
 const sync = @import("sync/sync.zig");
-const test_markers = @import("test_markers.zig");
+const test_markers = @import("test_markers");
 
 const panic_msg = struct {
     const NO_DTB = "BOOT: no DTB - cannot discover hardware";
@@ -66,7 +66,6 @@ fn testPmm() void {
         console.print("PMM: leak detected\n");
         return;
     }
-
 }
 
 fn testClock() void {
