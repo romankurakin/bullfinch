@@ -125,8 +125,8 @@ Follow Conventional Commits: `<type>(<scope>): <subject>`
 
 **Scopes:** boot, mem, mmu, cap, arm64, riscv, arch, kernel, hal, ci, build
 
-**Format:** Subject line + blank line + 3-4 sentence body explaining what and
-why. Use prose, not bullet points.
+**Format:** Subject line (max 72 chars) + blank line + body wrapped at 72 chars.
+Explain what and why. Use prose, not bullet points.
 
 ```text
 feat(mmu): implement virtual memory with higher-half kernel mapping
