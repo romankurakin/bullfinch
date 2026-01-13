@@ -73,7 +73,7 @@ fn testPmm() void {
 
 fn testClock() void {
     while (clock.getTickCount() < 10) {
-        hal.waitForInterrupt();
+        hal.trap.waitForInterrupt();
     }
 }
 
@@ -92,24 +92,24 @@ export fn kmain() noreturn {
     console.print(" pages free\n");
     testPmm();
 
-    hal.timer.initInterrupts(dtb);
+    hal.interrupt.init(dtb);
     clock.init(dtb);
     console.print("[8] CLK: timer ready\n");
     testClock();
 
     console.print("\n" ++ test_markers.BOOT_OK ++ "\n");
-    hal.halt();
+    hal.trap.halt();
 }
 
 var panic_once: sync.Once = .{};
 
 /// Kernel panic handler. Prints message and halts. Guards against double panic.
 pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, _: ?usize) noreturn {
-    _ = hal.disableInterrupts();
-    if (!panic_once.tryOnce()) hal.halt();
+    _ = hal.trap.disableInterrupts();
+    if (!panic_once.tryOnce()) hal.trap.halt();
 
     console.print("\n" ++ test_markers.PANIC ++ " ");
     console.print(msg);
     console.print("\n");
-    hal.halt();
+    hal.trap.halt();
 }

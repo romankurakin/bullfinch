@@ -27,28 +27,10 @@ pub const now = arch_timer.now;
 /// Set next timer interrupt deadline (absolute counter value).
 pub const setDeadline = arch_timer.setDeadline;
 
-/// Initialize interrupt controller. Must be called before start().
-/// ARM64: initializes GIC. RISC-V: no-op (SBI handles interrupts).
-pub fn initInterrupts(dtb: fdt.Fdt) void {
-    arch_timer.initInterrupts(dtb);
-}
-
-/// Enable timer interrupts. Caller must call initInterrupts() first.
+/// Enable timer interrupts. Caller must initialize interrupt controller first.
 pub fn start(dtb: fdt.Fdt) void {
     arch_timer.start(dtb);
 }
 
 /// Initialize timer frequency. ARM64 ignores parameter (reads register).
 pub const initFrequency = arch_timer.initFrequency;
-
-/// Convert ticks to nanoseconds.
-pub fn ticksToNs(ticks: u64) u64 {
-    const ns_per_sec: u128 = 1_000_000_000;
-    return @truncate(@as(u128, ticks) * ns_per_sec / frequency());
-}
-
-/// Convert nanoseconds to ticks.
-pub fn nsToTicks(ns: u64) u64 {
-    const ns_per_sec: u128 = 1_000_000_000;
-    return @truncate(@as(u128, ns) * frequency() / ns_per_sec);
-}

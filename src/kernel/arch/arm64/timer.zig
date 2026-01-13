@@ -20,7 +20,6 @@ const fdt = @import("../../fdt/fdt.zig");
 const gic = @import("gic.zig");
 
 const panic_msg = struct {
-    const GIC_NOT_FOUND = "TIMER: GIC not found in DTB";
     const ZERO_FREQUENCY = "TIMER: CNTFRQ_EL0 is zero (firmware bug)";
 };
 
@@ -69,20 +68,8 @@ inline fn enableIrq() void {
     asm volatile ("msr daifclr, #2");
 }
 
-/// Initialize interrupt controller. Must be called before start().
-/// DTB is required to discover GIC configuration.
-pub fn initInterrupts(dtb: fdt.Fdt) void {
-    const gic_info = fdt.getGicInfo(dtb) orelse @panic(panic_msg.GIC_NOT_FOUND);
-    gic.init(.{
-        .version = gic_info.version,
-        .gicd_base = gic_info.gicd_base,
-        .gicc_base = gic_info.gicc_base,
-        .gicr_base = gic_info.gicr_base,
-    });
-}
-
 /// Enable timer interrupts and global interrupt delivery.
-/// Caller must call initInterrupts() first.
+/// Caller must initialize interrupt controller first.
 pub fn start(_: fdt.Fdt) void {
     gic.enableTimerInterrupt();
     enableTimer();

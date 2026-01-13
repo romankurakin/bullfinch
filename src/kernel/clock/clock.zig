@@ -73,11 +73,22 @@ pub fn handleTimerIrq() void {
     }
 }
 
+/// Convert timer ticks to nanoseconds.
+pub fn ticksToNs(ticks: u64) u64 {
+    const ns_per_sec: u128 = 1_000_000_000;
+    return @truncate(@as(u128, ticks) * ns_per_sec / hal.timer.frequency());
+}
+
+/// Convert nanoseconds to timer ticks.
+pub fn nsToTicks(ns: u64) u64 {
+    const ns_per_sec: u128 = 1_000_000_000;
+    return @truncate(@as(u128, ns) * hal.timer.frequency() / ns_per_sec);
+}
+
 /// Get monotonic time in nanoseconds since boot.
 /// Combines tick count with sub-tick precision from hardware counter.
 pub fn getMonotonicNs() u64 {
-    const now = hal.timer.now();
-    return hal.timer.ticksToNs(now);
+    return ticksToNs(hal.timer.now());
 }
 
 /// Get number of ticks since boot.

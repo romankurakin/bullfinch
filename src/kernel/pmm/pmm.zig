@@ -522,7 +522,7 @@ fn initArena(base: u64, size: u64, arena_idx: u8) bool {
 
     // Place metadata at end of region
     const metadata_phys = base_usize + usable_pages * PAGE_SIZE;
-    const metadata_virt = hal.physToVirt(metadata_phys);
+    const metadata_virt = hal.mmu.physToVirt(metadata_phys);
 
     // Initialize arena
     var arena = &pmm.arenas[pmm.arena_count];
@@ -675,7 +675,7 @@ fn findArenaForPage(page: *const Page) ?*Arena {
 /// Fill page with poison pattern (debug only).
 fn poisonPage(phys: usize, pattern: u8) void {
     if (!debug_kernel) return;
-    const virt = hal.physToVirt(phys);
+    const virt = hal.mmu.physToVirt(phys);
     const ptr: [*]u8 = @ptrFromInt(virt);
     @memset(ptr[0..PAGE_SIZE], pattern);
 }

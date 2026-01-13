@@ -56,10 +56,6 @@ inline fn enableGlobalInterrupts() void {
     );
 }
 
-/// Initialize interrupt controller. No-op on RISC-V (SBI handles this).
-/// Provided for interface parity with ARM64.
-pub fn initInterrupts(_: fdt.Fdt) void {}
-
 /// Enable timer interrupts and global interrupt delivery.
 /// Caller must set a deadline via setDeadline() before calling this,
 /// otherwise stale mtimecmp could trigger immediate interrupt storm.
