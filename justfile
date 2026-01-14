@@ -4,12 +4,11 @@ default:
 
 # Build for ARM64
 build-arm64:
-    zig build -Dtarget=aarch64-freestanding
+    zig build -Dtarget=aarch64-freestanding -Dcpu=cortex_a76
 
 # Build for RISC-V
 build-riscv64:
-    zig build -Dtarget=riscv64-freestanding
-
+    zig build -Dtarget=riscv64-freestanding 
 # Run in QEMU (ARM64) - binary format passes DTB pointer in x0
 qemu-arm64: build-arm64
     llvm-objcopy -O binary zig-out/bin/kernel-arm64 zig-out/bin/kernel-arm64.bin
@@ -59,11 +58,11 @@ test-riscv64:
 
 # Build for ARM64 (release)
 build-arm64-release:
-    zig build -Dtarget=aarch64-freestanding -Doptimize=ReleaseFast
+    zig build -Dtarget=aarch64-freestanding -Dcpu=cortex_a76 -Doptimize=ReleaseFast
 
 # Build for RISC-V (release)
 build-riscv64-release:
-    zig build -Dtarget=riscv64-freestanding -Doptimize=ReleaseFast
+    zig build -Dtarget=riscv64-freestanding -Dcpu=generic_rv64+zihintpause -Doptimize=ReleaseFast
 
 # Run in QEMU (ARM64, release)
 qemu-arm64-release: build-arm64-release

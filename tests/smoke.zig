@@ -17,8 +17,8 @@ pub fn main() !u8 {
     }, &arm64_result });
 
     const riscv_thread = try std.Thread.spawn(.{}, runQemuThread, .{ "riscv64", &.{
-        "qemu-system-riscv64", "-machine",                   "virt",       "-smp",  "2",
-        "-m",                  "2G",                         "-nographic", "-bios", "default",
+        "qemu-system-riscv64", "-machine",   "virt",       "-smp",  "2",
+        "-m",                  "2G",         "-nographic", "-bios", "default",
         "-kernel",             "zig-out/bin/kernel-riscv64",
     }, &riscv_result });
 
