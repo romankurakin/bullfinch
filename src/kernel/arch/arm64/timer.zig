@@ -14,7 +14,7 @@
 //! - CNTP_CVAL_EL0: Comparator value (interrupt fires when counter >= this)
 //! - CNTP_CTL_EL0: Timer control (ENABLE, IMASK, ISTATUS bits)
 //!
-//! See ARM Architecture Reference Manual, Chapter D13 (The Generic Timer).
+//! See ARM Architecture Reference Manual, Chapter D12 (The Generic Timer).
 
 const fdt = @import("../../fdt/fdt.zig");
 const gic = @import("gic.zig");

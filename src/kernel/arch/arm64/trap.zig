@@ -12,7 +12,7 @@
 //! Hardware automatically saves return address to ELR_EL1, status to SPSR_EL1, and
 //! masks interrupts. We save remaining registers manually in the trap entry code.
 //!
-//! See ARM Architecture Reference Manual, Chapter D1 (The AArch64 Exception Model).
+//! See ARM Architecture Reference Manual, D1.4 (Exceptions).
 
 const clock = @import("../../clock/clock.zig");
 const console = @import("../../console/console.zig");
@@ -51,7 +51,7 @@ pub const TrapContext = extern struct {
 };
 
 /// Exception class from ESR_EL1[31:26].
-/// See ARM Architecture Reference Manual, Table D1-6.
+/// See ARM Architecture Reference Manual, ESR_EL1.EC field encoding.
 pub const TrapClass = enum(u6) {
     unknown = 0x00,
     wfi_wfe = 0x01,

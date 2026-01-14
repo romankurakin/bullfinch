@@ -316,7 +316,7 @@ are the only process naming.
 
 Reading:
 
-- OSDI3 Section 2.3 (MINIX PM)
+- OSDI3 Sections 4.7-4.8 (MINIX Process Manager)
 - Zircon process creation
 
 #### Rung 27: Device Manager
@@ -390,6 +390,7 @@ TBD: real filesystems, network stack, virtio drivers, hardware testing.
 - [ARM Architecture Reference Manual](https://developer.arm.com/documentation/ddi0487/maa) (DDI 0487M.a.a), ARMv8-A / ARMv9-A
 - [ARM GIC Architecture Specification](https://developer.arm.com/documentation/ihi0069/hb) (IHI 0069H.b), GICv3.3/v4.2
 - [ARM GIC-400 TRM](https://developer.arm.com/documentation/ddi0471/b) (DDI 0471B) — GICv2 for Pi 5
+- [RISC-V PLIC Specification](https://github.com/riscv/riscv-plic-spec), Version 1.0.0 (ratified 2023-03-12)
 
 ### Capability Systems
 
