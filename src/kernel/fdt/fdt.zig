@@ -21,8 +21,9 @@ pub fn checkHeader(fdt: Fdt) error{InvalidHeader}!void {
 }
 
 /// Get total size of DTB blob in bytes.
-pub fn getTotalSize(fdt: Fdt) u32 {
-    const ptr: [*]const u8 = @ptrCast(fdt);
+/// Caller must ensure DTB is valid.
+pub fn getTotalSize(fdt_handle: Fdt) u32 {
+    const ptr: [*]const u8 = @ptrCast(fdt_handle);
     // totalsize is at offset 4 in big-endian
     return std.mem.readInt(u32, ptr[4..8], .big);
 }
@@ -95,11 +96,12 @@ fn readU32Prop(fdt: Fdt, offset: i32, name: [:0]const u8) ?u8 {
 }
 
 /// Read value from reg property respecting cell count.
-fn readCells(data: []const u8, cells: u8) u64 {
+/// Returns null for unsupported cell counts (only 1 and 2 are valid).
+fn readCells(data: []const u8, cells: u8) ?u64 {
     return switch (cells) {
         1 => std.mem.readInt(u32, data[0..4], .big),
         2 => std.mem.readInt(u64, data[0..8], .big),
-        else => 0,
+        else => null,
     };
 }
 
@@ -109,10 +111,9 @@ fn parseRegEntry(data: []const u8, offset: usize, cells: CellSizes) ?Region {
     if (offset + entry_size > data.len) return null;
     const entry = data[offset..];
     const addr_bytes = @as(usize, cells.addr_cells) * 4;
-    return .{
-        .base = readCells(entry[0..], cells.addr_cells),
-        .size = readCells(entry[addr_bytes..], cells.size_cells),
-    };
+    const base = readCells(entry[0..], cells.addr_cells) orelse return null;
+    const size = readCells(entry[addr_bytes..], cells.size_cells) orelse return null;
+    return .{ .base = base, .size = size };
 }
 
 /// Iterator over regions from DTB nodes with reg properties.
@@ -317,15 +318,19 @@ test "CellSizes.entrySize calculates correctly" {
 test "readCells parses big-endian values" {
     // 32-bit value
     const data32 = [_]u8{ 0x12, 0x34, 0x56, 0x78 };
-    try std.testing.expectEqual(@as(u64, 0x12345678), readCells(&data32, 1));
+    try std.testing.expectEqual(@as(u64, 0x12345678), readCells(&data32, 1).?);
 
     // 64-bit value
     const data64 = [_]u8{ 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00 };
-    try std.testing.expectEqual(@as(u64, 0x80000000), readCells(&data64, 2));
+    try std.testing.expectEqual(@as(u64, 0x80000000), readCells(&data64, 2).?);
 
     // Full 64-bit value
     const data64_full = [_]u8{ 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0 };
-    try std.testing.expectEqual(@as(u64, 0x123456789ABCDEF0), readCells(&data64_full, 2));
+    try std.testing.expectEqual(@as(u64, 0x123456789ABCDEF0), readCells(&data64_full, 2).?);
+
+    // Invalid cell count returns null
+    try std.testing.expect(readCells(&data32, 0) == null);
+    try std.testing.expect(readCells(&data32, 3) == null);
 }
 
 test "parseRegEntry parses memory regions" {

@@ -27,18 +27,21 @@ pub fn postMmuInit() void {
     uart.postMmuInit();
 }
 
-/// Print string to console.
+/// Print string to console with interrupt-safe locking.
 pub fn print(s: []const u8) void {
-    lock.acquire();
-    defer lock.release();
+    const held = lock.guard();
+    defer held.release();
+    uart.print(s);
+}
+
+/// Print directly to UART without locking.
+/// Use only in trap handlers and panic paths where we cannot safely acquire locks.
+pub fn printUnsafe(s: []const u8) void {
     uart.print(s);
 }
 
 /// Print a u64 value in hexadecimal.
 pub fn printHex(value: u64) void {
-    lock.acquire();
-    defer lock.release();
-
     const hex_chars = "0123456789abcdef";
     var buf: [18]u8 = undefined; // "0x" + 16 hex digits
     buf[0] = '0';
@@ -49,24 +52,31 @@ pub fn printHex(value: u64) void {
         buf[i] = hex_chars[@intCast(v & 0xF)];
         v >>= 4;
     }
+
+    const held = lock.guard();
+    defer held.release();
     uart.print(&buf);
 }
 
 /// Print a decimal number.
 pub fn printDec(value: u64) void {
-    lock.acquire();
-    defer lock.release();
-
-    if (value == 0) {
-        uart.print("0");
-        return;
-    }
     var buf: [20]u8 = undefined; // Max u64 is 20 digits
     var i: usize = 20;
     var v = value;
+
+    if (v == 0) {
+        const held = lock.guard();
+        defer held.release();
+        uart.print("0");
+        return;
+    }
+
     while (v > 0) : (i -= 1) {
         buf[i - 1] = @intCast('0' + (v % 10));
         v /= 10;
     }
+
+    const held = lock.guard();
+    defer held.release();
     uart.print(buf[i..20]);
 }

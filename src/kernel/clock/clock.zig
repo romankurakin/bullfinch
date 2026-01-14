@@ -21,6 +21,10 @@ const fdt = @import("../fdt/fdt.zig");
 const hal = @import("../hal/hal.zig");
 const trap = @import("../trap/trap.zig");
 
+const panic_msg = struct {
+    const ZERO_FREQ = "CLK: timer frequency is zero";
+};
+
 /// Tick rate for scheduler and periodic work (100 Hz = 10ms ticks).
 pub const TICK_RATE_HZ: u64 = 100;
 
@@ -39,7 +43,9 @@ var scheduler_tick: ?*const fn () void = null;
 /// Initialize clock subsystem. Timer frequency must be initialized first.
 /// DTB needed for timer interrupt configuration on ARM64.
 pub fn init(dtb: fdt.Fdt) void {
-    ticks_per_interval = hal.timer.frequency() / TICK_RATE_HZ;
+    const freq = hal.timer.frequency();
+    if (freq == 0) @panic(panic_msg.ZERO_FREQ);
+    ticks_per_interval = freq / TICK_RATE_HZ;
 
     const now = hal.timer.now();
     next_tick = now + ticks_per_interval;
