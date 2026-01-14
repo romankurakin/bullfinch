@@ -2,7 +2,7 @@
 //!
 //! SBI (OpenSBI) configures PLIC/CLINT at M-mode before jumping to S-mode.
 //!
-//! See RISC-V Privileged Specification, Chapter 7 (PLIC).
+//! See RISC-V Platform-Level Interrupt Controller Specification.
 
 const fdt = @import("../../fdt/fdt.zig");
 
