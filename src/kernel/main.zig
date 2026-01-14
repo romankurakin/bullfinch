@@ -108,8 +108,10 @@ pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, _: ?usize) noreturn {
     _ = hal.trap.disableInterrupts();
     if (!panic_once.tryOnce()) hal.trap.halt();
 
-    console.print("\n" ++ test_markers.PANIC ++ " ");
-    console.print(msg);
-    console.print("\n");
+    // Use printUnsafe to avoid potential deadlock if panic occurred
+    // while console lock was held
+    console.printUnsafe("\n" ++ test_markers.PANIC ++ " ");
+    console.printUnsafe(msg);
+    console.printUnsafe("\n");
     hal.trap.halt();
 }

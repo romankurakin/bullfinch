@@ -23,7 +23,8 @@ const panic_msg = struct {
     const UNHANDLED = "TRAP: unhandled";
 };
 
-const print = console.print;
+// Use printUnsafe in trap context: we can't safely acquire locks here
+const print = console.printUnsafe;
 
 /// Saved register context during trap. Layout must match assembly save/restore order.
 /// RISC-V calling convention: a0-a7 arguments, s0-s11 callee-saved, ra return address.

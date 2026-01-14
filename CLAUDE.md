@@ -179,13 +179,19 @@ and common modules without circular dependencies.
 
 ## Error Philosophy
 
-**Kernel space:** Return errors for recoverable conditions (resource exhaustion,
-user mistakes, transient failures). Use `@panic()` when kernel invariants are
-violated, architectural requirements broken, or state corrupted. Users never
-cause kernel panics.
+Fail fast. Validate at boundaries, trust internally. Three responses:
 
-**Userspace:** Errors are normal program flow. Process can crash/exit on
-unrecoverable errors without affecting kernel or other processes.
+| Response | When | Example |
+|----------|------|---------|
+| `@panic()` | Kernel invariant violated, can't continue | Arithmetic overflow, double-free, zero timer frequency |
+| `error` | Caller mistake, they can recover | Bad alignment, missing page table, invalid address |
+| `null` | No knowledge, absence of value | OOM, lookup miss, can't parse format |
+
+**Decision guide:**
+
+- "Is the kernel state corrupted?" → panic
+- "Did the caller do something wrong they could fix?" → error
+- "Is this just 'not found' or 'can't do'?" → null
 
 ## Architecture Review Points
 

@@ -82,6 +82,7 @@ const panic_msg = struct {
     const NOT_CONTIGUOUS_HEAD = "PMM: freeContiguous called on non-head page";
     const TOO_MANY_RESERVED = "PMM: too many reserved regions (increase MAX_RESERVED)";
     const CONTIGUOUS_NOT_ALLOCATED = "PMM: freeContiguous page not in allocated state";
+    const ARITHMETIC_OVERFLOW = "PMM: arithmetic overflow (invalid memory region)";
     const ARENA_IDX_MISMATCH = "PMM: arena_idx mismatch - page not in indicated arena";
 };
 
@@ -508,8 +509,9 @@ fn initArena(base: u64, size: u64, arena_idx: u8) bool {
     const total_pages: usize = @intCast(aligned_size / PAGE_SIZE);
     if (total_pages == 0) return false;
 
-    // Calculate metadata size
-    const metadata_bytes = total_pages * @sizeOf(Page);
+    // Calculate metadata size (checked - overflow means DTB claims impossible memory)
+    const metadata_bytes = std.math.mul(usize, total_pages, @sizeOf(Page)) catch
+        @panic(panic_msg.ARITHMETIC_OVERFLOW);
     const metadata_pages = (metadata_bytes + PAGE_SIZE - 1) / PAGE_SIZE;
 
     if (metadata_pages >= total_pages) {
@@ -520,8 +522,10 @@ fn initArena(base: u64, size: u64, arena_idx: u8) bool {
     const usable_pages = total_pages - metadata_pages;
     const base_usize: usize = @intCast(aligned_base);
 
-    // Place metadata at end of region
-    const metadata_phys = base_usize + usable_pages * PAGE_SIZE;
+    // Place metadata at end of region (checked arithmetic)
+    const usable_bytes = std.math.mul(usize, usable_pages, PAGE_SIZE) catch
+        @panic(panic_msg.ARITHMETIC_OVERFLOW);
+    const metadata_phys = base_usize + usable_bytes;
     const metadata_virt = hal.mmu.physToVirt(metadata_phys);
 
     // Initialize arena
@@ -577,7 +581,9 @@ fn markRangeReserved(base: u64, size: u64) void {
         if (arena.page_count == 0) continue;
 
         const arena_base: u64 = arena.base_phys;
-        const arena_end: u64 = arena_base + arena.usable_pages * PAGE_SIZE;
+        const arena_size = std.math.mul(u64, arena.usable_pages, PAGE_SIZE) catch
+            @panic(panic_msg.ARITHMETIC_OVERFLOW);
+        const arena_end: u64 = arena_base +% arena_size;
 
         // Check overlap
         if (range_end <= arena_base or base >= arena_end) continue;

@@ -24,7 +24,8 @@ const panic_msg = struct {
     const UNHANDLED_IRQ = "TRAP: unhandled interrupt";
 };
 
-const print = console.print;
+// Use printUnsafe in trap context: we can't safely acquire locks here
+const print = console.printUnsafe;
 
 /// Saved register context during trap. Layout must match assembly save/restore order.
 /// ARM calling convention: x0-x7 arguments, x19-x28 callee-saved, x29 frame pointer, x30 link register.
