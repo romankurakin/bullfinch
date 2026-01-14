@@ -11,6 +11,7 @@ comptime {
 }
 
 pub const boot = @import("boot.zig");
+pub const cpu = @import("cpu.zig");
 pub const mmu = @import("mmu.zig");
 pub const timer = @import("timer.zig");
 pub const trap = @import("trap.zig");
