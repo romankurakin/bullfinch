@@ -58,6 +58,7 @@ pub fn build(b: *std.Build) void {
         },
         .root_module = kernel_module,
     });
+    kernel.entry = .disabled;
 
     // Link libfdt (Zig bindings in src/kernel/fdt/fdt.zig)
     kernel.linkLibrary(libfdt);
