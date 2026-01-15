@@ -1,4 +1,4 @@
-//! ARM64 CPU primitives for synchronization.
+//! ARM64 CPU primitives for synchronization and speculation control.
 //!
 //! Uses exclusive monitor mechanism: LDAXR sets monitor, any store clears it
 //! (waking WFE waiters).
@@ -18,4 +18,19 @@ pub fn spinWaitEq16(ptr: *const u32, expected: u16) void {
         if (val == expected) break;
         asm volatile ("wfe");
     }
+}
+
+/// Speculation barrier for Spectre-v1 (bounds check bypass) mitigation.
+///
+/// CPUs may speculatively execute past bounds checks before the check completes.
+/// If an attacker controls an array index (e.g., syscall number), the CPU might
+/// speculatively access out-of-bounds memory, leaking data via cache timing.
+///
+/// CSDB (Consumption of Speculative Data Barrier) ensures prior conditional
+/// instructions resolve before dependent data accesses execute speculatively.
+/// Use after bounds checks on untrusted indices before using them to index arrays.
+///
+/// See ARM Architecture Reference Manual, CSDB.
+pub inline fn speculationBarrier() void {
+    asm volatile ("csdb");
 }

@@ -15,4 +15,5 @@ pub const cpu = @import("cpu.zig");
 pub const mmu = @import("mmu.zig");
 pub const timer = @import("timer.zig");
 pub const trap = @import("trap.zig");
+pub const trap_frame = @import("trap_frame.zig");
 pub const uart = @import("uart.zig");

@@ -52,6 +52,8 @@ SECTIONS {
         __bss_end = .;
     }
 
+    /* Kernel boot stack. TODO(vm): Add guard page below stack - leave one
+       page unmapped so stack overflow faults instead of corrupting memory. */
     . = ALIGN(16);
     __stack_bottom = .;
     . = . + STACK_SIZE;
