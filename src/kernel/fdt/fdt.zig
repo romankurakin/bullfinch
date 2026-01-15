@@ -1,6 +1,8 @@
 //! Minimal libfdt bindings for DTB parsing.
 //!
-//! Provides memory discovery and device enumeration.
+//! Pure library for parsing Flattened Device Tree blobs. Provides generic
+//! primitives for node traversal, property access, and region iteration.
+//! Kernel-specific device parsing (GIC, UART, CPU etc.) belongs in hwinfo.
 
 const std = @import("std");
 
@@ -41,12 +43,6 @@ pub fn getprop(fdt: Fdt, offset: i32, name: [:0]const u8) ?[]const u8 {
     return if (len <= 0) null else @as([*]const u8, @ptrCast(ptr))[0..@intCast(len)];
 }
 
-/// Get compatible string (first entry only).
-pub fn getCompatible(fdt: Fdt, offset: i32) ?[]const u8 {
-    const prop = getprop(fdt, offset, "compatible") orelse return null;
-    return std.mem.sliceTo(prop, 0);
-}
-
 /// Get node name (e.g., "uart@10000000").
 pub fn getName(fdt: Fdt, offset: i32) ?[]const u8 {
     const ptr = fdt_get_name(fdt, offset, null) orelse return null;
@@ -65,10 +61,10 @@ pub fn nextSubnode(fdt: Fdt, offset: i32) ?i32 {
     return if (result < 0) null else result;
 }
 
-/// Memory/MMIO region (base + size).
+/// Address range (base + size). Used for memory regions, MMIO, reserved areas.
 pub const Region = struct {
-    base: u64,
-    size: u64,
+    base: u64 = 0,
+    size: u64 = 0,
 };
 
 /// Cell sizes for parsing reg properties. Each cell is 4 bytes.
@@ -76,7 +72,7 @@ pub const CellSizes = struct {
     addr_cells: u8, // Typically 1 (32-bit) or 2 (64-bit)
     size_cells: u8,
 
-    fn entrySize(self: CellSizes) usize {
+    pub fn entrySize(self: CellSizes) usize {
         return (@as(usize, self.addr_cells) + self.size_cells) * 4;
     }
 };
@@ -106,7 +102,7 @@ fn readCells(data: []const u8, cells: u8) ?u64 {
 }
 
 /// Parse reg entry at given byte offset using cell sizes.
-fn parseRegEntry(data: []const u8, offset: usize, cells: CellSizes) ?Region {
+pub fn parseRegEntry(data: []const u8, offset: usize, cells: CellSizes) ?Region {
     const entry_size = cells.entrySize();
     if (offset + entry_size > data.len) return null;
     const entry = data[offset..];
@@ -181,111 +177,10 @@ pub fn getMemoryRegions(fdt: Fdt) RegionIterator {
     };
 }
 
-/// Get total memory size across all regions.
-pub fn getTotalMemory(fdt: Fdt) u64 {
-    var total: u64 = 0;
-    var regions = getMemoryRegions(fdt);
-    while (regions.next()) |region| {
-        total += region.size;
-    }
-    return total;
-}
-
-/// Get timer frequency from /cpus/timebase-frequency.
-pub fn getTimerFrequency(fdt: Fdt) ?u64 {
-    const offset = pathOffset(fdt, "/cpus") orelse return null;
-    const prop = getprop(fdt, offset, "timebase-frequency") orelse return null;
-    // Property can be u32 or u64 depending on DTB
-    if (prop.len >= 8) {
-        return std.mem.readInt(u64, prop[0..8], .big);
-    } else if (prop.len >= 4) {
-        return std.mem.readInt(u32, prop[0..4], .big);
-    }
-    return null;
-}
-
-/// Count CPU nodes under /cpus.
-pub fn getCpuCount(fdt: Fdt) u32 {
-    const cpus_offset = pathOffset(fdt, "/cpus") orelse return 0;
-    var count: u32 = 0;
-    var node = firstSubnode(fdt, cpus_offset);
-    while (node) |offset| {
-        const name = getName(fdt, offset) orelse "";
-        if (std.mem.startsWith(u8, name, "cpu@")) count += 1;
-        node = nextSubnode(fdt, offset);
-    }
-    return count;
-}
-
 /// Find first node matching compatible string. Searches entire tree.
 pub fn findByCompatible(fdt_handle: Fdt, compatible: [:0]const u8) ?i32 {
     const result = fdt_node_offset_by_compatible(fdt_handle, -1, compatible.ptr);
     return if (result < 0) null else result;
-}
-
-/// GIC interrupt controller info discovered from DTB.
-pub const GicInfo = struct {
-    version: u8, // 2 or 3
-    gicd_base: u64, // Distributor (both versions)
-    gicc_base: u64, // CPU interface (GICv2 only)
-    gicr_base: u64, // Redistributor (GICv3 only)
-};
-
-/// Find GIC info from DTB using libfdt tree search.
-pub fn getGicInfo(fdt_handle: Fdt) ?GicInfo {
-    const root = pathOffset(fdt_handle, "/") orelse return null;
-    const cells = getCellSizes(fdt_handle, root);
-
-    // GICv3
-    if (findByCompatible(fdt_handle, "arm,gic-v3")) |offset| {
-        return parseGicRegs(fdt_handle, offset, cells, 3);
-    }
-
-    // GICv2: QEMU uses cortex-a15-gic, RPi5 uses gic-400
-    if (findByCompatible(fdt_handle, "arm,cortex-a15-gic")) |offset| {
-        return parseGicRegs(fdt_handle, offset, cells, 2);
-    }
-    if (findByCompatible(fdt_handle, "arm,gic-400")) |offset| {
-        return parseGicRegs(fdt_handle, offset, cells, 2);
-    }
-
-    return null;
-}
-
-fn parseGicRegs(fdt_handle: Fdt, offset: i32, cells: CellSizes, version: u8) ?GicInfo {
-    const reg = getprop(fdt_handle, offset, "reg") orelse return null;
-    const first = parseRegEntry(reg, 0, cells) orelse return null;
-    const second = parseRegEntry(reg, cells.entrySize(), cells);
-
-    return .{
-        .version = version,
-        .gicd_base = first.base,
-        .gicc_base = if (version == 2) if (second) |r| r.base else 0 else 0,
-        .gicr_base = if (version == 3) if (second) |r| r.base else 0 else 0,
-    };
-}
-
-/// Get UART base address from DTB.
-/// Kernel uses this for ARM64 console. Userland drivers use for any UART.
-pub fn getUartBase(fdt_handle: Fdt) ?u64 {
-    const root = pathOffset(fdt_handle, "/") orelse return null;
-    const cells = getCellSizes(fdt_handle, root);
-
-    // ARM PL011 (QEMU ARM64, RPi5)
-    if (findByCompatible(fdt_handle, "arm,pl011")) |offset| {
-        const reg = getprop(fdt_handle, offset, "reg") orelse return null;
-        const region = parseRegEntry(reg, 0, cells) orelse return null;
-        return region.base;
-    }
-
-    // 16550 (RISC-V) - kernel uses SBI, but userland driver needs this
-    if (findByCompatible(fdt_handle, "ns16550a")) |offset| {
-        const reg = getprop(fdt_handle, offset, "reg") orelse return null;
-        const region = parseRegEntry(reg, 0, cells) orelse return null;
-        return region.base;
-    }
-
-    return null;
 }
 
 /// Get iterator over reserved memory regions.

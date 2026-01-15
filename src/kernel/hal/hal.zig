@@ -26,6 +26,7 @@ const std = @import("std");
 const board = @import("board");
 const console = @import("../console/console.zig");
 const fdt = @import("../fdt/fdt.zig");
+const hwinfo = @import("../hwinfo/hwinfo.zig");
 pub const interrupt = @import("interrupt.zig");
 pub const timer = @import("timer.zig");
 
@@ -101,7 +102,7 @@ pub export const KERNEL_VIRT_BASE: usize = arch.mmu.KERNEL_VIRT_BASE;
 
 /// Get validated DTB handle. Returns null if DTB unavailable or invalid.
 /// DTB is accessed via higher-half mapping of original bootloader location.
-pub fn getDtb() ?fdt.Fdt {
+fn getDtb() ?fdt.Fdt {
     if (boot.dtb_ptr == 0) return null;
     const dtb: fdt.Fdt = @ptrFromInt(mmu.physToVirt(boot.dtb_ptr));
     fdt.checkHeader(dtb) catch return null;
@@ -121,16 +122,14 @@ pub fn virtInit() void {
     // Switch console to virtual UART address (ARM64 only, RISC-V uses SBI)
     console.postMmuInit();
 
-    // Expand physmap to cover all RAM (read size from DTB)
-    if (getDtb()) |dtb| {
-        const ram_size = fdt.getTotalMemory(dtb);
-        arch.mmu.expandPhysmap(ram_size);
-    }
+    const dtb = getDtb() orelse @panic("BOOT: DTB required for hardware discovery");
+    hwinfo.init(boot.dtb_ptr, dtb);
+
+    arch.mmu.expandPhysmap(hwinfo.info.total_memory);
 
     arch.mmu.removeIdentityMapping();
     console.print("[5] VIRT: identity mapping removed\n");
 
-    // Initialize timer frequency (ARM64 reads register, RISC-V uses DTB)
-    const timer_freq = if (getDtb()) |dtb| fdt.getTimerFrequency(dtb) orelse 0 else 0;
-    timer.initFrequency(timer_freq);
+    // Initialize timer frequency (ARM64 reads register, RISC-V uses hwinfo value)
+    timer.initFrequency(hwinfo.info.timer_frequency);
 }

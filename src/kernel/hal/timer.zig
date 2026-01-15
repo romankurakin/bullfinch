@@ -8,8 +8,6 @@
 
 const builtin = @import("builtin");
 
-const fdt = @import("../fdt/fdt.zig");
-
 const arch_timer = switch (builtin.cpu.arch) {
     .aarch64 => @import("../arch/arm64/timer.zig"),
     .riscv64 => @import("../arch/riscv64/timer.zig"),
@@ -28,9 +26,7 @@ pub const now = arch_timer.now;
 pub const setDeadline = arch_timer.setDeadline;
 
 /// Enable timer interrupts. Caller must initialize interrupt controller first.
-pub fn start(dtb: fdt.Fdt) void {
-    arch_timer.start(dtb);
-}
+pub const init = arch_timer.init;
 
 /// Initialize timer frequency. ARM64 ignores parameter (reads register).
 pub const initFrequency = arch_timer.initFrequency;

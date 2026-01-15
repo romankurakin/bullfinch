@@ -15,6 +15,7 @@ const alloc = @import("alloc/alloc.zig");
 const clock = @import("clock/clock.zig");
 const console = @import("console/console.zig");
 const fdt = @import("fdt/fdt.zig");
+const hwinfo = @import("hwinfo/hwinfo.zig");
 const lib = @import("lib/lib.zig");
 const memory = @import("memory/memory.zig");
 const mmu = @import("mmu/mmu.zig");
@@ -29,6 +30,7 @@ comptime {
     _ = clock;
     _ = console;
     _ = fdt;
+    _ = hwinfo;
     _ = lib;
     _ = memory;
     _ = mmu;

@@ -1,6 +1,6 @@
 //! Memory Constants.
 //!
-//! Shared memory layout constants used by PMM, MMU, VMM, and other subsystems.
+//! Shared memory layout constants used across kernel subsystems.
 
 const std = @import("std");
 

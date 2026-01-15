@@ -16,7 +16,6 @@
 //!
 //! See ARM Architecture Reference Manual, Chapter D12 (The Generic Timer).
 
-const fdt = @import("../../fdt/fdt.zig");
 const gic = @import("gic.zig");
 
 const panic_msg = struct {
@@ -70,7 +69,7 @@ inline fn enableIrq() void {
 
 /// Enable timer interrupts and global interrupt delivery.
 /// Caller must initialize interrupt controller first.
-pub fn start(_: fdt.Fdt) void {
+pub fn init() void {
     gic.enableTimerInterrupt();
     enableTimer();
     enableIrq();
