@@ -1,7 +1,6 @@
-//! Interrupt Controller Hardware Abstraction.
+//! Interrupt controller HAL.
 //!
-//! Unified interface for architecture-specific interrupt controllers:
-//! ARM64 GIC, RISC-V PLIC/CLINT (via SBI).
+//! Unified interface for ARM64 GIC and RISC-V PLIC CLINT via SBI.
 
 const builtin = @import("builtin");
 
