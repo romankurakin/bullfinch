@@ -5,17 +5,18 @@
 //! See ARM GIC Architecture Specification (IHI 0069) for GICv3,
 //! ARM GIC-400 TRM (DDI 0471B) for GICv2.
 
-const fdt = @import("../../fdt/fdt.zig");
 const gic = @import("gic.zig");
+const hwinfo = @import("../../hwinfo/hwinfo.zig");
 
 const panic_msg = struct {
-    const GIC_NOT_FOUND = "INTERRUPT: GIC not found in DTB";
+    const GIC_NOT_FOUND = "INTERRUPT: GIC not found in hardware info";
 };
 
-/// Initialize interrupt controller from DTB configuration.
+/// Initialize interrupt controller from hardware info.
 /// Must be called before timer.start().
-pub fn init(dtb: fdt.Fdt) void {
-    const gic_info = fdt.getGicInfo(dtb) orelse @panic(panic_msg.GIC_NOT_FOUND);
+pub fn init() void {
+    const gic_info = hwinfo.info.gic;
+    if (gic_info.version == 0) @panic(panic_msg.GIC_NOT_FOUND);
     gic.init(.{
         .version = gic_info.version,
         .gicd_base = gic_info.gicd_base,

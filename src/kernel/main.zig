@@ -8,33 +8,25 @@ const std = @import("std");
 
 const clock = @import("clock/clock.zig");
 const console = @import("console/console.zig");
-const fdt = @import("fdt/fdt.zig");
 const hal = @import("hal/hal.zig");
+const hwinfo = @import("hwinfo/hwinfo.zig");
 const pmm = @import("pmm/pmm.zig");
 const sync = @import("sync/sync.zig");
 const test_markers = @import("test_markers");
-
-const panic_msg = struct {
-    const NO_DTB = "BOOT: no DTB - cannot discover hardware";
-};
 
 comptime {
     _ = hal.boot; // Force boot module inclusion for entry point
     _ = @import("c_compat.zig"); // C stdlib shim
 }
 
-fn printDtbInfo(dtb: fdt.Fdt) void {
-    // Count reserved regions
-    var reserved_count: usize = 0;
-    var reserved = fdt.getReservedRegions(dtb);
-    while (reserved.next()) |_| reserved_count += 1;
-
+fn printHwInfo() void {
+    const hw = &hwinfo.info;
     console.print("[6] DTB: ");
-    console.printDec(fdt.getCpuCount(dtb));
+    console.printDec(hw.cpu_count);
     console.print(" CPUs, ");
-    console.printDec(fdt.getTotalMemory(dtb) / (1024 * 1024));
+    console.printDec(hw.total_memory / (1024 * 1024));
     console.print(" MB RAM, ");
-    console.printDec(reserved_count);
+    console.printDec(hw.reserved_region_count);
     console.print(" reserved regions\n");
 }
 
@@ -80,10 +72,9 @@ fn testClock() void {
 export fn kmain() noreturn {
     hal.virtInit();
 
-    const dtb = hal.getDtb() orelse @panic(panic_msg.NO_DTB);
-    printDtbInfo(dtb);
+    printHwInfo();
 
-    pmm.init(dtb);
+    pmm.init();
     console.print("[7] PMM: ");
     console.printDec(pmm.freeCount());
     console.print("/");
@@ -91,8 +82,8 @@ export fn kmain() noreturn {
     console.print(" pages free\n");
     testPmm();
 
-    hal.interrupt.init(dtb);
-    clock.init(dtb);
+    hal.interrupt.init();
+    clock.init();
     console.print("[8] CLK: timer ready\n");
     testClock();
 

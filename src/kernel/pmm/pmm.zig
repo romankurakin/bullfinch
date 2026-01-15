@@ -26,8 +26,9 @@
 
 const builtin = @import("builtin");
 const std = @import("std");
-const fdt = @import("../fdt/fdt.zig");
 const hal = @import("../hal/hal.zig");
+const hwinfo = @import("../hwinfo/hwinfo.zig");
+const limits = @import("../limits.zig");
 const memory = @import("../memory/memory.zig");
 const sync = @import("../sync/sync.zig");
 
@@ -40,11 +41,11 @@ const PAGE_SIZE = memory.PAGE_SIZE;
 /// Enable poison fills and extra validation in debug builds.
 const debug_kernel = builtin.mode == .Debug;
 
-/// Maximum number of memory arenas supported.
-const MAX_ARENAS = 4;
+/// Maximum number of memory arenas.
+pub const MAX_ARENAS = limits.MAX_MEMORY_ARENAS;
 
 /// Maximum number of reserved ranges tracked during init.
-const MAX_RESERVED = 8;
+pub const MAX_RESERVED = limits.MAX_RESERVED_REGIONS;
 
 /// Kernel image reservation padding for large page (2MB) alignment.
 const KERNEL_RESERVE_PAD = 2 * 1024 * 1024;
@@ -72,7 +73,7 @@ const poison = struct {
 
 const panic_msg = struct {
     const NOT_INITIALIZED = "PMM: not initialized";
-    const NO_MEMORY_REGIONS = "PMM: no memory regions found in DTB";
+    const NO_MEMORY_REGIONS = "PMM: no memory regions found";
     const METADATA_TOO_LARGE = "PMM: page metadata too large for region";
     const UNALIGNED_ADDRESS = "PMM: address not page-aligned";
     const ADDRESS_NOT_IN_ARENA = "PMM: address not in any managed arena";
@@ -186,18 +187,20 @@ const Pmm = struct {
 var pmm: Pmm align(64) = .{};
 
 /// Reserved range for tracking during initialization.
-const ReservedRange = struct { base: u64 = 0, end: u64 = 0 };
+const ReservedRange = struct { start: u64 = 0, end: u64 = 0 };
 
 /// Reserved ranges tracked during initialization (before free list is built).
 var reserved_ranges: [MAX_RESERVED]ReservedRange = .{ReservedRange{}} ** MAX_RESERVED;
 var reserved_count: usize = 0;
 
-/// Initialize PMM from device tree memory map.
+/// Initialize PMM from hardware info.
 /// Must be called on primary core before SMP initialization.
-pub fn init(dtb: fdt.Fdt) void {
+pub fn init() void {
     // Reset state (allows re-initialization for testing)
     pmm = Pmm{};
     reserved_count = 0;
+
+    const hw = &hwinfo.info;
 
     // Reserve DTB and kernel FIRST, before placing metadata.
     // DTB is typically placed near end of RAM by bootloader.
@@ -209,49 +212,29 @@ pub fn init(dtb: fdt.Fdt) void {
     recordReserved(krange.start, kernel_safe_end);
 
     // Reserve DTB blob (must be done before iterating reserved regions!)
-    const dtb_size = fdt.getTotalSize(dtb);
-    const dtb_start = hal.boot.dtb_ptr;
-    if (dtb_start != 0 and dtb_size > 0) {
+    if (hw.dtb_phys != 0 and hw.dtb_size > 0) {
         // Pad DTB reservation to page boundary
-        const dtb_end = alignUp64(dtb_start + dtb_size, PAGE_SIZE);
-        recordReserved(dtb_start, dtb_end);
+        const dtb_end = alignUp64(hw.dtb_phys + hw.dtb_size, PAGE_SIZE);
+        recordReserved(hw.dtb_phys, dtb_end);
     }
 
     // Reserve DTB-specified reserved regions (e.g., OpenSBI on RISC-V)
-    var dtb_reserved = fdt.getReservedRegions(dtb);
-    while (dtb_reserved.next()) |region| {
+    for (hw.reservedRegions()) |region| {
         if (region.size > 0) {
             recordReserved(region.base, region.base + region.size);
         }
     }
 
-    // Collect memory regions from DTB, sorted by size (largest first)
-    var dtb_regions = fdt.getMemoryRegions(dtb);
-    var candidates: [MAX_ARENAS]struct { base: u64, size: u64 } = undefined;
-    var candidate_count: usize = 0;
-
-    while (dtb_regions.next()) |region| {
-        if (region.size == 0) continue;
-        if (candidate_count >= MAX_ARENAS) break;
-
-        // Insert sorted by size descending
-        var insert_idx = candidate_count;
-        while (insert_idx > 0 and candidates[insert_idx - 1].size < region.size) {
-            candidates[insert_idx] = candidates[insert_idx - 1];
-            insert_idx -= 1;
-        }
-        candidates[insert_idx] = .{ .base = region.base, .size = region.size };
-        candidate_count += 1;
-    }
-
-    if (candidate_count == 0) {
+    // Memory regions are already sorted by size descending in hwinfo
+    const regions = hw.memoryRegions();
+    if (regions.len == 0) {
         @panic(panic_msg.NO_MEMORY_REGIONS);
     }
 
     // Initialize each arena
-    for (candidates[0..candidate_count], 0..) |candidate, idx| {
+    for (regions, 0..) |region, idx| {
         if (pmm.arena_count >= MAX_ARENAS) break;
-        if (initArena(candidate.base, candidate.size, @intCast(idx))) {
+        if (initArena(region.base, region.size, @intCast(idx))) {
             pmm.arena_count += 1;
         }
     }
@@ -263,8 +246,8 @@ pub fn init(dtb: fdt.Fdt) void {
     // Mark all pre-recorded reserved ranges in the page metadata
     // (ranges were recorded before arena init to protect DTB from being overwritten)
     for (reserved_ranges[0..reserved_count]) |r| {
-        if (r.end > r.base) {
-            markRangeReserved(r.base, r.end - r.base);
+        if (r.end > r.start) {
+            markRangeReserved(r.start, r.end - r.start);
         }
     }
 
@@ -559,14 +542,14 @@ fn recordReserved(base: u64, end: u64) void {
     if (reserved_count >= MAX_RESERVED) {
         @panic(panic_msg.TOO_MANY_RESERVED);
     }
-    reserved_ranges[reserved_count] = .{ .base = base, .end = end };
+    reserved_ranges[reserved_count] = .{ .start = base, .end = end };
     reserved_count += 1;
 }
 
 /// Check if physical address is in a reserved range.
 fn isReserved(phys: u64) bool {
     for (reserved_ranges[0..reserved_count]) |r| {
-        if (phys >= r.base and phys < r.end) return true;
+        if (phys >= r.start and phys < r.end) return true;
     }
     return false;
 }

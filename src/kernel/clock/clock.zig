@@ -17,7 +17,6 @@
 //! TODO(smp): next_tick/scheduler_tick need protection if modified from multiple cores
 
 const console = @import("../console/console.zig");
-const fdt = @import("../fdt/fdt.zig");
 const hal = @import("../hal/hal.zig");
 const trap = @import("../trap/trap.zig");
 
@@ -41,8 +40,7 @@ var tick_count: u64 = 0;
 var scheduler_tick: ?*const fn () void = null;
 
 /// Initialize clock subsystem. Timer frequency must be initialized first.
-/// DTB needed for timer interrupt configuration on ARM64.
-pub fn init(dtb: fdt.Fdt) void {
+pub fn init() void {
     const freq = hal.timer.frequency();
     if (freq == 0) @panic(panic_msg.ZERO_FREQ);
     ticks_per_interval = freq / TICK_RATE_HZ;
@@ -52,7 +50,7 @@ pub fn init(dtb: fdt.Fdt) void {
     hal.timer.setDeadline(next_tick);
 
     // Deadline must be set before enabling interrupts
-    hal.timer.start(dtb);
+    hal.timer.init();
 }
 
 /// Register scheduler tick callback. Called once per tick for preemption.

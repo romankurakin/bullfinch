@@ -9,18 +9,16 @@
 //!
 //! See RISC-V SBI Specification, Chapter 6 (Timer Extension).
 
-const fdt = @import("../../fdt/fdt.zig");
 const sbi = @import("sbi.zig");
 
 const panic_msg = struct {
-    const ZERO_FREQUENCY = "TIMER: frequency is zero (invalid DTB)";
+    const ZERO_FREQUENCY = "TIMER: frequency is zero";
 };
 
 /// Timer frequency in Hz. Set by initFrequency() before use.
 pub var frequency: u64 = 0;
 
-/// Set timer frequency (from DTB /cpus/timebase-frequency).
-/// Panics if frequency is zero (invalid or missing DTB entry).
+/// Set timer frequency.
 pub fn initFrequency(freq: u64) void {
     if (freq == 0) @panic(panic_msg.ZERO_FREQUENCY);
     frequency = freq;
@@ -59,7 +57,7 @@ inline fn enableGlobalInterrupts() void {
 /// Enable timer interrupts and global interrupt delivery.
 /// Caller must set a deadline via setDeadline() before calling this,
 /// otherwise stale mtimecmp could trigger immediate interrupt storm.
-pub fn start(_: fdt.Fdt) void {
+pub fn init() void {
     enableTimerInterrupt();
     enableGlobalInterrupts();
 }
