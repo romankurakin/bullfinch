@@ -3,6 +3,9 @@
 //! Fair (FIFO) spinlock that prevents starvation. Each acquirer takes a ticket
 //! and waits until their number is served. Uses architecture-specific power
 //! optimization: ARM64 sleeps with WFE, RISC-V polls with pause hints.
+//!
+//! Layout: single 32-bit word with owner (low 16) and next (high 16), enabling
+//! atomic operations on entire lock state. Matches Linux/Jailhouse approach.
 
 const std = @import("std");
 const hal = @import("../hal/hal.zig");
@@ -20,20 +23,29 @@ const cpu = @import("../hal/cpu.zig");
 /// defer lock.release();
 /// ```
 pub const SpinLock = struct {
-    now_serving: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
-    next_ticket: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    /// Packed tickets: owner (bits 0-15), next (bits 16-31).
+    state: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
 
     const Self = @This();
+    const TICKET_SHIFT = 16;
 
     /// Acquire lock, spinning until obtained.
     pub fn acquire(self: *Self) void {
-        const my_ticket = self.next_ticket.fetchAdd(1, .monotonic);
-        cpu.spinWaitEq(&self.now_serving.raw, my_ticket);
+        // Atomically increment next ticket (upper 16 bits), get old state.
+        const old = self.state.fetchAdd(1 << TICKET_SHIFT, .monotonic);
+        const my_ticket: u16 = @truncate(old >> TICKET_SHIFT);
+
+        // Fast path: lock was free (owner == my_ticket).
+        if (@as(u16, @truncate(old)) == my_ticket) return;
+
+        // Slow path: spin until owner matches our ticket.
+        cpu.spinWaitEq16(&self.state.raw, my_ticket);
     }
 
-    /// Release lock. Clears global monitor, generating events for WFE waiters.
+    /// Release lock, waking next waiter.
     pub fn release(self: *Self) void {
-        cpu.storeRelease(&self.now_serving.raw, self.now_serving.raw + 1);
+        // Increment owner (lower 16 bits).
+        _ = self.state.fetchAdd(1, .release);
     }
 
     /// Acquire with interrupt safety. Returns guard that restores state on release.
@@ -54,26 +66,25 @@ pub const SpinLock = struct {
     };
 };
 
-test "SpinLock size is 8 bytes" {
-    try std.testing.expectEqual(@as(usize, 8), @sizeOf(SpinLock));
+test "SpinLock size is 4 bytes" {
+    try std.testing.expectEqual(@as(usize, 4), @sizeOf(SpinLock));
 }
 
 test "SpinLock initial state" {
     const lock = SpinLock{};
-    try std.testing.expectEqual(@as(u32, 0), lock.now_serving.load(.monotonic));
-    try std.testing.expectEqual(@as(u32, 0), lock.next_ticket.load(.monotonic));
+    try std.testing.expectEqual(@as(u32, 0), lock.state.load(.monotonic));
 }
 
 test "SpinLock acquire and release" {
     var lock = SpinLock{};
 
     lock.acquire();
-    try std.testing.expectEqual(@as(u32, 1), lock.next_ticket.load(.monotonic));
-    try std.testing.expectEqual(@as(u32, 0), lock.now_serving.load(.monotonic));
+    // next=1, owner=0
+    try std.testing.expectEqual(@as(u32, 1 << 16), lock.state.load(.monotonic));
 
     lock.release();
-    try std.testing.expectEqual(@as(u32, 1), lock.next_ticket.load(.monotonic));
-    try std.testing.expectEqual(@as(u32, 1), lock.now_serving.load(.monotonic));
+    // next=1, owner=1
+    try std.testing.expectEqual(@as(u32, (1 << 16) | 1), lock.state.load(.monotonic));
 }
 
 test "SpinLock multiple cycles" {
@@ -86,6 +97,6 @@ test "SpinLock multiple cycles" {
     lock.acquire();
     lock.release();
 
-    try std.testing.expectEqual(@as(u32, 3), lock.next_ticket.load(.monotonic));
-    try std.testing.expectEqual(@as(u32, 3), lock.now_serving.load(.monotonic));
+    // next=3, owner=3
+    try std.testing.expectEqual(@as(u32, (3 << 16) | 3), lock.state.load(.monotonic));
 }
