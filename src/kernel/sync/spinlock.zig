@@ -1,11 +1,13 @@
 //! Ticket SpinLock for SMP synchronization.
 //!
-//! Fair (FIFO) spinlock that prevents starvation. Each acquirer takes a ticket
+//! Spinlocks busy-wait instead of blocking, making them usable before the
+//! scheduler exists and inside interrupt handlers where blocking is impossible.
+//! Trade-off is wasted CPU cycles, so critical sections must be short and never
+//! hold across blocking operations.
+//!
+//! Fair (FIFO) acquisition prevents starvation. Each acquirer takes a ticket
 //! and waits until their number is served. Uses architecture-specific power
 //! optimization: ARM64 sleeps with WFE, RISC-V polls with pause hints.
-//!
-//! Layout: single 32-bit word with owner (low 16) and next (high 16), enabling
-//! atomic operations on entire lock state. Matches Linux/Jailhouse approach.
 
 const std = @import("std");
 const hal = @import("../hal/hal.zig");

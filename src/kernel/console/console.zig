@@ -35,7 +35,11 @@ pub fn print(s: []const u8) void {
 }
 
 /// Print directly to UART without locking.
-/// Use only in trap handlers and panic paths where we cannot safely acquire locks.
+///
+/// Use only in panic paths and trap handlers. If a panic occurs while the
+/// console lock is held, calling print() would deadlock waiting for a lock
+/// that will never be released. Output may interleave on SMP, but garbled
+/// panic messages are better than no messages.
 pub fn printUnsafe(s: []const u8) void {
     uart.print(s);
 }
