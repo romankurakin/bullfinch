@@ -385,7 +385,8 @@ TBD: real filesystems, network stack, virtio drivers, hardware testing.
 
 ### Architecture
 
-- [RISC-V Privileged Specification](https://github.com/riscv/riscv-isa-manual/releases/tag/Priv-v1.12), Version 20211203 (v1.12 ratified)
+- [RISC-V Unprivileged Architecture](https://github.com/riscv/riscv-isa-manual) (ISA Volume 1), Version 20250508 (May 2025)
+- [RISC-V Privileged Architecture](https://github.com/riscv/riscv-isa-manual) (ISA Volume 2), Version 20250508 (May 2025)
 - [RISC-V SBI Specification v3.0](https://github.com/riscv-non-isa/riscv-sbi-doc/releases/tag/v3.0), 2025-07-16 (ratified)
 - [ARM Architecture Reference Manual](https://developer.arm.com/documentation/ddi0487/maa) (DDI 0487M.a.a), ARMv8-A / ARMv9-A
 - [ARM GIC Architecture Specification](https://developer.arm.com/documentation/ihi0069/hb) (IHI 0069H.b), GICv3.3/v4.2
