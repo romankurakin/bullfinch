@@ -13,11 +13,16 @@
 //! We use Vectored mode where interrupts jump to base + 4*cause, allowing fast dispatch
 //! without reading scause. Exceptions all go to base+0.
 //!
+//! TODO(syscall): Fast path dispatch - skip slow path if no pending work flags.
+//! TODO(smp): Per-CPU trap state tracking reentry depth.
+//!
 //! See RISC-V Privileged Specification, Chapter 12 (Supervisor-Level ISA).
 
 const clock = @import("../../clock/clock.zig");
 const console = @import("../../console/console.zig");
 const trap = @import("../../trap/trap.zig");
+const trap_entry = @import("trap_entry.zig");
+const trap_frame = @import("trap_frame.zig");
 
 const panic_msg = struct {
     const UNHANDLED = "TRAP: unhandled";
@@ -27,31 +32,7 @@ const panic_msg = struct {
 const print = console.printUnsafe;
 
 /// Saved register context during trap. Layout must match assembly save/restore order.
-/// RISC-V calling convention: a0-a7 arguments, s0-s11 callee-saved, ra return address.
-pub const TrapContext = extern struct {
-    regs: [31]u64, // x1-x31 (x0 is zero, regs[1] is modified SP)
-    sp: u64, // Original stack pointer
-    sepc: u64, // Exception PC (return address)
-    sstatus: u64, // Status (privilege, interrupt enable)
-    scause: u64, // Cause (bit 63: interrupt, lower: code)
-    stval: u64, // Trap value (fault address or instruction)
-
-    pub const FRAME_SIZE = @sizeOf(TrapContext);
-
-    comptime {
-        if (FRAME_SIZE != 288) @compileError("TrapContext size mismatch - update assembly!");
-    }
-
-    /// Get register value by index (x0-x31).
-    /// Returns the original SP for x2, not the modified stack pointer in regs[1].
-    /// Returns 0 for out-of-bounds indices.
-    pub inline fn getReg(self: *const TrapContext, idx: usize) u64 {
-        if (idx == 0) return 0; // x0 is always zero
-        if (idx > 31) return 0; // out of bounds
-        if (idx == 2) return self.sp; // x2/sp: return original, not modified
-        return self.regs[idx - 1];
-    }
-};
+const TrapFrame = trap_frame.TrapFrame;
 
 /// Trap cause from scause register. Bit 63: interrupt (1) vs exception (0).
 /// See RISC-V Privileged Specification, Table 32.
@@ -133,259 +114,159 @@ pub const TrapCause = enum(u64) {
 
 /// Trap vector table. Aligned to 256 bytes as per spec.
 /// Vectored mode: interrupts jump to base + 4*cause, exceptions to base.
-/// Timer interrupt (cause 5) uses dedicated fast path timerEntry.
+/// All entries dispatch based on sstatus.SPP (user vs kernel origin).
 export fn trapVector() align(256) linksection(".trap") callconv(.naked) void {
     asm volatile (
-    // Base + 0: Exceptions (all synchronous traps)
-        \\ j trapEntry
+    // Base + 0: Exceptions (synchronous)
+        \\ j trapDispatch
         // Base + 4: Supervisor Software Interrupt (Cause 1)
-        \\ j trapEntry
-        // Base + 8: Reserved (Cause 2)
-        \\ j trapEntry
-        // Base + 12: Reserved (Cause 3)
-        \\ j trapEntry
-        // Base + 16: Reserved (Cause 4)
-        \\ j trapEntry
+        \\ j interruptDispatch
+        // Base + 8-16: Reserved (Cause 2-4)
+        \\ j trapDispatch
+        \\ j trapDispatch
+        \\ j trapDispatch
         // Base + 20: Supervisor Timer Interrupt (Cause 5)
-        \\ j timerEntry
-        // Base + 24: Reserved (Cause 6)
-        \\ j trapEntry
-        // Base + 28: Reserved (Cause 7)
-        \\ j trapEntry
-        // Base + 32: Reserved (Cause 8)
-        \\ j trapEntry
+        \\ j interruptDispatch
+        // Base + 24-32: Reserved (Cause 6-8)
+        \\ j trapDispatch
+        \\ j trapDispatch
+        \\ j trapDispatch
         // Base + 36: Supervisor External Interrupt (Cause 9)
-        \\ j trapEntry
-        // Fill up to 16 entries to be safe (up to Cause 15)
-        \\ j trapEntry
-        \\ j trapEntry
-        \\ j trapEntry
-        \\ j trapEntry
-        \\ j trapEntry
-        \\ j trapEntry
+        \\ j interruptDispatch
+        // Fill to 16 entries (Cause 10-15)
+        \\ j trapDispatch
+        \\ j trapDispatch
+        \\ j trapDispatch
+        \\ j trapDispatch
+        \\ j trapDispatch
+        \\ j trapDispatch
     );
 }
 
-/// Common trap handler entry point.
-/// Stack frame: 288 bytes (x1-x31, sp, sepc, sstatus, scause, stval).
-/// On trap entry, hardware clears sstatus.SIE (saved to SPIE), preventing nesting.
-/// sret restores SIE from SPIE.
-export fn trapEntry() linksection(".trap") callconv(.naked) noreturn {
-    // Save all general-purpose registers except x0 (hardwired zero).
-    // We use x5 (t0) as scratch after saving it.
+/// Trap dispatch - routes to kernel or user handler based on sstatus.SPP.
+/// SPP bit (bit 8): 0 = from U-mode, 1 = from S-mode.
+export fn trapDispatch() linksection(".trap") callconv(.naked) noreturn {
     asm volatile (
-    // Allocate stack frame
-        \\addi sp, sp, -288
-
-        // Save x1-x31 (x0 is hardwired zero, not saved)
-        \\sd x1, 0(sp)
-        \\sd x2, 8(sp)
-        \\sd x3, 16(sp)
-        \\sd x4, 24(sp)
-        \\sd x5, 32(sp)
-        \\sd x6, 40(sp)
-        \\sd x7, 48(sp)
-        \\sd x8, 56(sp)
-        \\sd x9, 64(sp)
-        \\sd x10, 72(sp)
-        \\sd x11, 80(sp)
-        \\sd x12, 88(sp)
-        \\sd x13, 96(sp)
-        \\sd x14, 104(sp)
-        \\sd x15, 112(sp)
-        \\sd x16, 120(sp)
-        \\sd x17, 128(sp)
-        \\sd x18, 136(sp)
-        \\sd x19, 144(sp)
-        \\sd x20, 152(sp)
-        \\sd x21, 160(sp)
-        \\sd x22, 168(sp)
-        \\sd x23, 176(sp)
-        \\sd x24, 184(sp)
-        \\sd x25, 192(sp)
-        \\sd x26, 200(sp)
-        \\sd x27, 208(sp)
-        \\sd x28, 216(sp)
-        \\sd x29, 224(sp)
-        \\sd x30, 232(sp)
-        \\sd x31, 240(sp)
-
-        // Calculate and save original SP (SP before addi -288)
-        \\addi t0, sp, 288
-        \\sd t0, 248(sp)
-
-        // Save sepc (return address)
-        \\csrr t0, sepc
-        \\sd t0, 256(sp)
-
-        // Save sstatus (saved status)
-        \\csrr t0, sstatus
-        \\sd t0, 264(sp)
-
-        // Save scause
-        \\csrr t0, scause
-        \\sd t0, 272(sp)
-
-        // Save stval
-        \\csrr t0, stval
-        \\sd t0, 280(sp)
-
-        // Call Zig trap handler with pointer to context
-        \\mv a0, sp
-        \\call handleTrap
-
-        // Restore sepc and sstatus (may have been modified by handler)
-        \\ld t0, 256(sp)
-        \\csrw sepc, t0
-        \\ld t0, 264(sp)
-        \\csrw sstatus, t0
-
-        // Restore general-purpose registers
-        \\ld x1, 0(sp)
-        // Skip x2 (sp) - restore at end
-        \\ld x3, 16(sp)
-        \\ld x4, 24(sp)
-        \\ld x5, 32(sp)
-        \\ld x6, 40(sp)
-        \\ld x7, 48(sp)
-        \\ld x8, 56(sp)
-        \\ld x9, 64(sp)
-        \\ld x10, 72(sp)
-        \\ld x11, 80(sp)
-        \\ld x12, 88(sp)
-        \\ld x13, 96(sp)
-        \\ld x14, 104(sp)
-        \\ld x15, 112(sp)
-        \\ld x16, 120(sp)
-        \\ld x17, 128(sp)
-        \\ld x18, 136(sp)
-        \\ld x19, 144(sp)
-        \\ld x20, 152(sp)
-        \\ld x21, 160(sp)
-        \\ld x22, 168(sp)
-        \\ld x23, 176(sp)
-        \\ld x24, 184(sp)
-        \\ld x25, 192(sp)
-        \\ld x26, 200(sp)
-        \\ld x27, 208(sp)
-        \\ld x28, 216(sp)
-        \\ld x29, 224(sp)
-        \\ld x30, 232(sp)
-        \\ld x31, 240(sp)
-
-        // Restore SP and return from trap
-        \\addi sp, sp, 288
-        \\sret
+        \\ csrr t0, sstatus
+        \\ andi t0, t0, 0x100
+        \\ bnez t0, kernelTrapEntry
+        \\ j userTrapEntry
     );
 }
 
-/// Timer interrupt fast path - saves only caller-saved registers.
-/// RISC-V calling convention guarantees s0-s11 are callee-saved.
-/// We only save ra, t0-t6, a0-a7 (16 regs) plus sepc/sstatus for return.
-/// Frame: 144 bytes = 16 regs + sepc + sstatus (16-byte aligned).
-export fn timerEntry() linksection(".trap") callconv(.naked) noreturn {
+/// Interrupt dispatch - kernel uses fast path, user needs full save.
+export fn interruptDispatch() linksection(".trap") callconv(.naked) noreturn {
     asm volatile (
-    // Allocate frame for caller-saved registers only
-        \\addi sp, sp, -144
-
-        // Save ra (x1)
-        \\sd ra, 0(sp)
-
-        // Save t0-t2 (x5-x7)
-        \\sd t0, 8(sp)
-        \\sd t1, 16(sp)
-        \\sd t2, 24(sp)
-
-        // Save a0-a7 (x10-x17)
-        \\sd a0, 32(sp)
-        \\sd a1, 40(sp)
-        \\sd a2, 48(sp)
-        \\sd a3, 56(sp)
-        \\sd a4, 64(sp)
-        \\sd a5, 72(sp)
-        \\sd a6, 80(sp)
-        \\sd a7, 88(sp)
-
-        // Save t3-t6 (x28-x31)
-        \\sd t3, 96(sp)
-        \\sd t4, 104(sp)
-        \\sd t5, 112(sp)
-        \\sd t6, 120(sp)
-
-        // Save sepc and sstatus for sret
-        \\csrr t0, sepc
-        \\sd t0, 128(sp)
-        \\csrr t0, sstatus
-        \\sd t0, 136(sp)
-
-        // Call timer handler directly
-        \\call handleTimerIrq
-
-        // Restore sepc and sstatus
-        \\ld t0, 128(sp)
-        \\csrw sepc, t0
-        \\ld t0, 136(sp)
-        \\csrw sstatus, t0
-
-        // Restore t3-t6
-        \\ld t3, 96(sp)
-        \\ld t4, 104(sp)
-        \\ld t5, 112(sp)
-        \\ld t6, 120(sp)
-
-        // Restore a0-a7
-        \\ld a0, 32(sp)
-        \\ld a1, 40(sp)
-        \\ld a2, 48(sp)
-        \\ld a3, 56(sp)
-        \\ld a4, 64(sp)
-        \\ld a5, 72(sp)
-        \\ld a6, 80(sp)
-        \\ld a7, 88(sp)
-
-        // Restore t0-t2
-        \\ld t0, 8(sp)
-        \\ld t1, 16(sp)
-        \\ld t2, 24(sp)
-
-        // Restore ra
-        \\ld ra, 0(sp)
-
-        // Deallocate and return
-        \\addi sp, sp, 144
-        \\sret
+        \\ csrr t0, sstatus
+        \\ andi t0, t0, 0x100
+        \\ bnez t0, kernelInterruptEntry
+        \\ j userTrapEntry
     );
 }
 
-/// Main trap handler - examines scause and dispatches or panics.
-export fn handleTrap(ctx: *TrapContext) void {
-    const cause = @as(TrapCause, @enumFromInt(ctx.scause));
-    dumpTrap(ctx, cause);
+// Entry points generated from a single template.
+// See trap_entry.zig for the comptime generator.
+
+/// Kernel trap entry - full save for debugging. Kernel faults are bugs.
+export fn kernelTrapEntry() linksection(".trap") callconv(.naked) noreturn {
+    asm volatile (trap_entry.genEntryAsm(.{
+            .full_save = true,
+            .handler = "handleKernelTrap",
+            .pass_frame = true,
+        }));
+}
+
+/// Kernel interrupt entry - fast path with caller-saved registers only.
+/// Handles timer, software, and external interrupts from kernel context.
+export fn kernelInterruptEntry() linksection(".trap") callconv(.naked) noreturn {
+    asm volatile (trap_entry.genEntryAsm(.{
+            .full_save = false,
+            .handler = "handleKernelInterrupt",
+            .pass_frame = false,
+        }));
+}
+
+/// User trap entry. Full save for all user-mode traps and interrupts.
+/// Single entry point; handler dispatches by scause.
+/// TODO(scheduler): Switch to kernel stack before saving frame.
+export fn userTrapEntry() linksection(".trap") callconv(.naked) noreturn {
+    asm volatile (trap_entry.genEntryAsm(.{
+            .full_save = true,
+            .handler = "handleUserTrap",
+            .pass_frame = true,
+        }));
+}
+
+/// Kernel trap handler. Kernel faults are bugs, always panic.
+export fn handleKernelTrap(frame: *TrapFrame) void {
+    const cause = @as(TrapCause, @enumFromInt(frame.scause));
+    dumpTrap(frame, cause);
+    // TODO(syscall): Handle ECALL from S-mode.
+    // TODO(vm): Handle kernel page faults.
     @panic(panic_msg.UNHANDLED);
 }
 
-/// Timer interrupt handler called from timerEntry assembly.
-export fn handleTimerIrq() void {
-    clock.handleTimerIrq();
+/// Kernel interrupt handler. Dispatches timer, software, and external interrupts.
+export fn handleKernelInterrupt() void {
+    const scause = asm volatile ("csrr %[ret], scause"
+        : [ret] "=r" (-> u64),
+    );
+    const code = TrapCause.code(scause);
+
+    switch (code) {
+        5 => clock.handleTimerIrq(), // Supervisor timer
+        1 => {}, // TODO(ipi): Supervisor software interrupt
+        9 => {}, // TODO(plic): Supervisor external interrupt
+        else => @panic(panic_msg.UNHANDLED),
+    }
 }
 
-fn dumpTrap(ctx: *const TrapContext, cause: TrapCause) void {
-    // Print trap header
+/// User trap handler. Unified entry for all user-mode traps and interrupts.
+/// TODO(process): Terminate process on fault instead of panic.
+/// TODO(signals): Deliver signal to userspace exception handler.
+export fn handleUserTrap(frame: *TrapFrame) void {
+    const cause = @as(TrapCause, @enumFromInt(frame.scause));
+
+    if (TrapCause.isInterrupt(frame.scause)) {
+        const code = TrapCause.code(frame.scause);
+        switch (code) {
+            5 => clock.handleTimerIrq(), // Supervisor timer
+            1 => {}, // TODO(ipi): Supervisor software interrupt
+            9 => {}, // TODO(plic): Supervisor external interrupt
+            else => {
+                print("\nUser interrupt: ");
+                print(cause.name());
+                print("\n");
+                @panic(panic_msg.UNHANDLED);
+            },
+        }
+        // TODO(scheduler): Check need_resched flag and context switch if needed.
+        return;
+    }
+
+    print("\nUser trap: ");
+    print(cause.name());
+    print("\n");
+    dumpTrap(frame, cause);
+    // TODO(syscall): Handle ECALL from U-mode.
+    // TODO(vm): Handle user page faults.
+    @panic(panic_msg.UNHANDLED);
+}
+
+fn dumpTrap(frame: *const TrapFrame, cause: TrapCause) void {
     print("\nTrap: ");
     print(cause.name());
     print(" \n");
 
-    // Print key registers inline
-    printKeyRegister("sepc", ctx.sepc);
+    printKeyRegister("sepc", frame.sepc);
     print(" ");
-    printKeyRegister("sp", ctx.sp);
+    printKeyRegister("sp", frame.sp_saved);
     print(" ");
-    printKeyRegister("scause", ctx.scause);
+    printKeyRegister("scause", frame.scause);
     print(" ");
-    printKeyRegister("stval", ctx.stval);
+    printKeyRegister("stval", frame.stval);
     print("\n");
 
-    // Dump all general-purpose registers (x1-x31)
     const reg_names = [_][]const u8{
         "ra", "sp",  "gp",  "tp", "t0", "t1", "t2", "s0",
         "s1", "a0",  "a1",  "a2", "a3", "a4", "a5", "a6",
@@ -395,7 +276,7 @@ fn dumpTrap(ctx: *const TrapContext, cause: TrapCause) void {
     for (reg_names, 0..) |name, i| {
         print(&trap.fmt.formatRegName(name));
         print("0x");
-        print(&trap.fmt.formatHex(ctx.regs[i]));
+        print(&trap.fmt.formatHex(frame.regs[i]));
         if ((i + 1) % 4 == 0) {
             print("\n");
         } else {
@@ -468,9 +349,9 @@ pub inline fn enableInterrupts() void {
     asm volatile ("csrsi sstatus, 0x2");
 }
 
-test "TrapContext size and layout" {
+test "TrapFrame size and layout" {
     const std = @import("std");
-    try std.testing.expectEqual(@as(usize, 288), TrapContext.FRAME_SIZE);
+    try std.testing.expectEqual(@as(usize, 288), TrapFrame.FRAME_SIZE);
 }
 
 test "TrapCause.isInterrupt detects interrupt bit" {
@@ -496,26 +377,26 @@ test "TrapCause names are defined for known exceptions" {
     try std.testing.expectEqualStrings("unknown trap", unknown.name());
 }
 
-test "TrapContext.getReg handles special cases" {
+test "TrapFrame.getReg handles special cases" {
     const std = @import("std");
-    var ctx: TrapContext = undefined;
+    var frame: TrapFrame = undefined;
 
     // Set up test values
     for (0..31) |i| {
-        ctx.regs[i] = @as(u64, i) + 100;
+        frame.regs[i] = @as(u64, i) + 100;
     }
-    ctx.sp = 0xDEADBEEF; // Original SP
+    frame.sp_saved = 0xDEADBEEF; // Original SP
 
     // x0 always returns 0
-    try std.testing.expectEqual(@as(u64, 0), ctx.getReg(0));
+    try std.testing.expectEqual(@as(u64, 0), frame.getReg(0));
 
     // x1 (ra) comes from regs[0]
-    try std.testing.expectEqual(@as(u64, 100), ctx.getReg(1));
+    try std.testing.expectEqual(@as(u64, 100), frame.getReg(1));
 
     // x2 (sp) returns original SP, not regs[1]
-    try std.testing.expectEqual(@as(u64, 0xDEADBEEF), ctx.getReg(2));
+    try std.testing.expectEqual(@as(u64, 0xDEADBEEF), frame.getReg(2));
 
     // x3+ come from regs array
-    try std.testing.expectEqual(@as(u64, 102), ctx.getReg(3));
-    try std.testing.expectEqual(@as(u64, 130), ctx.getReg(31));
+    try std.testing.expectEqual(@as(u64, 102), frame.getReg(3));
+    try std.testing.expectEqual(@as(u64, 130), frame.getReg(31));
 }
