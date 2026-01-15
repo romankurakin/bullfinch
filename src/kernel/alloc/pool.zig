@@ -1,7 +1,8 @@
 //! Fixed-Size Object Pool Allocator.
 //!
-//! Multi-page pool for kernel objects. Alloc is O(bitmap_words) where bitmap
-//! fits in 1-2 words for typical objects; free is O(1). Objects are cache-line
+//! Multi-page pool for kernel objects. Alloc is O(bitmap_words) in the worst
+//! case, but bitmap_words is typically 1-2 for common kernel objects (≤960B),
+//! making it effectively O(1). Free is always O(1). Objects are cache-line
 //! aligned (64B) to prevent false sharing on SMP.
 //!
 //! See Bonwick, "The Slab Allocator" (USENIX Summer 1994).
@@ -18,7 +19,8 @@
 //! allocator for metadata (chicken-and-egg problem).
 //!
 //! Allocation scans the bitmap with @ctz (count trailing zeros) to find the
-//! first free slot in O(1). Pool tracks a "current" slab hint for fast path.
+//! first free slot. Complexity is O(bitmap_words), but for typical kernel
+//! objects this is 1-2 words. Pool tracks a "current" slab hint for fast path.
 //! When current slab fills, we check partial slabs or allocate a new page.
 //!
 //! Free masks the object pointer to page boundary, reads the back-pointer to
@@ -189,9 +191,9 @@ pub fn Pool(comptime T: type) type {
         }
 
         fn allocFromSlab(self: *Self, slab: *SlabData) ?*T {
-            if (debug_kernel) {
-                std.debug.assert(slab.free_count > 0);
-            }
+            // Caller already checked free_count > 0.
+            // Debug-only since we trust internal callers per error philosophy.
+            if (debug_kernel) std.debug.assert(slab.free_count > 0);
 
             // Find first free slot via @ctz (bit=1 means free)
             for (&slab.bitmap, 0..) |*word, word_idx| {

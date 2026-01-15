@@ -14,8 +14,7 @@ pub fn spinWaitEq16(ptr: *const u32, expected: u16) void {
         const val: u16 = @truncate(asm volatile ("ldaxr %[val], [%[ptr]]"
             : [val] "=&r" (-> u32),
             : [ptr] "r" (ptr),
-            : .{ .memory = true }
-        ));
+            : .{ .memory = true }));
         if (val == expected) break;
         asm volatile ("wfe");
     }

@@ -15,6 +15,7 @@ var uart_base: usize = board.UART_PHYS;
 
 const panic_msg = struct {
     const NOT_ENABLED = "UART: not enabled";
+    const INVALID_CONFIG = "UART: invalid default config";
 };
 
 /// Errors from baud rate divisor calculation.
@@ -77,7 +78,8 @@ fn initWithConfig(base: usize, config: InitConfig) void {
     mmio.write32(base + ICR, 0x7FF); // Clear interrupts
 
     // Default config uses known-valid baud rates; panic if somehow invalid.
-    const divs = computeDivisors(config.uartclk_hz, config.baud) catch unreachable;
+    const divs = computeDivisors(config.uartclk_hz, config.baud) catch
+        @panic(panic_msg.INVALID_CONFIG);
     mmio.write32(base + IBRD, divs.ibrd);
     mmio.write32(base + FBRD, divs.fbrd);
     mmio.write32(base + LCRH, LCRH_WLEN_8 | LCRH_FEN); // 8N1, FIFOs enabled

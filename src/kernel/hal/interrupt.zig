@@ -5,8 +5,6 @@
 
 const builtin = @import("builtin");
 
-const fdt = @import("../fdt/fdt.zig");
-
 const arch_interrupt = switch (builtin.cpu.arch) {
     .aarch64 => @import("../arch/arm64/interrupt.zig"),
     .riscv64 => @import("../arch/riscv64/interrupt.zig"),
