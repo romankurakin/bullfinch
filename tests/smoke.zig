@@ -38,22 +38,40 @@ fn runQemu(name: []const u8, cmd: []const []const u8) !bool {
     qemu.stderr_behavior = .Pipe;
     try qemu.spawn();
 
-    var buf: [8192]u8 = undefined;
-    var len: usize = 0;
+    const gpa = std.heap.page_allocator;
+    const stdout = qemu.stdout.?;
+    const stderr = qemu.stderr.?;
+    const Streams = enum { stdout, stderr };
+    var poller = std.io.poll(gpa, Streams, .{ .stdout = stdout, .stderr = stderr });
+    defer poller.deinit();
+
+    const max_keep: usize = 4096;
     const deadline: i128 = std.time.nanoTimestamp() + 15 * std.time.ns_per_s;
 
     while (std.time.nanoTimestamp() < deadline) {
-        len += qemu.stdout.?.read(buf[len..]) catch 0;
-        if (std.mem.indexOf(u8, buf[0..len], markers.BOOT_OK) != null) {
+        _ = try poller.pollTimeout(10 * std.time.ns_per_ms);
+        trimReader(poller.reader(.stdout), max_keep);
+        trimReader(poller.reader(.stderr), max_keep);
+
+        const out_stdout = poller.reader(.stdout).buffered();
+        const out_stderr = poller.reader(.stderr).buffered();
+        const saw_ok = std.mem.indexOf(u8, out_stdout, markers.BOOT_OK) != null or
+            std.mem.indexOf(u8, out_stderr, markers.BOOT_OK) != null;
+        const saw_panic = std.mem.indexOf(u8, out_stdout, markers.PANIC) != null or
+            std.mem.indexOf(u8, out_stderr, markers.PANIC) != null;
+
+        if (saw_ok) {
             _ = qemu.kill() catch {};
             _ = qemu.wait() catch {};
             std.debug.print("{s}: PASS\n", .{name});
             return true;
         }
-        if (std.mem.indexOf(u8, buf[0..len], markers.PANIC) != null) {
+        if (saw_panic) {
             _ = qemu.kill() catch {};
             _ = qemu.wait() catch {};
-            std.debug.print("{s}: FAIL (panic)\n--- output ---\n{s}\n--- end ---\n", .{ name, buf[0..len] });
+            const out = joinOutput(out_stdout, out_stderr);
+            defer if (out.owned) gpa.free(out.buf);
+            std.debug.print("{s}: FAIL (panic)\n--- output ---\n{s}\n--- end ---\n", .{ name, out.buf });
             return false;
         }
         std.Thread.sleep(10 * std.time.ns_per_ms);
@@ -61,6 +79,32 @@ fn runQemu(name: []const u8, cmd: []const []const u8) !bool {
 
     _ = qemu.kill() catch {};
     _ = qemu.wait() catch {};
-    std.debug.print("{s}: FAIL (timeout)\n--- output ---\n{s}\n--- end ---\n", .{ name, buf[0..len] });
+    const out_stdout = poller.reader(.stdout).buffered();
+    const out_stderr = poller.reader(.stderr).buffered();
+    const out = joinOutput(out_stdout, out_stderr);
+    defer if (out.owned) gpa.free(out.buf);
+    std.debug.print("{s}: FAIL (timeout)\n--- output ---\n{s}\n--- end ---\n", .{ name, out.buf });
     return false;
+}
+
+fn trimReader(reader: *std.io.Reader, keep: usize) void {
+    const len = reader.bufferedLen();
+    if (len <= keep) return;
+    const drop = len - keep;
+    _ = reader.discard(std.io.Limit.limited(drop)) catch {};
+}
+
+const JoinedOutput = struct {
+    buf: []const u8,
+    owned: bool,
+};
+
+fn joinOutput(stdout: []const u8, stderr: []const u8) JoinedOutput {
+    if (stderr.len == 0) return .{ .buf = stdout, .owned = false };
+    const gpa = std.heap.page_allocator;
+    const total = stdout.len + stderr.len;
+    var out = gpa.alloc(u8, total) catch return .{ .buf = stdout, .owned = false };
+    std.mem.copyForwards(u8, out[0..stdout.len], stdout);
+    std.mem.copyForwards(u8, out[stdout.len..], stderr);
+    return .{ .buf = out, .owned = true };
 }
