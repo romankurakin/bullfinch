@@ -4,7 +4,6 @@
 //! higher-half addresses. We finalize the virtual address space transition,
 //! initialize physical memory manager and clock, then enter the idle loop.
 
-const builtin = @import("builtin");
 const std = @import("std");
 
 const clock = @import("clock/clock.zig");

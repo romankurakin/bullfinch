@@ -3,8 +3,6 @@
 //! Shared types for page table operations. Architecture-specific MMU
 //! implementations are in arch/*/mmu.zig.
 
-const std = @import("std");
-
 /// Permission flags for page mapping.
 /// All valid mappings are implicitly readable. Global bit is set automatically.
 pub const PageFlags = struct {

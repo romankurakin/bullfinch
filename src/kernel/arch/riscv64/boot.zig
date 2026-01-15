@@ -22,8 +22,8 @@ extern fn kmain() noreturn;
 
 export fn _start() linksection(".text.boot") callconv(.naked) noreturn {
     asm volatile (
-        // Initialize Global Pointer (gp) register.
-        // This is critical for release builds where global access is optimized
+    // Initialize Global Pointer (gp) register.
+    // This is critical for release builds where global access is optimized.
         \\ .option push
         \\ .option norelax
         \\ la gp, __global_pointer$
