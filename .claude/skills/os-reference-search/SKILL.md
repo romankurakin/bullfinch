@@ -1,14 +1,13 @@
 ---
 name: os-reference-search
 description: Search OS reference materials — architecture specs (ARM, RISC-V), books (OSTEP, OSDI3), and papers. Use when implementing OS features (scheduler, IPC, VMM, drivers), looking up register layouts, finding algorithm details, or verifying chapter/section references in comments.
-allowed-tools: Bash, Read
+allowed-tools: AskUserQuestion, Bash, Read
 ---
 
 # OS Reference Search Skill
 
-Search cached text extracts from architecture specs and OS books. The bullfinch
-project keeps PDFs in `~/Developer/os-pdf/` with pre-extracted text in
-`~/Developer/os-pdf/.cache/` for fast ripgrep searching.
+Search architecture specs and OS books. The user keeps source PDFs externally;
+`.cache/` contains extracted `.txt` files (via `pdftotext`) for fast searching.
 
 ## When to Use
 
@@ -30,47 +29,43 @@ project keeps PDFs in `~/Developer/os-pdf/` with pre-extracted text in
 
 **Books:**
 
-- `ostep.txt` — Operating Systems: Three Easy Pieces (Chapters 1-51)
+- `ostep.txt` — Operating Systems: Three Easy Pieces (OSTEP)
 - `osdi3.txt` — Operating Systems: Design & Implementation (MINIX book)
 
 ## Search Patterns
 
 ```bash
 # Search ARM manual
-rg -i "pattern" ~/Developer/os-pdf/.cache/DDI0487_profile_architecture_reference_manual.txt | head -20
+rg -i "pattern" .cache/DDI0487_profile_architecture_reference_manual.txt | head -20
 
 # Find ARM chapter titles
-rg "^Chapter D[0-9]+" ~/Developer/os-pdf/.cache/DDI0487_profile_architecture_reference_manual.txt
+rg "^Chapter D[0-9]+" .cache/DDI0487_profile_architecture_reference_manual.txt
 
 # Search specific ARM section
-rg "D1\.7|D8\.[0-9]+" ~/Developer/os-pdf/.cache/DDI0487_profile_architecture_reference_manual.txt
+rg "D1\.7|D8\.[0-9]+" .cache/DDI0487_profile_architecture_reference_manual.txt
 
 # Search RISC-V privileged spec
-rg -i "pattern" ~/Developer/os-pdf/.cache/riscv-privileged.txt
+rg -i "pattern" .cache/riscv-privileged.txt
 
 # Search OSTEP (chapters are like "4 The Abstraction")
-rg "^[0-9]+ [A-Z]" ~/Developer/os-pdf/.cache/ostep.txt | head -50
+rg "^[0-9]+ [A-Z]" .cache/ostep.txt | head -50
 
 # Search OSDI3 (sections are like "2.1 INTRODUCTION")
-rg "^[0-9]+\.[0-9]+ [A-Z]" ~/Developer/os-pdf/.cache/osdi3.txt | head -50
+rg "^[0-9]+\.[0-9]+ [A-Z]" .cache/osdi3.txt | head -50
 
 # Verify a chapter reference exists
-rg "^4\.7.*PROCESS MANAGER" ~/Developer/os-pdf/.cache/osdi3.txt
+rg "^4\.7.*PROCESS MANAGER" .cache/osdi3.txt
 ```
 
 ## Cache Management
 
-If cache is missing or outdated:
+If `.cache/` is empty or missing files, ask the user for the PDF directory and
+generate all caches:
 
 ```bash
-mkdir -p ~/Developer/os-pdf/.cache
-
-# Rebuild single cache
-pdftotext ~/Developer/os-pdf/riscv-privileged.pdf ~/Developer/os-pdf/.cache/riscv-privileged.txt
-
-# Rebuild all caches
-for f in ~/Developer/os-pdf/*.pdf; do
-  pdftotext "$f" ~/Developer/os-pdf/.cache/"$(basename "$f" .pdf).txt"
+mkdir -p .cache
+for f in /path/to/pdfs/*.pdf; do
+  pdftotext "$f" .cache/"$(basename "$f" .pdf).txt"
 done
 ```
 

@@ -5,6 +5,7 @@ zig-lib/
 
 # Cache
 .zig-cache/
+.cache/
 
 # IDE files
 .vscode/
