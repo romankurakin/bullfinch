@@ -79,9 +79,9 @@ Single `build.zig` orchestrates:
 
 For detailed conventions:
 
-- Zig patterns and idioms: `.claude/rules/zig-patterns.md`
-- Testing structure: `.claude/rules/testing.md`
-- Commit format: `.claude/rules/commits.md`
+- Code style: `docs/code-style.md`
+- Testing structure: `docs/testing.md`
+- Commit format: `docs/commits.md`
 
 ## Workflow
 
