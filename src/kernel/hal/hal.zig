@@ -27,6 +27,8 @@ const board = @import("board");
 const console = @import("../console/console.zig");
 const fdt = @import("../fdt/fdt.zig");
 const hwinfo = @import("../hwinfo/hwinfo.zig");
+const memory = @import("../memory/memory.zig");
+pub const cpu = @import("cpu.zig");
 pub const interrupt = @import("interrupt.zig");
 pub const timer = @import("timer.zig");
 
@@ -50,8 +52,8 @@ pub fn getKernelPhysRange() struct { start: usize, end: usize } {
 
 comptime {
     const virt_base = arch.mmu.KERNEL_VIRT_BASE;
-    const PAGE_SIZE = arch.mmu.PAGE_SIZE;
-    const PAGE_SHIFT = arch.mmu.PAGE_SHIFT;
+    const PAGE_SIZE = memory.PAGE_SIZE;
+    const PAGE_SHIFT = memory.PAGE_SHIFT;
     const GB: usize = 1 << 30;
 
     if (virt_base & (GB - 1) != 0)
@@ -67,17 +69,17 @@ comptime {
             @compileError("KERNEL_PHYS_LOAD must be page-aligned");
     }
 
-    const TrapContext = arch.trap.TrapContext;
-    if (!@hasDecl(TrapContext, "FRAME_SIZE"))
-        @compileError("TrapContext must have FRAME_SIZE constant");
-    if (TrapContext.FRAME_SIZE != @sizeOf(TrapContext))
-        @compileError("TrapContext.FRAME_SIZE must match @sizeOf(TrapContext)");
-    if (!@hasDecl(TrapContext, "getReg"))
-        @compileError("TrapContext must have getReg function");
-    if (TrapContext.FRAME_SIZE & 0xF != 0)
-        @compileError("TrapContext.FRAME_SIZE must be 16-byte aligned");
-    if (@alignOf(TrapContext) < 8)
-        @compileError("TrapContext must be at least 8-byte aligned");
+    const TrapFrame = arch.trap_frame.TrapFrame;
+    if (!@hasDecl(TrapFrame, "FRAME_SIZE"))
+        @compileError("TrapFrame must have FRAME_SIZE constant");
+    if (TrapFrame.FRAME_SIZE != @sizeOf(TrapFrame))
+        @compileError("TrapFrame.FRAME_SIZE must match @sizeOf(TrapFrame)");
+    if (!@hasDecl(TrapFrame, "getReg"))
+        @compileError("TrapFrame must have getReg function");
+    if (TrapFrame.FRAME_SIZE & 0xF != 0)
+        @compileError("TrapFrame.FRAME_SIZE must be 16-byte aligned");
+    if (@alignOf(TrapFrame) < 8)
+        @compileError("TrapFrame must be at least 8-byte aligned");
 }
 
 /// Physical-mode initialization. Called from boot.zig before jumping to higher-half.
