@@ -23,14 +23,14 @@ const std = @import("std");
 const memory = @import("../../memory/memory.zig");
 const mmu_types = @import("../../mmu/mmu.zig");
 
-pub const PAGE_SIZE = memory.PAGE_SIZE;
-pub const PAGE_SHIFT = memory.PAGE_SHIFT;
-pub const ENTRIES_PER_TABLE = memory.ENTRIES_PER_TABLE;
+const PAGE_SIZE = memory.PAGE_SIZE;
+const PAGE_SHIFT = memory.PAGE_SHIFT;
+const ENTRIES_PER_TABLE = memory.ENTRIES_PER_TABLE;
 const DTB_MAX_SIZE = memory.DTB_MAX_SIZE;
 const MIN_PHYSMAP_SIZE = memory.MIN_PHYSMAP_SIZE;
-pub const PageFlags = mmu_types.PageFlags;
-pub const MapError = mmu_types.MapError;
-pub const UnmapError = mmu_types.UnmapError;
+const PageFlags = mmu_types.PageFlags;
+const MapError = mmu_types.MapError;
+const UnmapError = mmu_types.UnmapError;
 
 /// Kernel virtual base address (39-bit VA upper half, TTBR1 region).
 /// Physical addresses are mapped to virtual = physical + KERNEL_VIRT_BASE.

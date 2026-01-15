@@ -37,6 +37,11 @@ export fn _start() linksection(".text.boot") callconv(.naked) noreturn {
         \\ msr cpacr_el1, x0
         \\ isb
 
+        // Enable PAN (Privileged Access Never). Kernel faults if it
+        // accidentally accesses user memory without explicit override.
+        // Catches bugs where kernel dereferences user pointers directly.
+        \\ msr pan, #1
+
         // Clear BSS section (PC-relative addressing)
         \\ adrp x0, __bss_start
         \\ add x0, x0, :lo12:__bss_start
