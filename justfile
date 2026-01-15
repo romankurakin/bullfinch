@@ -1,14 +1,14 @@
 # Justfile for building and running the Bullfinch
 default:
-    @just --list
+    just --list
 
 # Build for ARM64
 build-arm64:
-    @zig build -Dtarget=aarch64-freestanding -Dcpu=cortex_a76
+    zig build -Dtarget=aarch64-freestanding -Dcpu=cortex_a76
 
 # Build for RISC-V
 build-riscv64:
-    @zig build -Dtarget=riscv64-freestanding 
+    zig build -Dtarget=riscv64-freestanding 
 # Run in QEMU (ARM64) - binary format passes DTB pointer in x0
 qemu-arm64: build-arm64
     llvm-objcopy -O binary zig-out/bin/kernel-arm64 zig-out/bin/kernel-arm64.bin
@@ -20,8 +20,8 @@ qemu-riscv64: build-riscv64
 
 # Smoke test - build and run both architectures with pass/fail detection
 smoke: build-arm64 build-riscv64
-    @llvm-objcopy -O binary zig-out/bin/kernel-arm64 zig-out/bin/kernel-arm64.bin
-    @zig build smoke
+    llvm-objcopy -O binary zig-out/bin/kernel-arm64 zig-out/bin/kernel-arm64.bin
+    zig build smoke
 
 # Peek at ARM64 boot output (runs briefly, useful for LLM agents)
 peek-arm64: build-arm64
