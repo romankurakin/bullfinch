@@ -13,7 +13,7 @@
 //! We use Vectored mode where interrupts jump to base + 4*cause, allowing fast dispatch
 //! without reading scause. Exceptions all go to base+0.
 //!
-//! See RISC-V Privileged Specification, Chapter 4 (Supervisor-Level ISA).
+//! See RISC-V Privileged Specification, Chapter 12 (Supervisor-Level ISA).
 
 const clock = @import("../../clock/clock.zig");
 const console = @import("../../console/console.zig");
@@ -54,7 +54,7 @@ pub const TrapContext = extern struct {
 };
 
 /// Trap cause from scause register. Bit 63: interrupt (1) vs exception (0).
-/// See RISC-V Privileged Specification, Table 4.2.
+/// See RISC-V Privileged Specification, Table 32.
 pub const TrapCause = enum(u64) {
     instruction_misaligned = 0,
     instruction_access_fault = 1,
