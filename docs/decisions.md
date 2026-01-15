@@ -7,6 +7,7 @@ Architectural choices made for completed rungs. See `plan.md` for research.
 Simplified [Architecture Decision Record](https://adr.github.io/) format.
 
 Each entry answers three questions:
+
 1. **What** was chosen
 2. **What** was rejected (after "over")
 3. **Why** this choice is better
@@ -36,9 +37,13 @@ board doesn't require modifying kernel code.
 **Trap frame:** Uniform 288-byte layout across architectures over arch-specific
 sizes. Common code can inspect registers without conditionals.
 
-**IRQ fast path:** Partial register save (176 bytes) over full context (288).
+**IRQ fast path:** Partial register save (176/144 bytes) over full context (288).
 Reduces interrupt latency. Full save only for synchronous exceptions that may
 inspect callee-saved state.
+
+**Assembly generation:** Derived offsets from struct layout over hardcoded
+values. Single source of truth prevents assembly/struct desync when layout
+changes.
 
 ---
 

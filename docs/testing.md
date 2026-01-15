@@ -21,6 +21,9 @@ Tests use inline `test` blocks in implementation files. Root imports:
 
 Modules must be in this import chain for their tests to run.
 
+`just test` runs on the host architecture only. Use `just smoke` to boot-test
+both ARM64 and RISC-V in QEMU.
+
 ## Naming
 
 Use `"subject behavior"` pattern:
