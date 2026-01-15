@@ -21,6 +21,12 @@ const cpu = @import("../hal/cpu.zig");
 /// // Raw (when interrupts already disabled):
 /// lock.acquire();
 /// defer lock.release();
+///
+/// // Non-blocking attempt (returns immediately if lock held):
+/// if (lock.tryAcquire()) {
+///     defer lock.release();
+///     // ... critical section ...
+/// }
 /// ```
 pub const SpinLock = struct {
     /// Packed tickets: owner (bits 0-15), next (bits 16-31).
@@ -46,6 +52,20 @@ pub const SpinLock = struct {
     pub fn release(self: *Self) void {
         // Increment owner (lower 16 bits).
         _ = self.state.fetchAdd(1, .release);
+    }
+
+    /// Try to acquire lock without blocking. Returns true if acquired.
+    pub fn tryAcquire(self: *Self) bool {
+        const current = self.state.load(.monotonic);
+        const owner: u16 = @truncate(current);
+        const next: u16 = @truncate(current >> TICKET_SHIFT);
+
+        // Lock is free when owner == next.
+        if (owner != next) return false;
+
+        // Try to atomically increment next ticket while owner unchanged.
+        const new = current +% (1 << TICKET_SHIFT);
+        return self.state.cmpxchgWeak(current, new, .acquire, .monotonic) == null;
     }
 
     /// Acquire with interrupt safety. Returns guard that restores state on release.
@@ -99,4 +119,26 @@ test "SpinLock multiple cycles" {
 
     // next=3, owner=3
     try std.testing.expectEqual(@as(u32, (3 << 16) | 3), lock.state.load(.monotonic));
+}
+
+test "SpinLock tryAcquire succeeds when free" {
+    var lock = SpinLock{};
+
+    try std.testing.expect(lock.tryAcquire());
+    // next=1, owner=0 (lock held)
+    try std.testing.expectEqual(@as(u32, 1 << 16), lock.state.load(.monotonic));
+
+    lock.release();
+}
+
+test "SpinLock tryAcquire fails when held" {
+    var lock = SpinLock{};
+
+    lock.acquire();
+    // Lock is held, tryAcquire should fail
+    try std.testing.expect(!lock.tryAcquire());
+    // State unchanged (still next=1, owner=0)
+    try std.testing.expectEqual(@as(u32, 1 << 16), lock.state.load(.monotonic));
+
+    lock.release();
 }
