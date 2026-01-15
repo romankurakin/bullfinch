@@ -1,104 +1,97 @@
 # Design Decisions
 
-Decisions made for completed rungs. See `plan.md` for research questions.
+Architectural choices made for completed rungs. See `plan.md` for research.
+
+## Format
+
+Simplified [Architecture Decision Record](https://adr.github.io/) format.
+
+Each entry answers three questions:
+1. **What** was chosen
+2. **What** was rejected (after "over")
+3. **Why** this choice is better
+
+Pattern: `**Topic:** Choice over alternative. Rationale.`
+
+Only document actual choices between viable alternatives. Architecture-mandated
+requirements (no alternative exists) don't belong here.
 
 ---
 
 ## Rung 1: Toolchain and Boot
 
-**HAL approach:** Compile-time conditional imports via `@import("board")` and
-arch modules. No vtables or runtime dispatch.
+**HAL:** Compile-time dispatch via conditional imports over runtime polymorphism.
+Zero abstraction cost, dead code elimination for unused architectures.
 
-**Boot phases:** Two-phase boot - physInit() before MMU, virtInit() after.
-Kernel imports HAL, HAL re-exports arch abstractions.
+**Boot:** Two-phase boot (physical → virtual) rather than direct higher-half
+entry. Traps and console work before MMU, so early crashes are debuggable.
 
-**Board config:** External board module provides KERNEL_PHYS_LOAD and
-KERNEL_VIRT_BASE constants.
+**Board config:** External board modules over hardcoded addresses. Adding a
+board doesn't require modifying kernel code.
 
 ---
 
 ## Rung 2: Exception Handling
 
-**Trap frame:** 288 bytes on both architectures, 16-byte aligned.
+**Trap frame:** Uniform 288-byte layout across architectures over arch-specific
+sizes. Common code can inspect registers without conditionals.
 
-- ARM64: 31 GP regs + SP + ELR + SPSR + ESR + FAR
-- RISC-V: 31 regs (x1-x31) + SP + SEPC + SSTATUS + SCAUSE + STVAL
-
-**IRQ optimization:** Fast-path saves only caller-saved registers (ARM64: x0-x18,
-x30 = 176 bytes). Full context only for sync traps.
-
-**Vector table:** ARM64 uses 2KB-aligned table with 128-byte entries. RISC-V
-uses vectored mode with base+offset jumps.
+**IRQ fast path:** Partial register save (176 bytes) over full context (288).
+Reduces interrupt latency. Full save only for synchronous exceptions that may
+inspect callee-saved state.
 
 ---
 
 ## Rung 3: MMU and Abstraction Layer
 
-**Page table format:**
+**Virtual address size:** 39-bit on ARM64, Sv48 on RISC-V over larger options.
+Simpler page tables, sufficient for educational kernel.
 
-- ARM64: 39-bit VA, 3-level (L1/L2/L3), TTBR0 (user) + TTBR1 (kernel) split
-- RISC-V: Sv48, 48-bit VA, 4-level, single SATP register
-
-**Higher-half strategy:** Boot sets up identity mapping AND higher-half
-simultaneously using 1GB blocks. After jump to virtual address,
-removeIdentityMapping() clears low entries.
-
-**TLB barriers:**
-
-- ARM64: DSB ishst → TLBI → DSB ish → ISB
-- RISC-V: fence rw,rw → sfence.vma (local only, TODO: IPI for SMP)
+**Higher-half kernel:** Simultaneous identity + higher-half mapping over
+sequential setup. Single page table switch, identity removed after jump.
 
 ---
 
 ## Rung 4: Timer and Clock Services
 
-**Frequency discovery:**
+**Tick rate:** 100 Hz over higher frequencies (250, 1000 Hz). Balances
+responsiveness against interrupt overhead. Standard choice (Linux default).
 
-- ARM64: Read CNTFRQ_EL0 register directly (firmware sets it)
-- RISC-V: Read /cpus/timebase-frequency from DTB
-
-**Tick rate:** 100 Hz (10ms intervals), absolute deadlines to prevent drift.
-
-**Interrupt source:**
-
-- ARM64: PPI 30 via Generic Timer CNTP registers
-- RISC-V: SBI TIME extension (sbi.setTimer)
+**Deadline strategy:** Absolute deadlines over relative intervals. Prevents
+drift accumulation—relative offsets compound timing errors.
 
 ---
 
 ## Rung 5: Device Tree Parsing
 
-**Strategy:** Lazy parsing via libfdt C bindings. No upfront scanning.
+**Parsing strategy:** Upfront extraction into static struct over lazy on-demand.
+Avoids repeated parsing and chicken-egg with PMM initialization.
 
-**Parsed properties:**
-
-- /memory reg → RAM regions
-- /cpus/timebase-frequency → timer (RISC-V)
-- GIC compatible nodes → interrupt controller base addresses
-- /reserved-memory → regions to exclude from PMM
-
-**Cell handling:** Respects #address-cells and #size-cells per node.
+**Module separation:** Pure DTB library (fdt.zig) separate from kernel device
+policy (hwinfo.zig). Library testable independently, reusable outside kernel.
 
 ---
 
 ## Rung 6: Physical Memory Allocator
 
-**Strategy:** Free list with per-page metadata.
+**Strategy:** Free list with per-page metadata over bitmap or buddy system.
+O(1) allocation and free, simpler than buddy while handling fragmentation.
 
-**Features:** Leak detection, SMP-ready locking (spinlock protected).
+**Metadata placement:** End of arena over beginning. Keeps low addresses free
+for legacy DMA that requires sub-4GB memory.
+
+**Debug:** Poison fills (0xDE) over zeroing. Use-after-free causes predictable
+corruption (0xDEDEDEDE), making bugs obvious instead of silent.
 
 ---
 
 ## Rung 7: Kernel Object Allocator
 
-**Strategy:** Fixed-size slab pools (Bonwick pattern).
+**Strategy:** Fixed-size pools with embedded bitmap (Bonwick slab) over external
+metadata. Self-contained slabs, no separate metadata allocator dependency.
 
-**Structure:** 4KB pages with embedded metadata - backpointer at offset 0,
-bitmap in slot 0.
+**Allocation:** Bitmap scan via ctz over embedded free lists. Fast on modern
+CPUs, simpler bookkeeping for fixed-size objects.
 
-**Alignment:** Cache-line aligned (64 bytes) to prevent false sharing on SMP.
-
-**Allocation:** O(ctz) bitmap scan for first free slot.
-
-**Deallocation:** O(1) - mask pointer to page, read backpointer, set bitmap bit.
-Double-free detection enabled.
+**Alignment:** Cache-line (64 bytes) over natural alignment. Wastes memory but
+prevents false sharing on SMP—subtle bugs not worth the savings.

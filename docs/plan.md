@@ -16,9 +16,24 @@ Capabilities-based security. WebAssembly userspace.
 - [ ] Rung 9: Per-Task Virtual Memory
 - [ ] Rung 10: Symmetric Multiprocessing
 - [ ] Rung 11: Tickless Scheduling
-- [ ] Rung 12-24: Capability System
-- [ ] Rung 25-28: Userspace Services
-- [ ] Rung 29-31: WASM Runtime
+- [ ] Rung 12: Kernel Object Model
+- [ ] Rung 13: Handle Tables
+- [ ] Rung 14: Rights and Validation
+- [ ] Rung 15: Derivation and Revocation
+- [ ] Rung 16: Memory Objects (VMO)
+- [ ] Rung 17: Address Space Management (VMAR)
+- [ ] Rung 18: Synchronous IPC
+- [ ] Rung 19: Handle Transfer
+- [ ] Rung 20: Async Notifications
+- [ ] Rung 21: Fault Handling
+- [ ] Rung 22: Hardware IRQ Objects
+- [ ] Rung 23: Memory Sharing
+- [ ] Rung 24: Process Creation
+- [ ] Rung 25: Initial Bootstrap
+- [ ] Rung 26: Process Manager
+- [ ] Rung 27: Device Manager
+- [ ] Rung 28: Filesystem Server
+- [ ] Rung 29: WASM Integration
 
 ---
 
@@ -36,8 +51,10 @@ banner, HAL interface definitions.
 
 **Research:**
 
-- RISC-V Privileged Spec: boot sequence
-- ARM Reference Manual: boot and UART sections
+- RISC-V Privileged Spec describes machine mode boot and hardware discovery
+- ARM Reference Manual covers reset behavior and PL011 UART programming
+- xv6: entry.S and start.c show minimal boot sequence for teaching
+- Zircon: physboot handles early platform setup before kernel proper
 
 ### Rung 2: Exception Handling
 
@@ -51,9 +68,11 @@ debug output (printf, panic).
 
 **Research:**
 
-- OSTEP Chapter 6 (Limited Direct Execution)
-- ARM64 Procedure Call Standard
-- RISC-V Calling Convention
+- OSTEP Chapter 6 explains trap-based system call and interrupt handling
+- ARM64 Procedure Call Standard defines which registers are callee-saved
+- RISC-V Calling Convention specifies register usage and stack layout
+- xv6: trampoline.S and trap.c show clean exception entry and dispatch
+- seL4: exception handling saves minimal state for fast IPC path
 
 ### Rung 3: MMU and Abstraction Layer
 
@@ -67,9 +86,11 @@ architecture-specific MMU code.
 
 **Research:**
 
-- OSTEP Chapters 14-20 (Virtual Memory)
-- RISC-V Sv48 specification
-- ARM64 four-level page table specification
+- OSTEP Chapters 14-20 cover paging, TLBs, and address space concepts
+- RISC-V Sv48 spec defines four-level page tables with 512 entries per level
+- ARM64 spec describes TCR, TTBR registers and page descriptor formats
+- xv6: vm.c has clean page table manipulation code for reference
+- seL4: arch-specific MMU code shows how to abstract page table operations
 
 ### Rung 4: Timer and Clock Services
 
@@ -83,10 +104,11 @@ preemptive scheduling foundation.
 
 **Research:**
 
-- OSDI3 Section 2.8 (The Clock Task in MINIX 3)
-- RISC-V SBI timer specification
-- ARM64 generic timer specification
-- Zircon clock documentation
+- OSDI3 Section 2.8 describes MINIX clock task and alarm handling
+- RISC-V SBI timer spec defines stimecmp and time CSR access
+- ARM64 generic timer spec covers CNTFRQ, CNTP_CTL, and virtual timers
+- Zircon: clock objects provide monotonic and boot time to userspace
+- FreeBSD: kern_tc.c implements timecounter abstraction over hardware timers
 
 ### Rung 5: Device Tree Parsing
 
@@ -100,8 +122,11 @@ controller config (GIC/PLIC), peripheral addresses.
 
 **Research:**
 
-- Devicetree Specification
-- libfdt API documentation
+- Devicetree Specification defines node structure, properties, and bindings
+- libfdt API provides functions for traversing and querying DTB blobs
+- Linux: drivers/of/ shows mature DTB parsing and driver matching
+- Zircon: board drivers parse DTB to configure platform-specific hardware
+- FreeBSD: FDT support in sys/dev/fdt/ for BSD-style implementation
 
 ### Rung 6: Physical Memory Allocator
 
@@ -116,8 +141,9 @@ controller config (GIC/PLIC), peripheral addresses.
 **Research:**
 
 - OSDI3 Section 4.1 (basic memory management)
-- Linux: buddy allocator
-- xv6: kalloc
+- xv6: kalloc uses a simple free list suitable for teaching
+- FreeBSD: vm_page and vm_phys for a clean BSD-style page allocator
+- Linux: buddy allocator for efficient coalescing at scale
 
 ### Rung 7: Kernel Object Allocator
 
@@ -131,9 +157,9 @@ page allocator for multi-page objects (stacks).
 
 **Research:**
 
-- Bonwick, "The Slab Allocator" (USENIX 1994)
-- Linux: kmem_cache
-- FreeBSD: UMA allocator
+- Bonwick, "The Slab Allocator" (USENIX 1994) introduces object caching concepts
+- FreeBSD: UMA allocator evolved from slab with per-CPU caches and NUMA awareness
+- Linux: kmem_cache for comparison of a mature slab implementation
 
 ---
 
@@ -154,8 +180,9 @@ switch, round-robin scheduler, preemption via timer interrupts.
 
 - OSTEP Chapter 4 (Process), Chapter 7 (Scheduling)
 - OSDI3 Section 2.1 (processes), Section 2.4 (scheduling)
-- xv6: struct proc, scheduler, swtch
-- Linux: task_struct, CFS scheduler
+- MINIX: priority queues in kernel with policy delegated to userspace scheduler
+- Zircon: fair scheduler based on weighted fair queuing, plus deadline profiles
+- xv6: struct proc, scheduler, and swtch for minimal context switch
 
 ### Rung 9: Per-Task Virtual Memory
 
@@ -171,8 +198,10 @@ switching on context switch.
 
 - OSTEP Chapters 14-20 (VM)
 - OSDI3 Sections 4.3, 4.5, 4.7-4.8 (MINIX memory manager)
-- ARM: ASID in TTBR0_EL1
-- RISC-V: ASID in satp
+- Zircon: address space objects with explicit creation and destruction
+- seL4: VSpace as a capability that can be delegated to userspace
+- ARM: ASID field in TTBR0_EL1 for tagged TLB entries
+- RISC-V: ASID field in satp register
 
 ### Rung 10: Symmetric Multiprocessing
 
@@ -190,7 +219,10 @@ IPI for TLB shootdown.
 - OSTEP Chapters 27-29 (Concurrency)
 - ARM PSCI specification
 - RISC-V SBI HSM extension
-- Linux: per_cpu, smp_call_function
+- seL4: uses big-lock for tightly-coupled cores, multikernel for many-core
+- FreeBSD: SMPng replaced giant lock with fine-grained locking over years
+- Zircon: per-CPU structures and scheduler with work stealing between cores
+- Linux: per_cpu macros and IPI mechanisms for cross-CPU coordination
 
 ### Rung 11: Tickless Scheduling
 
@@ -204,8 +236,9 @@ periodic. Per-CPU timer management.
 
 **Research:**
 
-- Linux NO_HZ documentation
-- LWN "Tickless kernel" articles
+- FreeBSD: callout(9) moved from periodic ticks to one-shot with CalloutNG
+- Zircon: timer slack allows coalescing nearby deadlines to reduce wakeups
+- Linux: NO_HZ documentation explains the tickless kernel concepts
 
 ---
 
@@ -223,8 +256,9 @@ on zero references.
 
 **Research:**
 
-- Zircon: kernel object lifecycle
-- seL4: object types, capability spaces
+- Zircon: kernel objects are reference-counted with explicit creation syscalls
+- seL4: typed objects live in untyped memory and are created via Retype operation
+- MINIX: simpler model where servers manage their own object tables
 
 ### Rung 13: Handle Tables
 
@@ -238,8 +272,9 @@ bitmap per entry.
 
 **Research:**
 
-- Zircon: handle table implementation
-- OSDI3 Section 5.6.7 (file descriptors as model)
+- Zircon: handle table uses generation numbers to detect stale handles
+- seL4: CNode is a table of capabilities with explicit slot management
+- OSDI3 Section 5.6.7 explains file descriptors as a simpler capability model
 
 ### Rung 14: Rights and Validation
 
@@ -253,8 +288,9 @@ per-object.
 
 **Research:**
 
-- Zircon: rights documentation
-- OSDI3 Section 5.5 (protection)
+- Zircon: rights are a bitmask checked on every syscall that uses a handle
+- seL4: capabilities encode both object reference and permitted operations
+- OSDI3 Section 5.5 covers protection domains and access control concepts
 
 ### Rung 15: Derivation and Revocation
 
@@ -267,9 +303,9 @@ per-object.
 
 **Research:**
 
-- seL4: capability derivation tree (CDT)
-- capDL specification
-- Zircon: handle duplication
+- seL4: capability derivation tree tracks parent-child for revocation
+- capDL specification describes capability distribution at boot time
+- Zircon: handle duplication is flat, no derivation tree, simpler revocation
 
 ### Rung 16: Memory Objects (VMO)
 
@@ -283,8 +319,9 @@ spaces.
 
 **Research:**
 
-- Zircon: VMO documentation
-- OSTEP Chapter 19 (TLBs), Chapter 21 (Beyond Physical Memory)
+- Zircon: VMO represents physical pages, can be mapped into multiple address spaces
+- seL4: Frame capabilities represent physical memory, mapped via VSpace
+- OSTEP Chapters 19 and 21 cover TLB management and demand paging concepts
 
 ### Rung 17: Address Space Management (VMAR)
 
@@ -298,8 +335,9 @@ space.
 
 **Research:**
 
-- Zircon: VMAR documentation
-- seL4: VSpace management
+- Zircon: VMAR provides hierarchical regions with sub-allocation to children
+- seL4: VSpace management requires explicit page table capability manipulation
+- FreeBSD: vm_map for a traditional mmap-style flat address space model
 
 ### Rung 18: Synchronous IPC
 
@@ -313,10 +351,11 @@ space.
 
 **Research:**
 
-- Liedtke SOSP 1993 (Improving IPC by Kernel Design)
-- Liedtke SOSP 1995 (On µ-Kernel Construction)
-- OSDI3 Section 2.2 (MINIX message passing)
-- seL4: endpoint objects
+- Liedtke SOSP 1993 shows how register-based IPC achieves low latency
+- Liedtke SOSP 1995 argues for minimal kernels with fast IPC as foundation
+- OSDI3 Section 2.2 describes MINIX message passing with fixed-size messages
+- seL4: endpoints are rendezvous objects where sender blocks until receiver ready
+- Zircon: channels are bidirectional, buffered, and transfer handles
 
 ### Rung 19: Handle Transfer
 
@@ -329,8 +368,9 @@ space.
 
 **Research:**
 
-- Zircon: channel handle transfer
-- seL4: capability transfer
+- Zircon: channels can carry handles, transferred atomically with the message
+- seL4: capability transfer copies cap to receiver's CNode during IPC
+- MINIX: grants allow temporary memory sharing without full capability transfer
 
 ### Rung 20: Async Notifications
 
@@ -343,8 +383,9 @@ space.
 
 **Research:**
 
-- seL4: Notification objects
-- Zircon: signals, futex
+- MINIX: notify() provides lightweight signaling separate from message passing
+- seL4: Notification objects are the async IPC primitive, cheaper than endpoints
+- Zircon: signals on kernel objects, event objects, and futex for userspace sync
 
 ### Rung 21: Fault Handling
 
@@ -357,8 +398,9 @@ space.
 
 **Research:**
 
-- Zircon: exception channels
-- seL4: fault endpoints
+- Zircon: exception channels deliver faults as messages to a handler process
+- seL4: fault endpoints let a supervisor receive and handle thread faults
+- MINIX: faults in servers trigger reincarnation server recovery logic
 
 ### Rung 22: Hardware IRQ Objects
 
@@ -371,10 +413,11 @@ space.
 
 **Research:**
 
-- OSTEP Chapter 36 (I/O devices)
-- OSDI3 Sections 2.6.8, 3.4.1 (MINIX interrupts)
-- seL4: IRQHandler capability
-- ARM GIC, RISC-V PLIC specs
+- OSTEP Chapter 36 covers device I/O concepts and interrupt handling
+- OSDI3 Sections 2.6.8 and 3.4.1 explain how MINIX routes interrupts to drivers
+- seL4: IRQHandler capability grants exclusive control of an interrupt line
+- Zircon: interrupts are kernel objects that can be bound to ports
+- ARM GIC and RISC-V PLIC specs for hardware-level configuration
 
 ### Rung 23: Memory Sharing
 
@@ -387,8 +430,10 @@ space.
 
 **Research:**
 
-- Zircon: VMO clone
-- OSTEP Chapter 16 (Segmentation)
+- Zircon: VMO clone creates copy-on-write child sharing pages with parent
+- seL4: shared memory via mapping same Frame into multiple VSpaces
+- MINIX: grants provide controlled memory sharing between processes
+- OSTEP Chapter 16 covers segmentation but COW is discussed in fork() context
 
 ### Rung 24: Process Creation
 
@@ -401,9 +446,10 @@ space.
 
 **Research:**
 
-- Zircon: process_create, process_start
-- "A fork() in the road" (HotOS 2019)
-- seL4: process bootstrap
+- Zircon: process_create allocates structures, process_start begins execution
+- seL4: process bootstrap requires explicit capability setup by parent
+- MINIX: fork/exec handled by PM server which manages process table
+- "A fork() in the road" (HotOS 2019) argues against fork() for modern systems
 
 ---
 
@@ -421,8 +467,9 @@ boot image).
 
 **Research:**
 
-- Zircon: userboot
-- seL4: BootInfo structure
+- Zircon: userboot receives a channel with handles, processargs protocol
+- seL4: BootInfo structure passed to root task describes available resources
+- MINIX: kernel starts PM and VFS which initialize before accepting requests
 
 ### Rung 26: Process Manager
 
@@ -435,8 +482,9 @@ boot image).
 
 **Research:**
 
-- OSDI3 Sections 4.7-4.8 (MINIX PM)
-- Zircon: job/process hierarchy
+- OSDI3 Sections 4.7-4.8 describe MINIX PM design and implementation
+- MINIX: PM server maintains mproc table and handles syscalls via messages
+- Zircon: jobs form a hierarchy, processes belong to jobs for resource control
 
 ### Rung 27: Device Manager
 
@@ -450,9 +498,10 @@ drivers. UART as first userspace driver.
 
 **Research:**
 
-- OSDI3 Section 3.5 (Block Devices in MINIX 3)
-- Zircon: driver framework
-- Linux: device model
+- OSDI3 Section 3.5 explains how MINIX 3 structures block device drivers
+- MINIX: reincarnation server monitors drivers and restarts them on failure
+- Zircon: driver framework v2 uses FIDL for type-safe driver communication
+- seL4: drivers run as user processes with capabilities restricting hardware access
 
 ### Rung 28: Filesystem Server
 
@@ -465,15 +514,16 @@ drivers. UART as first userspace driver.
 
 **Research:**
 
-- OSDI3 Sections 5.6-5.7 (MINIX FS)
-- Plan 9: 9P protocol
-- Zircon: fdio
+- OSDI3 Sections 5.6-5.7 cover MINIX filesystem server architecture
+- MINIX: VFS routes requests to actual filesystem servers like MFS
+- Plan 9: 9P protocol lets each process have its own namespace view
+- Zircon: fdio provides POSIX-like file operations over FIDL channels
 
 ---
 
 ## Phase 5: WASM Runtime
 
-### Rung 29-31: WASM Integration
+### Rung 29: WASM Integration
 
 **Implement:** WASM interpreter process, WASI syscall layer, hello world
 end-to-end.
