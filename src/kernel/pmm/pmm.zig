@@ -52,7 +52,7 @@ const KERNEL_RESERVE_PAD = 2 * 1024 * 1024;
 
 comptime {
     // Page metadata capped at 24 bytes (~0.6% overhead per 4KB page).
-    // Currently 19 bytes + padding = 24 bytes due to 8-byte alignment.
+    // 19 bytes + padding = 24 bytes due to 8-byte alignment.
     if (@sizeOf(Page) > 24) @compileError("Page struct too large (max 24 bytes)");
     // Page must fit evenly for pointer arithmetic in pageToPhys
     if (@sizeOf(Page) % @alignOf(Page) != 0) @compileError("Page size must be multiple of alignment");
@@ -468,6 +468,7 @@ pub fn totalPages() usize {
 }
 
 /// Returns count of allocated pages.
+/// total_pages is immutable after init, so no atomic needed.
 pub fn allocatedCount() usize {
     return pmm.total_pages - @atomicLoad(usize, &pmm.free_count, .acquire);
 }
