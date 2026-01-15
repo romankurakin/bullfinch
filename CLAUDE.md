@@ -1,9 +1,9 @@
 # CLAUDE.md
 
-Bullfinch is an educational microkernel inspired by MINIX 3 and Zircon, designed
-to prioritize clarity, correctness, and comprehension over raw performance.
-ARM64 and RISC-V architectures are supported, with a focus on modularity and
-safety through capabilities.
+Bullfinch is an educational microkernel inspired by MINIX 3 and Zircon.
+Prioritizes **clarity and correctness** over raw performance. Supports ARM64
+and RISC-V with capabilities-based security. See `docs/plan.md` for roadmap
+and `docs/decisions.md` for design decisions.
 
 ## Commands
 
@@ -32,126 +32,12 @@ just disasm-riscv64       # Disassemble kernel (RISC-V)
 
 ## Build System
 
-Single `build.zig` orchestrates the entire system:
+Single `build.zig` orchestrates:
 
 1. **Kernel** — Freestanding executable for target architecture
-2. **Userspace** — Each program compiled as separate executable (may have own build.zig)
-3. **Packaging** — Userspace assembled into initramfs (simple file archive)
-4. **Boards** — `-Dboard=<name>` selects board-specific files from `src/kernel/arch/{arm64,riscv64}/boards/{board}/`
-
-The `qemu-*` commands automatically package and run kernel + initramfs.
-
-## Code Style
-
-Run `zig fmt` automatically (no permission needed).
-
-### Naming
-
-| Category  | Convention         | Examples                            |
-| --------- | ------------------ | ----------------------------------- |
-| Types     | `TitleCase`        | PageTable, HandleEntry, VmoObject   |
-| Functions | `camelCase`        | mapPage, createHandle, scheduleNext |
-| Variables | `snake_case`       | page_size, current_task             |
-| Constants | `UPPER_SNAKE_CASE` | PAGE_SIZE, MAX_HANDLES              |
-
-### Zig Patterns
-
-- `const` by default, `var` only when mutation needed
-- Explicit error handling: `try` propagates, `catch` handles
-- No hidden allocations: pass `Allocator` parameter explicitly
-- Use `defer` for cleanup (free memory, unlock, close)
-- Prefer `?T` (optional) over `undefined` for "may not exist"
-- Use `comptime` for generics and compile-time validation
-- Mark kernel entry points with `export`
-- Inline assembly for arch ops: `asm volatile (...)`
-
-### Project Conventions
-
-- Use `@panic()` for unrecoverable kernel errors
-- Keep arch-specific code in `src/kernel/arch/{arm64,riscv64}/`
-- Use HAL abstractions for portable kernel code
-- Group panic messages in a `panic_msg` struct at module top:
-
-```zig
-const panic_msg = struct {
-    const ALREADY_INITIALIZED = "PMM: already initialized";
-    const NOT_INITIALIZED = "PMM: not initialized";
-    const DOUBLE_FREE = "PMM: double-free detected";
-};
-```
-
-### Comment Tags
-
-Use these prefixes for special comments:
-
-| Tag                | Usage                                                                      |
-| ------------------ | -------------------------------------------------------------------------- |
-| `// TODO(scope):`  | Mark incomplete functionality or planned improvements                      |
-
-```zig
-
-// TODO(pmm): Multi-region support - currently only uses first region.
-if (!found_memory) {
-```
-
-### Comments
-
-**Always document:** safety reasoning, architecture quirks, spec refs,
-non-obvious "why", tricky bits
-
-**Never document:** obvious "what", Zig basics, self-explanatory code
-
-```zig
-//! MMU operations for ARM64 - handles page mapping and TLB synchronization.
-
-/// Unmaps a page and synchronizes the TLB.
-pub fn unmapPage(vaddr: usize) void {
-    pte.* = 0;
-    // ARM requires DSB -> TLBI -> DSB -> ISB barrier sequence to guarantee all cores
-    // observe the page table write before executing code that might depend
-    // on the old mapping. Missing any part can cause security vulnerabilities.
-    asm volatile ("dsb ish");
-    asm volatile ("tlbi vale1is, %[addr]" :: [addr] "r" (vaddr >> 12));
-    asm volatile ("dsb ish");
-    asm volatile ("isb");
-}
-```
-
-## Commits
-
-Follow Conventional Commits: `<type>(<scope>): <subject>`
-
-**Types:** feat, fix, perf, refactor, docs, test, build, chore, ci
-
-**Scopes:** boot, mem, mmu, cap, arm64, riscv, arch, kernel, hal, ci, build
-
-**Format:** Subject line (around 50 chars, max 72 chars) + blank line + body
-wrapped at 72 chars. Explain what and why. Use prose, not bullet points.
-
-```text
-feat(mmu): implement virtual memory with higher-half kernel mapping
-
-Add MMU support for both architectures using Sv48 (RISC-V) and 39-bit
-VA (ARM64) with 4KB pages. Boot sequence identity-maps kernel at physical
-address, enables paging, jumps to higher-half virtual address, then
-removes identity mapping. Implement modular HAL that wires arch, board,
-and common modules without circular dependencies.
-```
-
-**No agent attribution.** Do not add `Co-Authored-By` lines for AI assistants.
-
-## Safety Checklist
-
-- [ ] No `undefined` without justification
-- [ ] All errors handled (no `catch unreachable`)
-- [ ] All allocations have cleanup (`defer`)
-- [ ] Page tables page-aligned
-- [ ] TLB invalidation after page table changes
-- [ ] Memory barriers where architecturally required
-- [ ] Capability rights checked before operations
-- [ ] Integer overflow checks on user input (`std.math.add`)
-- [ ] User pointers validated before dereferencing
-- [ ] Both ARM64 and RISC-V tested
+2. **Userspace** — Each program compiled as separate executable
+3. **Packaging** — Userspace assembled into initramfs
+4. **Boards** — `-Dboard=<name>` selects from `src/kernel/arch/{arm64,riscv64}/boards/{board}/`
 
 ## Critical Rules
 
@@ -164,84 +50,52 @@ and common modules without circular dependencies.
 - Forget TLB ops after page table modifications
 - Hold locks across blocking operations or syscall boundaries
 - Use unbounded loops in kernel code (DoS risk)
-- Assume pointer is valid because "it can't be null here"
 - Copy data between kernel/userspace without size validation
 
 ### Always
 
 - Use explicit allocators (no hidden allocations)
-- Validate capability rights
-- Use checked arithmetic for user values
-- Test both architectures
+- Validate capability rights before operations
+- Use checked arithmetic for user values (`std.math.add`)
+- Test both ARM64 and RISC-V
 - Think: "What if interrupt fires right here?"
 - Document what locks protect what data
-- Keep interrupt-disabled sections minimal
 
 ## Error Philosophy
 
-Fail fast. Validate at boundaries, trust internally. Three responses:
+| Response   | When                                      | Example                                       |
+| ---------- | ----------------------------------------- | --------------------------------------------- |
+| `@panic()` | Kernel invariant violated, can't continue | Arithmetic overflow, double-free              |
+| `error`    | Caller mistake, they can recover          | Bad alignment, missing page table             |
+| `null`     | Absence of value, not an error            | OOM, lookup miss                              |
 
-| Response | When | Example |
-|----------|------|---------|
-| `@panic()` | Kernel invariant violated, can't continue | Arithmetic overflow, double-free, zero timer frequency |
-| `error` | Caller mistake, they can recover | Bad alignment, missing page table, invalid address |
-| `null` | No knowledge, absence of value | OOM, lookup miss, can't parse format |
+## Architecture Notes
 
-**Decision guide:**
-
-- "Is the kernel state corrupted?" → panic
-- "Did the caller do something wrong they could fix?" → error
-- "Is this just 'not found' or 'can't do'?" → null
-
-## Architecture Review Points
-
-- **Memory barriers** — Different per arch; check placement before hardware ops and TLB operations
+- **Memory barriers** — Different per arch; required before hardware ops and TLB operations
 - **Privilege** — Exception vector alignment, register save sets, privilege boundary enforcement
-- **Hardware** — Interrupt controller config, timer access (firmware vs direct), MMU page table formats
+- **Hardware** — Interrupt controller config, timer access, MMU page table formats
 
-## Testing
+## Development Guidelines
 
-### Structure
+For detailed conventions:
 
-```text
-src/kernel/
-├── test.zig              # Main root - imports all sub-roots
-├── kernel.zig            # Module root - imports subsystems (clock, mmu, pmm, etc.)
-└── arch/
-    ├── arm64/
-    │   ├── test.zig      # ARM64 root - imports ARM64 modules
-    │   └── uart.zig      # Contains inline tests
-    └── riscv64/
-        └── test.zig      # RISC-V root - imports RISC-V modules
-```
+- Zig patterns and idioms: `.claude/rules/zig-patterns.md`
+- Testing structure: `.claude/rules/testing.md`
+- Commit format: `.claude/rules/commits.md`
 
-**Inline tests (preferred):** Tests live in the same file as implementation.
+## Workflow
 
-**Root import system:** `test.zig` imports arch test roots and `kernel.zig`.
-Modules must be in this import chain for their tests to run.
+For non-trivial changes, use plan mode to explore the codebase and design the
+approach before implementing. Run `just smoke` after changes to verify both
+architectures boot correctly.
 
-### Test Naming
+## Skills
 
-Use descriptive names following `"subject behavior"` pattern:
-
-| Pattern                     | Examples                                                   |
-| --------------------------- | ---------------------------------------------------------- |
-| `"Type.method behavior"`    | `"Pte.table creates valid table entry"`                    |
-| `"function behavior"`       | `"translate handles 1GB block mappings"`                   |
-| `"Type size and layout"`    | `"Pte size and layout"`, `"TrapContext size and layout"`   |
-| `"CONSTANT is value"`       | `"PAGE_SIZE is 4KB"`                                       |
-
-### Review Checklist
-
-1. What scenarios are missing?
-2. Does it test what I think it tests?
-3. Are safety invariants validated?
-4. Both success and error paths covered?
-5. Works on ARM64 and RISC-V?
+Use `/os-reference-search` to search architecture specs (ARM, RISC-V) and OS
+books (OSTEP, OSDI3). Use `/os-source-search` to look up implementation patterns
+in Linux, xv6, seL4, MINIX3, Fuchsia/Zircon, or FreeBSD.
 
 ## References
 
-- [Zig Documentation](https://ziglang.org/documentation/master)
-- [OSTEP](https://pages.cs.wisc.edu/~remzi/OSTEP)
-- [Fuchsia Kernel Concepts](https://fuchsia.dev/fuchsia-src/concepts/kernel)
-- ARM and RISC-V official architecture documentation
+See `docs/references.md` for full bibliography (OSTEP, OSDI3, ARM/RISC-V specs,
+Zircon, seL4, papers).

@@ -11,7 +11,7 @@
 //! RISC-V uses a single SATP register for translation, unlike ARM's TTBR0/TTBR1 split.
 //! The ASID field in SATP allows per-process TLB entries without full flushes.
 //!
-//! See RISC-V Privileged Specification, Chapter 4.3-4.6 (Virtual Memory).
+//! See RISC-V Privileged Specification, Sections 12.3-12.6 (Virtual Memory).
 //!
 //! TODO(smp): Implement per-hart page table locks
 //! TODO(smp): Send IPI to other harts for TLB shootdown via SBI
