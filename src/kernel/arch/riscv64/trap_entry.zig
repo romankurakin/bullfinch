@@ -1,7 +1,12 @@
-//! RISC-V trap entry assembly generator.
+//! RISC-V Trap Entry Assembly Generator.
 //!
-//! Generates entry/exit assembly from one template. Offsets come from TrapFrame
-//! via @offsetOf so layout changes fail at comptime.
+//! Generates entry/exit assembly from a single template with comptime configuration.
+//! Offsets are derived from TrapFrame via @offsetOf so struct layout changes cause
+//! compile errors rather than silent corruption.
+//!
+//! The fast path saves only caller-saved registers (ra, t0-t6, a0-a7) while full
+//! save includes callee-saved (s0-s11). User traps swap SP with sscratch to enter
+//! on kernel stack before saving any registers.
 //!
 //! See RISC-V Privileged Specification, Chapter 12 (Supervisor-Level ISA).
 
@@ -18,6 +23,9 @@ pub const EntryConfig = struct {
     handler: []const u8,
     /// Pass frame pointer in a0 to handler.
     pass_frame: bool,
+    /// Swap SP with sscratch to enter on kernel stack (user traps only).
+    /// See RISC-V Privileged Specification, 4.1.4 (Supervisor Scratch Register).
+    use_sscratch: bool = false,
 };
 
 /// Frame sizes (16-byte aligned).
@@ -38,16 +46,21 @@ const FAST_OFF_SEPC = 128;
 const FAST_OFF_SSTATUS = 136;
 
 pub fn genEntryAsm(comptime cfg: EntryConfig) []const u8 {
-    return genSaveAsm(cfg.full_save) ++
+    // For user traps, swap SP with sscratch to get kernel stack.
+    // sscratch holds kernel SP; after swap, SP=kernel, sscratch=user.
+    return (if (cfg.use_sscratch) "csrrw sp, sscratch, sp\n" else "") ++
+        genSaveAsm(cfg.full_save, cfg.use_sscratch) ++
         (if (cfg.pass_frame) "mv a0, sp\n" else "") ++
         "call " ++ cfg.handler ++ "\n" ++
         genRestoreAsm(cfg.full_save) ++
+        // Swap back: SP=user, sscratch=kernel (restored for next trap).
+        (if (cfg.use_sscratch) "csrrw sp, sscratch, sp\n" else "") ++
         \\sret
     ;
 }
 
-fn genSaveAsm(comptime full: bool) []const u8 {
-    return if (full) genFullSaveAsm() else genCallerSaveAsm();
+fn genSaveAsm(comptime full: bool, comptime use_sscratch: bool) []const u8 {
+    return if (full) genFullSaveAsm(use_sscratch) else genCallerSaveAsm();
 }
 
 fn genRestoreAsm(comptime full: bool) []const u8 {
@@ -55,11 +68,38 @@ fn genRestoreAsm(comptime full: bool) []const u8 {
 }
 
 /// Full save: all GPRs (x1-x31) + original SP + trap CSRs.
-fn genFullSaveAsm() []const u8 {
+/// User traps read SP from sscratch; kernel traps compute from current SP.
+fn genFullSaveAsm(comptime use_sscratch: bool) []const u8 {
+    // For user traps, x2 slot gets user SP from sscratch (after entry swap).
+    // For kernel traps, x2 slot gets current SP value.
+    const save_x2 = if (use_sscratch)
+        \\csrr t0, sscratch
+        \\sd t0, 8(sp)
+        \\
+    else
+        \\sd x2, 8(sp)
+        \\
+    ;
+
+    // sp_saved: user traps read from sscratch, kernel traps compute.
+    const save_sp = if (use_sscratch)
+        fmt.comptimePrint(
+            \\csrr t0, sscratch
+            \\sd t0, {[sp_off]d}(sp)
+            \\
+        , .{ .sp_off = OFF_SP })
+    else
+        fmt.comptimePrint(
+            \\addi t0, sp, {[frame]d}
+            \\sd t0, {[sp_off]d}(sp)
+            \\
+        , .{ .frame = FULL_FRAME_SIZE, .sp_off = OFF_SP });
+
     return fmt.comptimePrint(
         \\addi sp, sp, -{[frame]d}
         \\sd x1, 0(sp)
-        \\sd x2, 8(sp)
+        \\
+    , .{ .frame = FULL_FRAME_SIZE }) ++ save_x2 ++
         \\sd x3, 16(sp)
         \\sd x4, 24(sp)
         \\sd x5, 32(sp)
@@ -88,9 +128,11 @@ fn genFullSaveAsm() []const u8 {
         \\sd x28, 216(sp)
         \\sd x29, 224(sp)
         \\sd x30, 232(sp)
+        \\
+    ++ fmt.comptimePrint(
         \\sd x31, {[x31]d}(sp)
-        \\addi t0, sp, {[frame]d}
-        \\sd t0, {[sp_off]d}(sp)
+        \\
+    , .{ .x31 = OFF_X31 }) ++ save_sp ++ fmt.comptimePrint(
         \\csrr t0, sepc
         \\sd t0, {[sepc]d}(sp)
         \\csrr t0, sstatus
@@ -101,9 +143,6 @@ fn genFullSaveAsm() []const u8 {
         \\sd t0, {[stval]d}(sp)
         \\
     , .{
-        .frame = FULL_FRAME_SIZE,
-        .x31 = OFF_X31,
-        .sp_off = OFF_SP,
         .sepc = OFF_SEPC,
         .sstatus = OFF_SSTATUS,
         .scause = OFF_SCAUSE,
@@ -245,7 +284,7 @@ test "genEntryAsm fast path omits callee-saved registers" {
 }
 
 test "save and restore have matching instruction counts" {
-    const full_sd = comptime mem.count(u8, genFullSaveAsm(), "\nsd ");
+    const full_sd = comptime mem.count(u8, genFullSaveAsm(false), "\nsd ");
     const full_ld = comptime mem.count(u8, genFullRestoreAsm(), "\nld ");
     const fast_sd = comptime mem.count(u8, genCallerSaveAsm(), "\nsd ");
     const fast_ld = comptime mem.count(u8, genCallerRestoreAsm(), "\nld ");

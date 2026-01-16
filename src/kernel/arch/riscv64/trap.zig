@@ -1,22 +1,19 @@
 //! RISC-V Trap Handling.
 //!
-//! RISC-V has three privilege levels: Machine (M), Supervisor (S), and User (U).
+//! RISC-V uses a single stvec register pointing to the trap vector. We use Vectored
+//! mode where interrupts jump to base + 4*cause for fast dispatch without reading
+//! scause; exceptions all go to base+0.
+//!
+//! Hardware saves state to CSRs (sepc, sstatus, scause, stval) and jumps to stvec.
 //! OpenSBI runs at M-mode and delegates most traps to S-mode where our kernel runs.
-//! When a trap occurs, hardware saves state to CSRs and jumps to the address in stvec.
 //!
-//! Hardware-saved state:
-//! - sepc: Exception program counter (return address)
-//! - sstatus: Saved status (privilege level, interrupt enable)
-//! - scause: Cause code (bit 63 = interrupt flag, lower bits = cause)
-//! - stval: Trap value (fault address or faulting instruction)
+//! User traps swap SP with sscratch to enter on the kernel stack. The sscratch CSR
+//! holds the kernel SP when in user mode, allowing atomic stack switch on trap entry.
 //!
-//! We use Vectored mode where interrupts jump to base + 4*cause, allowing fast dispatch
-//! without reading scause. Exceptions all go to base+0.
+//! See RISC-V Privileged Specification, Chapter 12 (Supervisor-Level ISA).
 //!
 //! TODO(syscall): Fast path dispatch - skip slow path if no pending work flags.
 //! TODO(smp): Per-CPU trap state tracking reentry depth.
-//!
-//! See RISC-V Privileged Specification, Chapter 12 (Supervisor-Level ISA).
 
 const clock = @import("../../clock/clock.zig");
 const console = @import("../../console/console.zig");
@@ -188,12 +185,14 @@ export fn kernelInterruptEntry() linksection(".trap") callconv(.naked) noreturn 
 
 /// User trap entry. Full save for all user-mode traps and interrupts.
 /// Single entry point; handler dispatches by scause.
-/// TODO(scheduler): Switch to kernel stack before saving frame.
+/// Swaps SP with sscratch to enter on kernel stack; saves user SP.
+/// TODO(scheduler): Update sscratch to per-thread kernel stack on context switch.
 export fn userTrapEntry() linksection(".trap") callconv(.naked) noreturn {
     asm volatile (trap_entry.genEntryAsm(.{
             .full_save = true,
             .handler = "handleUserTrap",
             .pass_frame = true,
+            .use_sscratch = true,
         }));
 }
 
@@ -215,7 +214,14 @@ export fn handleKernelInterrupt() void {
 
     switch (code) {
         5 => clock.handleTimerIrq(), // Supervisor timer
-        1 => {}, // TODO(ipi): Supervisor software interrupt
+        1 => {
+            // Clear SSIP to acknowledge; without this the interrupt re-triggers.
+            asm volatile ("csrc sip, %[mask]"
+                :
+                : [mask] "r" (@as(u64, 1 << 1)),
+            );
+            // TODO(ipi): Actual IPI handling
+        },
         9 => {}, // TODO(plic): Supervisor external interrupt
         else => @panic(panic_msg.UNHANDLED),
     }
@@ -231,7 +237,14 @@ export fn handleUserTrap(frame: *TrapFrame) void {
         const code = TrapCause.code(frame.scause);
         switch (code) {
             5 => clock.handleTimerIrq(), // Supervisor timer
-            1 => {}, // TODO(ipi): Supervisor software interrupt
+            1 => {
+                // Clear SSIP to acknowledge; without this the interrupt re-triggers.
+                asm volatile ("csrc sip, %[mask]"
+                    :
+                    : [mask] "r" (@as(u64, 1 << 1)),
+                );
+                // TODO(ipi): Actual IPI handling
+            },
             9 => {}, // TODO(plic): Supervisor external interrupt
             else => {
                 print("\nUser interrupt: ");
@@ -292,9 +305,21 @@ fn printKeyRegister(name: []const u8, value: u64) void {
 }
 
 /// Initialize trap handling by installing stvec (Vectored mode).
+/// Stores kernel SP in sscratch so user traps land on kernel stack.
 /// Called twice: first at physical addresses (with identity mapping),
 /// then at virtual addresses after boot.zig switches to higher-half.
+/// See RISC-V Privileged Specification, 4.1.4 (Supervisor Scratch Register).
 pub fn init() void {
+    // Store kernel SP in sscratch for user trap entry.
+    // User traps swap SP with sscratch to get kernel stack.
+    const kernel_sp = asm volatile ("mv %[ret], sp"
+        : [ret] "=r" (-> usize),
+    );
+    asm volatile ("csrw sscratch, %[sp]"
+        :
+        : [sp] "r" (kernel_sp),
+    );
+
     // stvec format: [63:2] address, [1:0] mode (00=Direct, 01=Vectored)
     // Vectored mode: Exceptions -> Base, Interrupts -> Base + 4*Cause
     // Alignment guaranteed by align(256) on trapVector declaration.
