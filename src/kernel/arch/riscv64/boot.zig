@@ -3,16 +3,16 @@
 //! OpenSBI loads and jumps to us in S-mode with hart ID in a0 and DTB pointer in a1.
 //!
 //! Boot sequence:
-//! 1. Save hart ID and DTB pointer, set stack, enable FPU, zero BSS
+//! 1. Save hart ID and DTB pointer, set stack, disable FPU for kernel, zero BSS
 //! 2. Call physInit() to init hardware, MMU, traps (returns to us)
 //! 3. Switch SP to higher-half, jump to kmain at higher-half address
 //!
 //! The kernel is linked at higher-half VMA but loaded at physical LMA.
 //! PC-relative addressing (la pseudo-instruction) works at any base.
 //!
-//! We enable FPU access via sstatus.FS because Zig's compiler may emit floating-point
-//! instructions for array operations. OpenSBI typically leaves FS enabled, but the
-//! spec doesn't guarantee this.
+//! FPU policy: Disabled in kernel (sstatus.FS=Off) to catch accidental FP use.
+//! User FP is enabled per-thread by setting FS in saved sstatus before sret.
+//! User FP state is saved/restored by the scheduler (when implemented).
 
 extern const __bss_start: u8;
 extern const __bss_end: u8;
@@ -36,9 +36,12 @@ export fn _start() linksection(".text.boot") callconv(.naked) noreturn {
         // Set up stack
         \\ la sp, __stack_top
 
-        // Enable FPU access (sstatus.FS = Initial, bits 14:13 = 01)
-        \\ li t0, (1 << 13)
-        \\ csrs sstatus, t0
+        // Disable FPU for kernel (sstatus.FS = Off, bits 14:13 = 00).
+        // FP instructions trap with illegal_instruction when FS=Off.
+        // OpenSBI may leave FS in any state, so explicitly clear it.
+        // See RISC-V Privileged Specification, 3.1.6.7 (Extension Context Status).
+        \\ li t0, (3 << 13)
+        \\ csrc sstatus, t0
 
         // Clear BSS section
         \\ la t0, __bss_start

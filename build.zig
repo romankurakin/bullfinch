@@ -1,10 +1,23 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    var query = b.standardTargetOptionsQueryOnly(.{});
     const optimize = b.standardOptimizeOption(.{});
     const test_filter = b.option([]const u8, "test-filter", "Filter tests by name") orelse null;
     const board = b.option([]const u8, "board", "Board name (default: qemu_virt)") orelse "qemu_virt";
+
+    // Disable FP for kernel code - no floating-point in kernel.
+    // Any accidental FP use becomes a compile error.
+    switch (query.cpu_arch orelse .aarch64) {
+        .aarch64 => {
+            query.cpu_features_sub = std.Target.aarch64.featureSet(&.{ .neon, .fp_armv8 });
+        },
+        .riscv64 => {
+            query.cpu_features_sub = std.Target.riscv.featureSet(&.{ .f, .d });
+        },
+        else => {},
+    }
+    const target = b.resolveTargetQuery(query);
 
     const arch_dir = switch (target.result.cpu.arch) {
         .aarch64 => "arm64",
