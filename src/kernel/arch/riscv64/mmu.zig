@@ -1,21 +1,21 @@
 //! RISC-V Sv48 Memory Management Unit.
 //!
-//! RISC-V Sv48 provides 48-bit virtual addresses with a 4-level page table. The format
-//! is: VPN[3](9b) | VPN[2](9b) | VPN[1](9b) | VPN[0](9b) | offset(12b). Each level
+//! Sv48 provides 48-bit virtual addresses with a 4-level page table. The format is:
+//! VPN[3](9b) | VPN[2](9b) | VPN[1](9b) | VPN[0](9b) | offset(12b). Each level
 //! indexes into a 512-entry table (4KB page = 512 × 8-byte entries).
 //!
 //! Page table entries can be leaves (with RWX permissions) or branches (pointing to
 //! the next level). A leaf at level 2 creates a 1GB gigapage, at level 1 a 2MB
 //! megapage. Boot uses gigapages via a dedicated L2 table for 512GB physmap.
 //!
-//! RISC-V uses a single SATP register for translation, unlike ARM's TTBR0/TTBR1 split.
-//! The ASID field in SATP allows per-process TLB entries without full flushes.
+//! The SATP register holds the root page table address and ASID. The ASID field
+//! allows per-process TLB entries without full flushes on context switch.
 //!
 //! See RISC-V Privileged Specification, Sections 12.3-12.6 (Virtual Memory).
 //!
-//! TODO(smp): Implement per-hart page table locks
-//! TODO(smp): Send IPI to other harts for TLB shootdown via SBI
-//! TODO(smp): Use ASID for per-process TLB management (currently ASID=0)
+//! TODO(smp): Implement per-hart page table locks.
+//! TODO(smp): Send IPI to other harts for TLB shootdown via SBI.
+//! TODO(smp): Use ASID for per-process TLB management (currently ASID=0).
 
 const std = @import("std");
 
@@ -242,8 +242,8 @@ pub const Tlb = struct {
         );
     }
 
-    /// Invalidate TLB on this hart only (alias for flushAll on RISC-V).
-    /// Provided for API consistency with ARM64.
+    /// Invalidate TLB on this hart only.
+    /// Same as flushAll since sfence.vma is hart-local.
     pub inline fn flushLocal() void {
         fence();
         asm volatile ("sfence.vma zero, zero");
@@ -663,7 +663,7 @@ test "PageTable size matches page size" {
 }
 
 test "translate handles terapage mappings" {
-    // Sv48: terapage at L3 (512GB, like ARM64 block at root)
+    // Sv48: terapage at L3 (512GB)
     var root = PageTable.EMPTY;
     root.entries[1] = Pte.kernelLeaf(0x8000000000, true, true); // 512GB terapage at vpn3=1
 

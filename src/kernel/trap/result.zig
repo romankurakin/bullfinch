@@ -1,6 +1,7 @@
-//! Trap result types.
+//! Trap Result Types.
 //!
-//! Handlers return TrapResult so outcomes are explicit.
+//! Handlers return TrapResult to indicate the outcome. This makes trap handling
+//! outcomes explicit rather than relying on side effects.
 //!
 //! TODO(scheduler): Add yield variant for context switching.
 //! TODO(signals): Add signal delivery variant.

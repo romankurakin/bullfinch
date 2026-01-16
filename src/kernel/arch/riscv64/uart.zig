@@ -1,8 +1,7 @@
 //! RISC-V UART via SBI.
 //!
-//! Unlike ARM where we directly program PL011, RISC-V uses SBI's legacy console for
-//! early boot output. OpenSBI handles the actual UART programming. Eventually this
-//! moves to userspace with direct MMIO access.
+//! Uses SBI's legacy console for early boot output. OpenSBI handles the actual
+//! UART programming. Eventually this moves to userspace with direct MMIO access.
 
 const sbi = @import("sbi.zig");
 

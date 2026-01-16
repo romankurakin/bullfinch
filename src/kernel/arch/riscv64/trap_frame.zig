@@ -1,6 +1,11 @@
-//! RISC-V trap frame.
+//! RISC-V Trap Frame.
 //!
-//! Layout must match assembly in trap_entry.zig.
+//! Defines the saved register layout during trap handling. The struct layout must
+//! exactly match the assembly save/restore order in trap_entry.zig — any mismatch
+//! causes silent register corruption. Comptime assertions verify critical offsets.
+//!
+//! Saves 31 GPRs (x1-x31, x0 is hardwired zero), SP, and four CSRs (sepc, sstatus,
+//! scause, stval). Total size is 288 bytes, 16-byte aligned per RISC-V ABI.
 //!
 //! See RISC-V Privileged Specification, Chapter 12 (Supervisor-Level ISA).
 

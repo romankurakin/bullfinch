@@ -1,6 +1,11 @@
-//! ARM64 trap frame.
+//! ARM64 Trap Frame.
 //!
-//! Layout must match assembly in trap_entry.zig.
+//! Defines the saved register layout during trap handling. The struct layout must
+//! exactly match the assembly save/restore order in trap_entry.zig — any mismatch
+//! causes silent register corruption. Comptime assertions verify critical offsets.
+//!
+//! Saves 31 GPRs (x0-x30), SP, and four system registers (ELR, SPSR, ESR, FAR).
+//! Total size is 288 bytes, 16-byte aligned per AAPCS64.
 //!
 //! See ARM Architecture Reference Manual, D1.4 (Exceptions).
 

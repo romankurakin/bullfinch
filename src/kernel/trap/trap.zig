@@ -1,7 +1,7 @@
-//! Trap Module.
+//! Trap Handling Infrastructure.
 //!
-//! Trap handling infrastructure: frame layout, classification, and result types.
-//! Architecture-specific entry points live in arch/{arm64,riscv64}/trap.zig.
+//! Provides architecture-independent trap frame access, classification, and result
+//! types. Architecture-specific entry points and vector tables live in arch/.
 
 pub const fmt = @import("fmt.zig");
 pub const dispatch = @import("dispatch.zig");
