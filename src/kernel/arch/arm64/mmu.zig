@@ -2,21 +2,20 @@
 //!
 //! ARM64 uses a two-register design for address translation: TTBR0 handles the lower
 //! half of the virtual address space (user), TTBR1 handles the upper half (kernel).
-//! This differs from RISC-V which uses a single SATP register. The split allows fast
-//! context switches — only TTBR0 changes when switching processes, while TTBR1 stays
-//! fixed for the kernel.
+//! The split allows fast context switches — only TTBR0 changes when switching
+//! processes, while TTBR1 stays fixed for the kernel.
 //!
 //! We configure 39-bit virtual addresses (T0SZ=T1SZ=25) with 4KB pages, giving us a
-//! 3-level page table walk (L1 -> L2 -> L3). RISC-V uses Sv48 with 4 levels; the HAL
-//! abstracts this difference. Boot uses 1GB blocks at L1 to avoid allocating L2/L3.
+//! 3-level page table walk (L1 -> L2 -> L3). Boot uses 1GB blocks at L1 to avoid
+//! allocating L2/L3 tables.
 //!
 //! ARM calls page table entries "descriptors" but we use "Pte" to match OS literature.
 //!
 //! See ARM Architecture Reference Manual, Chapter D8 (The AArch64 Virtual Memory
 //! System Architecture).
 //!
-//! TODO(smp): Implement per-CPU page table locks
-//! TODO(smp): Use ASID for per-process TLB management (currently ASID=0)
+//! TODO(smp): Implement per-CPU page table locks.
+//! TODO(smp): Use ASID for per-process TLB management (currently ASID=0).
 
 const std = @import("std");
 

@@ -1,6 +1,7 @@
 //! Trap Formatting Utilities.
 //!
-//! Formatting helpers for register dumps and panic messages.
+//! Lock-free formatting helpers for register dumps and panic messages. These avoid
+//! std.fmt to work in panic context where allocators and locks are unavailable.
 
 /// Format a 64-bit value as hexadecimal (16 characters, no prefix).
 pub fn formatHex(val: u64) [16]u8 {

@@ -1,10 +1,11 @@
-//! Trap classification and dispatch helpers.
+//! Trap Classification.
 //!
-//! Maps arch-specific causes to common categories for syscalls, faults, and IRQs.
+//! Maps architecture-specific trap causes to common categories. Each architecture
+//! implements classify() to decode its cause register (ESR_EL1 or scause).
 //!
-//! TODO(syscall): Route syscalls to handler and add nospec index helper.
+//! TODO(syscall): Route syscalls to handler.
 //! TODO(vm): Route page faults to VM subsystem.
-//! TODO(scheduler): Route preemption to scheduler.
+//! TODO(scheduler): Route timer IRQs to scheduler.
 
 const builtin = @import("builtin");
 const std = @import("std");

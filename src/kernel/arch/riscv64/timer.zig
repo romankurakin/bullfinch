@@ -1,8 +1,8 @@
 //! RISC-V Timer via SBI.
 //!
-//! Unlike ARM where the timer is directly accessible, RISC-V timer registers (mtime,
-//! mtimecmp) are in M-mode. The kernel in S-mode must use SBI calls to set deadlines.
-//! The TIME extension (sbi_set_timer) programs mtimecmp and clears pending interrupts.
+//! Timer registers (mtime, mtimecmp) are in M-mode. The kernel in S-mode uses SBI
+//! calls to set deadlines. The TIME extension (sbi_set_timer) programs mtimecmp
+//! and clears pending interrupts.
 //!
 //! The time CSR (readable via rdtime) provides the current counter. On trap, we set
 //! the next deadline via SBI. This is the foundation for preemptive scheduling.

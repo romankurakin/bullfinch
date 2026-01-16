@@ -1,6 +1,7 @@
-//! Common trap frame interface.
+//! Trap Frame Interface.
 //!
-//! Provides arch-independent access to saved state for dispatch and syscalls.
+//! Provides architecture-independent access to saved register state. Comptime
+//! verification ensures each architecture implements the required methods.
 
 const builtin = @import("builtin");
 

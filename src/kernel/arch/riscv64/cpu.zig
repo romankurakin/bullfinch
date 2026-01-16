@@ -1,7 +1,7 @@
-//! RISC-V CPU primitives for synchronization and speculation control.
+//! RISC-V CPU Primitives.
 //!
-//! RISC-V lacks ARM's exclusive monitor / WFE mechanism. Uses Zihintpause to
-//! hint the CPU to reduce power in spin loops (backward-compatible NOP).
+//! Synchronization and speculation control primitives. Uses Zihintpause to hint
+//! the CPU to reduce power in spin loops (backward-compatible NOP on older cores).
 //!
 //! See RISC-V Unprivileged ISA, Chapter 9 (Zihintpause).
 
