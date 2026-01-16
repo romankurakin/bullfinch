@@ -1,7 +1,11 @@
-//! ARM64 trap entry assembly generator.
+//! ARM64 Trap Entry Assembly Generator.
 //!
-//! Generates entry/exit assembly from one template. Offsets come from TrapFrame
-//! via @offsetOf so layout changes fail at comptime.
+//! Generates entry/exit assembly from a single template with comptime configuration.
+//! Offsets are derived from TrapFrame via @offsetOf so struct layout changes cause
+//! compile errors rather than silent corruption.
+//!
+//! Uses STP/LDP for paired 16-byte stores/loads. The fast path saves only caller-saved
+//! registers (x0-x18, x30) while full save includes callee-saved (x19-x28, x29).
 //!
 //! See ARM Architecture Reference Manual, D1.4 (Exceptions).
 
@@ -18,6 +22,9 @@ pub const EntryConfig = struct {
     handler: []const u8,
     /// Pass frame pointer in x0 to handler.
     pass_frame: bool,
+    /// Save user stack pointer from SP_EL0 (user traps only).
+    /// When true, reads SP_EL0 instead of computing from current SP.
+    save_sp_el0: bool = false,
 };
 
 /// Frame sizes (16-byte aligned).
@@ -38,7 +45,7 @@ const FAST_OFF_X18_X30 = 144; // After x0-x17 pairs
 const FAST_OFF_ELR = 160; // After x18, x30
 
 pub fn genEntryAsm(comptime cfg: EntryConfig) []const u8 {
-    return genSaveAsm(cfg.full_save) ++
+    return genSaveAsm(cfg.full_save, cfg.save_sp_el0) ++
         (if (cfg.pass_frame) "mov x0, sp\n" else "") ++
         "bl " ++ cfg.handler ++ "\n" ++
         genRestoreAsm(cfg.full_save) ++
@@ -46,8 +53,8 @@ pub fn genEntryAsm(comptime cfg: EntryConfig) []const u8 {
     ;
 }
 
-fn genSaveAsm(comptime full: bool) []const u8 {
-    return if (full) genFullSaveAsm() else genCallerSaveAsm();
+fn genSaveAsm(comptime full: bool, comptime save_sp_el0: bool) []const u8 {
+    return if (full) genFullSaveAsm(save_sp_el0) else genCallerSaveAsm();
 }
 
 fn genRestoreAsm(comptime full: bool) []const u8 {
@@ -55,7 +62,20 @@ fn genRestoreAsm(comptime full: bool) []const u8 {
 }
 
 /// Full save: all GPRs (x0-x30) + SP + system registers.
-fn genFullSaveAsm() []const u8 {
+/// User traps read SP_EL0; kernel traps compute from current SP.
+/// See ARM Architecture Reference Manual, D1.8.2 (SP_EL0).
+fn genFullSaveAsm(comptime save_sp_el0: bool) []const u8 {
+    // User traps read SP_EL0 (user's stack pointer).
+    // Kernel traps compute original SP from current SP + frame size.
+    const save_sp = if (save_sp_el0)
+        \\mrs x0, sp_el0
+        \\
+    else
+        fmt.comptimePrint(
+            \\add x0, sp, #{d}
+            \\
+        , .{FULL_FRAME_SIZE});
+
     return fmt.comptimePrint(
         \\sub sp, sp, #{[frame]d}
         \\stp x0, x1, [sp, #0]
@@ -73,7 +93,8 @@ fn genFullSaveAsm() []const u8 {
         \\stp x24, x25, [sp, #192]
         \\stp x26, x27, [sp, #208]
         \\stp x28, x29, [sp, #224]
-        \\add x0, sp, #{[frame]d}
+        \\
+    , .{ .frame = FULL_FRAME_SIZE }) ++ save_sp ++ fmt.comptimePrint(
         \\stp x30, x0, [sp, #{[x30]d}]
         \\mrs x0, elr_el1
         \\mrs x1, spsr_el1
@@ -82,7 +103,7 @@ fn genFullSaveAsm() []const u8 {
         \\mrs x1, far_el1
         \\stp x0, x1, [sp, #{[esr]d}]
         \\
-    , .{ .frame = FULL_FRAME_SIZE, .x30 = OFF_X30, .elr = OFF_ELR, .esr = OFF_ESR });
+    , .{ .x30 = OFF_X30, .elr = OFF_ELR, .esr = OFF_ESR });
 }
 
 /// Caller-saved only: x0-x18, x30 + ELR/SPSR for eret.
@@ -183,7 +204,7 @@ test "genEntryAsm fast path omits callee-saved registers" {
 }
 
 test "save and restore have matching instruction counts" {
-    const full_stp = comptime mem.count(u8, genFullSaveAsm(), "stp");
+    const full_stp = comptime mem.count(u8, genFullSaveAsm(false), "stp");
     const full_ldp = comptime mem.count(u8, genFullRestoreAsm(), "ldp");
     const fast_stp = comptime mem.count(u8, genCallerSaveAsm(), "stp");
     const fast_ldp = comptime mem.count(u8, genCallerRestoreAsm(), "ldp");

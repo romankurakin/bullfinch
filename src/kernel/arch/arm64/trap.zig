@@ -1,21 +1,17 @@
 //! ARM64 Trap Handling.
 //!
-//! When the CPU encounters an exceptional condition (interrupt, fault, syscall), it
-//! transfers control to a handler via the exception vector table. ARM64 calls these
-//! "exceptions" but we use "trap" to match RISC-V and general OS terminology.
+//! ARM64 uses a 16-entry exception vector table organized as 4 exception types
+//! (Synchronous, IRQ, FIQ, SError) × 4 sources (Current EL with SP0/SPx, Lower EL
+//! AArch64/AArch32). Each entry is 128 bytes and the table must be 2KB aligned.
 //!
-//! The vector table has 16 entries organized as 4 exception types × 4 sources:
-//! - Types: Synchronous (faults, syscalls), IRQ, FIQ, SError
-//! - Sources: Current EL with SP0, Current EL with SPx, Lower EL AArch64, Lower EL AArch32
+//! Hardware saves ELR_EL1 (return address), SPSR_EL1 (status), and masks interrupts
+//! before jumping to the vector. We save remaining registers in trap_entry.zig.
+//! Kernel traps use SP_EL1 directly; user traps read SP_EL0 to capture the user stack.
 //!
-//! Each entry is 128 bytes (32 instructions), and the table must be 2KB aligned.
-//! Hardware automatically saves return address to ELR_EL1, status to SPSR_EL1, and
-//! masks interrupts. We save remaining registers manually in the trap entry code.
+//! See ARM Architecture Reference Manual, D1.4 (Exceptions).
 //!
 //! TODO(syscall): Fast path dispatch - skip slow path if no pending work flags.
 //! TODO(smp): Per-CPU trap state tracking reentry depth.
-//!
-//! See ARM Architecture Reference Manual, D1.4 (Exceptions).
 
 const clock = @import("../../clock/clock.zig");
 const console = @import("../../console/console.zig");
@@ -184,12 +180,14 @@ export fn kernelIrqEntry() callconv(.naked) noreturn {
 
 /// User trap entry. Full save for all user-mode traps and interrupts.
 /// Single entry point; handler checks for pending IRQs.
-/// TODO(scheduler): Switch to kernel stack before saving frame.
+/// Saves user SP from SP_EL0; kernel already uses SP_EL1 at EL1.
+/// TODO(scheduler): Set SP_EL1 to per-thread kernel stack on context switch.
 export fn userTrapEntry() callconv(.naked) noreturn {
     asm volatile (trap_entry.genEntryAsm(.{
             .full_save = true,
             .handler = "handleUserTrap",
             .pass_frame = true,
+            .save_sp_el0 = true,
         }));
 }
 
