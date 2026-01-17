@@ -12,6 +12,8 @@
 //!
 //! TODO(syscall): Fast path dispatch - skip slow path if no pending work flags.
 //! TODO(smp): Per-CPU trap state tracking reentry depth.
+//! TODO(fpu): Lazy FPU for userspace - trap on EC=0x07 (simd_fp), restore state,
+//!            set CPACR_EL1.FPEN=0b11, track fpu_owner per-CPU.
 
 const clock = @import("../../clock/clock.zig");
 const console = @import("../../console/console.zig");
