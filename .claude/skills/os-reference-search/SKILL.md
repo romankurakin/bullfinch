@@ -1,12 +1,12 @@
 ---
 name: os-reference-search
 description: Search OS reference materials — architecture specs (ARM, RISC-V), books (OSTEP, OSDI3), and papers. Use when implementing OS features (scheduler, IPC, VMM, drivers), looking up register layouts, finding algorithm details, or verifying chapter/section references in comments.
-allowed-tools: Bash, Read
+allowed-tools: AskUserQuestion, Bash, Read
 ---
 
 # OS Reference Search Skill
 
-Search architecture specs and OS books using the refs-cli tool at `../os-refs/`.
+Search architecture specs and OS books using sova at `../sova/`.
 
 ## When to Use
 
@@ -18,11 +18,11 @@ Search architecture specs and OS books using the refs-cli tool at `../os-refs/`.
 ## Search
 
 ```bash
-cd ../os-refs
+cd ../sova
 
 # Semantic search
-uv run refs-cli.py -s "how to handle page faults"
-uv run refs-cli.py -s "interrupt controller" -n 10
+uv run sova.py -s "how to handle page faults"
+uv run sova.py -s "interrupt controller" -n 10
 
 # Text search in extracted markdown
 rg -i "TLB" *.md
@@ -43,13 +43,13 @@ Returns `file.md:start-end` with preview. Use Read tool for full context (add ~5
 
 ## Setup
 
-If `../os-refs/refs.db` is missing:
+If `../sova/refs.db` is missing:
 
 ```bash
-cd ../os-refs
-uv run refs-cli.py --list              # Check status
-uv run refs-cli.py --skip-topics       # Index (faster, no topics)
-uv run refs-cli.py                     # Index with topics
+cd ../sova
+uv run sova.py --list              # Check status
+uv run sova.py --skip-topics       # Index (faster, no topics)
+uv run sova.py                     # Index with topics
 ```
 
 ## Reference Style
