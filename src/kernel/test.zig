@@ -1,40 +1,44 @@
-//! Kernel test root.
+//! Kernel Test Root.
+//!
+//! Modules with linksection attributes or hardware dependencies are excluded.
 
 const builtin = @import("builtin");
 
-// Architecture-specific tests contain inline assembly that only compiles for
-// their target architecture. Import only the matching arch to allow `zig build test`
-// to run on any host without cross-compilation guards in individual modules.
-const arch_test = switch (builtin.cpu.arch) {
-    .aarch64 => @import("arch/arm64/test.zig"),
-    .riscv64 => @import("arch/riscv64/test.zig"),
-    else => struct {},
-};
-
-const alloc = @import("alloc/alloc.zig");
-const clock = @import("clock/clock.zig");
-const console = @import("console/console.zig");
 const fdt = @import("fdt/fdt.zig");
 const hwinfo = @import("hwinfo/hwinfo.zig");
 const lib = @import("lib/lib.zig");
 const memory = @import("memory/memory.zig");
-const mmu = @import("mmu/mmu.zig");
+const once = @import("sync/once.zig");
 const pmm = @import("pmm/pmm.zig");
-const sync = @import("sync/sync.zig");
+const ticket = @import("sync/ticket.zig");
 const trap = @import("trap/trap.zig");
 
-comptime {
-    _ = arch_test;
+const arch_mmu = switch (builtin.cpu.arch) {
+    .aarch64 => @import("arch/arm64/mmu.zig"),
+    .riscv64 => @import("arch/riscv64/mmu.zig"),
+    else => struct {},
+};
+const arch_trap_entry = switch (builtin.cpu.arch) {
+    .aarch64 => @import("arch/arm64/trap_entry.zig"),
+    .riscv64 => @import("arch/riscv64/trap_entry.zig"),
+    else => struct {},
+};
+const arch_uart = switch (builtin.cpu.arch) {
+    .aarch64 => @import("arch/arm64/uart.zig"),
+    .riscv64 => @import("arch/riscv64/uart.zig"),
+    else => struct {},
+};
 
-    _ = alloc;
-    _ = clock;
-    _ = console;
+comptime {
     _ = fdt;
     _ = hwinfo;
     _ = lib;
     _ = memory;
-    _ = mmu;
+    _ = once;
     _ = pmm;
-    _ = sync;
+    _ = ticket;
     _ = trap;
+    _ = arch_mmu;
+    _ = arch_trap_entry;
+    _ = arch_uart;
 }
