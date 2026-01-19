@@ -160,8 +160,8 @@ pub fn Pool(comptime T: type) type {
 
         /// Allocate object. Returns null if out of memory.
         pub fn alloc(self: *Self) ?*T {
-            self.lock.acquire();
-            defer self.lock.release();
+            const held = self.lock.guard();
+            defer held.release();
 
             // Try current slab first
             if (self.current) |slab| {
@@ -299,8 +299,8 @@ pub fn Pool(comptime T: type) type {
 
         /// Return object to pool.
         pub fn free(self: *Self, obj: *T) FreeError!void {
-            self.lock.acquire();
-            defer self.lock.release();
+            const held = self.lock.guard();
+            defer held.release();
 
             const obj_addr = @intFromPtr(obj);
             const page_base = obj_addr & ~@as(usize, PAGE_SIZE - 1);
