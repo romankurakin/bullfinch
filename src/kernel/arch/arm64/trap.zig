@@ -308,31 +308,6 @@ pub fn testTriggerIllegalInstruction() void {
     asm volatile (".word 0x00000000"); // UDF #0
 }
 
-/// Wait for interrupt (single wait, returns after interrupt handled).
-pub inline fn waitForInterrupt() void {
-    asm volatile ("wfi");
-}
-
-/// Halt CPU (loop forever, interrupts still enabled).
-pub inline fn halt() noreturn {
-    while (true) asm volatile ("wfi");
-}
-
-/// Disable IRQ and FIQ. Returns true if IRQs were previously enabled.
-/// Does not mask Debug or SError - those indicate serious conditions.
-pub inline fn disableInterrupts() bool {
-    var daif: u64 = undefined;
-    asm volatile ("mrs %[daif], daif"
-        : [daif] "=r" (daif),
-    );
-    asm volatile ("msr daifset, #3"); // Mask I and F only (bits 1:0)
-    return (daif & 0x80) == 0; // Bit 7 = I flag, clear = enabled
-}
-
-/// Enable IRQ and FIQ.
-pub inline fn enableInterrupts() void {
-    asm volatile ("msr daifclr, #3"); // Unmask I and F only
-}
 
 test "TrapFrame size and layout" {
     const std = @import("std");

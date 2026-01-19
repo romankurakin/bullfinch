@@ -351,30 +351,6 @@ pub fn testTriggerIllegalInstruction() void {
     asm volatile (".word 0x00000000");
 }
 
-/// Wait for interrupt (single wait, returns after interrupt handled).
-pub inline fn waitForInterrupt() void {
-    asm volatile ("wfi");
-}
-
-/// Halt CPU (loop forever, interrupts still enabled).
-pub inline fn halt() noreturn {
-    while (true) asm volatile ("wfi");
-}
-
-/// Disable all interrupts. Returns previous interrupt state.
-pub inline fn disableInterrupts() bool {
-    var sstatus: u64 = undefined;
-    asm volatile ("csrr %[sstatus], sstatus"
-        : [sstatus] "=r" (sstatus),
-    );
-    asm volatile ("csrci sstatus, 0x2");
-    return (sstatus & 0x2) != 0; // Returns true if SIE was enabled
-}
-
-/// Enable interrupts.
-pub inline fn enableInterrupts() void {
-    asm volatile ("csrsi sstatus, 0x2");
-}
 
 test "TrapFrame size and layout" {
     const std = @import("std");
