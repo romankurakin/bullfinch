@@ -6,23 +6,32 @@ language fundamentals.
 ## Commands
 
 ```bash
-just test                 # Run all tests
+just test                 # Unit tests (portable, runs on host)
 just test-filter "name"   # Run tests matching filter
-just test-arm64           # ARM64 only
-just test-riscv64         # RISC-V only
+just smoke                # Integration tests (QEMU, both archs)
+```
+
+## Test Pyramid
+
+```
+┌─────────────┐
+│   smoke     │  Integration: boots kernel in QEMU (ARM64 + RISC-V)
+├─────────────┤
+│   test      │  Unit tests: portable algorithms, data structures
+└─────────────┘
 ```
 
 ## Structure
 
-Tests use inline `test` blocks in implementation files. Root imports:
+Portable modules (no hal/arch dependency) have inline `test` blocks that run
+via `just test` on any host (macOS, Linux, x86, ARM):
 
-- `src/kernel/test.zig` — imports `kernel.zig` and arch roots
-- `src/kernel/arch/{arm64,riscv64}/test.zig` — arch-specific roots
+- `sync/ticket.zig` — ticket lock algorithm
+- `fdt/` — device tree parsing
+- `lib/` — utilities
 
-Modules must be in this import chain for their tests to run.
-
-`just test` runs on the host architecture only. Use `just smoke` to boot-test
-both ARM64 and RISC-V in QEMU.
+Non-portable modules (depend on hal/arch) are tested via `just smoke` which
+boots the full kernel in QEMU.
 
 ## Naming
 

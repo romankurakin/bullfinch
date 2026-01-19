@@ -44,18 +44,6 @@ test:
 test-filter FILTER:
     zig build test -Dtest-filter="{{FILTER}}"
 
-# Run specific test file
-test-file FILE:
-    zig test {{FILE}}
-
-# Run tests for ARM64 architecture
-test-arm64:
-    zig build test -Dtarget=aarch64-freestanding
-
-# Run tests for RISC-V architecture
-test-riscv64:
-    zig build test -Dtarget=riscv64-freestanding
-
 # Build for ARM64 (release)
 build-arm64-release:
     zig build -Dtarget=aarch64-freestanding -Dcpu=cortex_a76 -Doptimize=ReleaseFast

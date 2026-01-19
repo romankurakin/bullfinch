@@ -28,7 +28,8 @@ uv run sova.py -s "interrupt controller" -n 10
 rg -i "TLB" *.md
 ```
 
-Returns `file.md:start-end` with preview. Use Read tool for full context (add ~50 lines buffer for surrounding context).
+Returns `file.md:start-end` with preview. Use Read tool for full context (add
+~50 lines buffer for surrounding context).
 
 ## Available Documents
 
@@ -37,8 +38,8 @@ Returns `file.md:start-end` with preview. Use Read tool for full context (add ~5
 - `riscv-privileged` — RISC-V Privileged Specification
 - `riscv-unprivileged` — RISC-V Unprivileged Specification
 - `gic_architecture_specification` — ARM GIC Specification
-- `ostep` — Operating Systems: Three Easy Pieces
-- `osdi3` — Operating Systems: Design & Implementation (MINIX book)
+- `operating_systems_three_easy_pieces` — Operating Systems: Three Easy Pieces (OSTEP book)
+- `operating_systems_design_and_implementation` — Operating Systems: Design & Implementation (MINIX book)
 - `DDI0487_profile_architecture_reference_manual` — ARM Architecture Reference Manual
 
 ## Setup
