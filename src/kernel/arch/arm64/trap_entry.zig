@@ -203,13 +203,18 @@ test "genEntryAsm fast path omits callee-saved registers" {
     try std.testing.expect(mem.indexOf(u8, asm_str, "x28") == null);
 }
 
-test "save and restore have matching instruction counts" {
+test "save and restore have consistent register coverage" {
     const full_stp = comptime mem.count(u8, genFullSaveAsm(false), "stp");
     const full_ldp = comptime mem.count(u8, genFullRestoreAsm(), "ldp");
+    const full_ldr = comptime mem.count(u8, genFullRestoreAsm(), "ldr ");
+
+    try std.testing.expectEqual(@as(usize, 18), full_stp);
+    try std.testing.expectEqual(@as(usize, 16), full_ldp);
+    try std.testing.expectEqual(@as(usize, 1), full_ldr); // x30 alone
+
     const fast_stp = comptime mem.count(u8, genCallerSaveAsm(), "stp");
     const fast_ldp = comptime mem.count(u8, genCallerRestoreAsm(), "ldp");
 
-    try std.testing.expectEqual(full_stp, full_ldp);
     try std.testing.expectEqual(fast_stp, fast_ldp);
 }
 
