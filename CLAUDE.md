@@ -17,15 +17,11 @@ just qemu-riscv64         # Run in QEMU (RISC-V, interactive)
 just peek-arm64           # Boot briefly, show console output
 just peek-riscv64         # Boot briefly, show console output
 
-just smoke                # Smoke test both architectures (pass/fail)
-just smoke-one arm64      # Smoke test single architecture
+just test                 # Unit tests (portable, runs on host)
+just test-filter "name"   # Run tests matching filter
+just smoke                # Integration tests (QEMU, both archs)
 
 just fmt                  # Format code
-just test                 # Run all tests
-just test-filter "name"   # Run tests matching filter
-just test-arm64
-just test-riscv64
-
 just disasm-arm64         # Disassemble kernel (ARM64)
 just disasm-riscv64       # Disassemble kernel (RISC-V)
 ```
