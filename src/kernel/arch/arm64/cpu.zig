@@ -1,16 +1,39 @@
-//! ARM64 CPU primitives for synchronization and speculation control.
+//! ARM64 CPU Primitives.
 //!
-//! Uses exclusive monitor mechanism: LDAXR sets monitor, any store clears it
-//! (waking WFE waiters).
-//!
-//! See ARM Architecture Reference Manual, B2.12 (Synchronization and Semaphores).
+//! Low-level interrupt control, synchronization, and speculation barriers.
+//! See ARM Architecture Reference Manual for instruction details.
+
+/// Disable IRQ and FIQ. Returns true if IRQs were previously enabled.
+pub inline fn disableInterrupts() bool {
+    var daif: u64 = undefined;
+    asm volatile ("mrs %[daif], daif"
+        : [daif] "=r" (daif),
+    );
+    asm volatile ("msr daifset, #3");
+    return (daif & 0x80) == 0;
+}
+
+/// Enable IRQ and FIQ.
+pub inline fn enableInterrupts() void {
+    asm volatile ("msr daifclr, #3");
+}
+
+/// Wait for interrupt (low-power sleep until IRQ/FIQ/abort).
+pub inline fn waitForInterrupt() void {
+    asm volatile ("wfi");
+}
+
+/// Halt CPU forever (interrupts remain enabled).
+pub inline fn halt() noreturn {
+    while (true) asm volatile ("wfi");
+}
 
 /// Spin until low 16 bits of value at `ptr` equals `expected`.
+/// Uses exclusive monitor + WFE for power-efficient waiting.
 pub fn spinWaitEq16(ptr: *const u32, expected: u16) void {
     asm volatile ("sevl");
     while (true) {
-        // Load 32-bit with exclusive monitor, then truncate to 16-bit.
-        // LDAXRH requires W register which Zig doesn't support directly.
+        // LDAXR sets exclusive monitor; any store clears it (waking WFE).
         const val: u16 = @truncate(asm volatile ("ldaxr %[val], [%[ptr]]"
             : [val] "=&r" (-> u32),
             : [ptr] "r" (ptr),
@@ -20,17 +43,7 @@ pub fn spinWaitEq16(ptr: *const u32, expected: u16) void {
     }
 }
 
-/// Speculation barrier for Spectre-v1 (bounds check bypass) mitigation.
-///
-/// CPUs may speculatively execute past bounds checks before the check completes.
-/// If an attacker controls an array index (e.g., syscall number), the CPU might
-/// speculatively access out-of-bounds memory, leaking data via cache timing.
-///
-/// CSDB (Consumption of Speculative Data Barrier) ensures prior conditional
-/// instructions resolve before dependent data accesses execute speculatively.
-/// Use after bounds checks on untrusted indices before using them to index arrays.
-///
-/// See ARM Architecture Reference Manual, CSDB.
+/// Speculation barrier (CSDB). Use after bounds checks on untrusted indices.
 pub inline fn speculationBarrier() void {
     asm volatile ("csdb");
 }
