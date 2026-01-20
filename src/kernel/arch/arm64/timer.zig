@@ -19,7 +19,7 @@
 const gic = @import("gic.zig");
 
 const panic_msg = struct {
-    const ZERO_FREQUENCY = "TIMER: CNTFRQ_EL0 is zero (firmware bug)";
+    const ZERO_FREQUENCY = "timer: CNTFRQ_EL0 is zero (firmware bug)";
 };
 
 /// CNTP_CTL_EL0 bit: Enable timer.

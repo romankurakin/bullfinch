@@ -16,7 +16,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const panic_msg = struct {
-    const REMOVE_UNLINKED = "List: remove called on unlinked item";
+    const REMOVE_UNLINKED = "list: remove called on unlinked item";
 };
 
 /// Enable extra validation in debug builds.

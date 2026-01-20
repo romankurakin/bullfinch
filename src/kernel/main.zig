@@ -6,10 +6,10 @@
 
 const std = @import("std");
 
+const boot_log = @import("boot/log.zig");
 const clock = @import("clock/clock.zig");
 const console = @import("console/console.zig");
 const hal = @import("hal/hal.zig");
-const hwinfo = @import("hwinfo/hwinfo.zig");
 const pmm = @import("pmm/pmm.zig");
 const sync = @import("sync/sync.zig");
 const test_markers = @import("test_markers");
@@ -17,49 +17,6 @@ const test_markers = @import("test_markers");
 comptime {
     _ = hal.boot; // Force boot module inclusion for entry point
     _ = @import("c_compat.zig"); // C stdlib shim
-}
-
-fn printHwInfo() void {
-    const hw = &hwinfo.info;
-    console.print("[6] DTB: ");
-    console.printDec(hw.cpu_count);
-    console.print(" CPUs, ");
-    console.printDec(hw.total_memory / (1024 * 1024));
-    console.print(" MB RAM, ");
-    console.printDec(hw.reserved_region_count);
-    console.print(" reserved regions\n");
-}
-
-fn testPmm() void {
-    const before = pmm.freeCount();
-
-    // Test single page alloc/free
-    const p1 = pmm.allocPage() orelse {
-        console.print("PMM: alloc FAIL\n");
-        return;
-    };
-    const p2 = pmm.allocPage() orelse {
-        console.print("PMM: alloc FAIL\n");
-        return;
-    };
-    pmm.freePage(p1);
-    pmm.freePage(p2);
-
-    // Test contiguous allocation
-    const pages = pmm.allocContiguous(4, 0) orelse {
-        console.print("PMM: contiguous FAIL\n");
-        return;
-    };
-    pmm.freeContiguous(pages, 4) catch {
-        console.print("PMM: freeContiguous FAIL\n");
-        return;
-    };
-
-    // Verify no leaks
-    if (pmm.freeCount() != before) {
-        console.print("PMM: leak detected\n");
-        return;
-    }
 }
 
 fn testClock() void {
@@ -72,19 +29,14 @@ fn testClock() void {
 export fn kmain() noreturn {
     hal.virtInit();
 
-    printHwInfo();
+    boot_log.dtb();
 
     pmm.init();
-    console.print("[7] PMM: ");
-    console.printDec(pmm.freeCount());
-    console.print("/");
-    console.printDec(pmm.totalPages());
-    console.print(" pages free\n");
-    testPmm();
+    boot_log.pmm();
 
     hal.interrupt.init();
     clock.init();
-    console.print("[8] CLK: timer ready\n");
+    boot_log.clock();
     testClock();
 
     console.print("\n" ++ test_markers.BOOT_OK ++ "\n");

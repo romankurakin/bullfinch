@@ -24,7 +24,7 @@ const trap_entry = @import("trap_entry.zig");
 const trap_frame = @import("trap_frame.zig");
 
 const panic_msg = struct {
-    const UNHANDLED = "TRAP: unhandled";
+    const UNHANDLED = "trap: unhandled exception";
 };
 
 // Use printUnsafe in trap context: we can't safely acquire locks here

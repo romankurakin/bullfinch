@@ -11,8 +11,8 @@ const gicv2 = @import("gicv2.zig");
 const gicv3 = @import("gicv3.zig");
 
 const panic_msg = struct {
-    const NOT_INITIALIZED = "GIC: not initialized";
-    const UNSUPPORTED_VERSION = "GIC: unsupported version";
+    const NOT_INITIALIZED = "gic: not initialized";
+    const UNSUPPORTED_VERSION = "gic: unsupported version";
 };
 
 /// EL1 physical timer PPI interrupt ID.
