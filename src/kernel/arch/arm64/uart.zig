@@ -14,8 +14,8 @@ const mmio = @import("mmio.zig");
 var uart_base: usize = board.UART_PHYS;
 
 const panic_msg = struct {
-    const NOT_ENABLED = "UART: not enabled";
-    const INVALID_CONFIG = "UART: invalid default config";
+    const NOT_ENABLED = "uart: not enabled";
+    const INVALID_CONFIG = "uart: invalid default config";
 };
 
 /// Errors from baud rate divisor calculation.

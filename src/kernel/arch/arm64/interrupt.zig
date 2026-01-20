@@ -9,7 +9,7 @@ const gic = @import("gic.zig");
 const hwinfo = @import("../../hwinfo/hwinfo.zig");
 
 const panic_msg = struct {
-    const GIC_NOT_FOUND = "INTERRUPT: GIC not found in hardware info";
+    const GIC_NOT_FOUND = "gic: not found in hardware info";
 };
 
 /// Initialize interrupt controller from hardware info.

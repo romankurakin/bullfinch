@@ -21,7 +21,7 @@ const hal = @import("../hal/hal.zig");
 const trap = @import("../trap/trap.zig");
 
 const panic_msg = struct {
-    const ZERO_FREQ = "CLK: timer frequency is zero";
+    const ZERO_FREQ = "clock: timer frequency is zero";
 };
 
 /// Tick rate for scheduler and periodic work (100 Hz = 10ms ticks).

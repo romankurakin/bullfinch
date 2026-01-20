@@ -72,19 +72,19 @@ const poison = struct {
 };
 
 const panic_msg = struct {
-    const NOT_INITIALIZED = "PMM: not initialized";
-    const NO_MEMORY_REGIONS = "PMM: no memory regions found";
-    const METADATA_TOO_LARGE = "PMM: page metadata too large for region";
-    const UNALIGNED_ADDRESS = "PMM: address not page-aligned";
-    const ADDRESS_NOT_IN_ARENA = "PMM: address not in any managed arena";
-    const DOUBLE_FREE = "PMM: double-free detected";
-    const FREE_RESERVED = "PMM: attempted to free reserved page";
-    const INVALID_PAGE_STATE = "PMM: invalid page state";
-    const NOT_CONTIGUOUS_HEAD = "PMM: freeContiguous called on non-head page";
-    const TOO_MANY_RESERVED = "PMM: too many reserved regions (increase MAX_RESERVED)";
-    const CONTIGUOUS_NOT_ALLOCATED = "PMM: freeContiguous page not in allocated state";
-    const ARITHMETIC_OVERFLOW = "PMM: arithmetic overflow (invalid memory region)";
-    const ARENA_IDX_MISMATCH = "PMM: arena_idx mismatch - page not in indicated arena";
+    const NOT_INITIALIZED = "pmm: not initialized";
+    const NO_MEMORY_REGIONS = "pmm: no memory regions found";
+    const METADATA_TOO_LARGE = "pmm: metadata too large for region";
+    const UNALIGNED_ADDRESS = "pmm: address not page-aligned";
+    const ADDRESS_NOT_IN_ARENA = "pmm: address not in any managed arena";
+    const DOUBLE_FREE = "pmm: double-free detected";
+    const FREE_RESERVED = "pmm: cannot free reserved page";
+    const INVALID_PAGE_STATE = "pmm: invalid page state";
+    const NOT_CONTIGUOUS_HEAD = "pmm: free called on non-head page";
+    const TOO_MANY_RESERVED = "pmm: too many reserved regions";
+    const CONTIGUOUS_NOT_ALLOCATED = "pmm: page not in allocated state";
+    const ARITHMETIC_OVERFLOW = "pmm: arithmetic overflow";
+    const ARENA_IDX_MISMATCH = "pmm: arena index mismatch";
 };
 
 /// Physical page states.

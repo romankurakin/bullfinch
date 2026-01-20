@@ -24,6 +24,7 @@ const builtin = @import("builtin");
 const std = @import("std");
 
 const board = @import("board");
+const boot_log = @import("../boot/log.zig");
 const console = @import("../console/console.zig");
 const fdt = @import("../fdt/fdt.zig");
 const hwinfo = @import("../hwinfo/hwinfo.zig");
@@ -87,16 +88,18 @@ comptime {
 /// Returns to caller which then switches SP and jumps to kmain.
 pub export fn physInit() void {
     console.init();
-    console.print("\n[1] UART: console ready\n");
+    console.print("\n");
+    boot_log.header();
+    boot_log.uart();
 
     // Install trap vectors early so MMU faults can be caught and debugged.
     // Uses PC-relative addressing, works at physical addresses.
     arch.trap.init();
-    console.print("[2] TRAP: exception vectors set\n");
+    boot_log.trap();
 
     // Pass DTB pointer so MMU can map enough to cover it
     arch.mmu.init(board.KERNEL_PHYS_LOAD, boot.dtb_ptr);
-    console.print("[3] MMU: paging enabled\n");
+    boot_log.mmu();
 }
 
 /// Kernel virtual base address, exported for boot.zig to use when jumping to higher-half.
@@ -113,8 +116,6 @@ fn getDtb() ?fdt.Fdt {
 
 /// Finalizes address space transition and initializes timer hardware.
 pub fn virtInit() void {
-    console.print("[4] VIRT: higher-half mapping active\n");
-
     // Reinit trap vector to virtual address, must happen before removing identity mapping
     arch.trap.init();
 
@@ -124,13 +125,13 @@ pub fn virtInit() void {
     // Switch console to virtual UART address (ARM64 only, RISC-V uses SBI)
     console.postMmuInit();
 
-    const dtb = getDtb() orelse @panic("BOOT: DTB required for hardware discovery");
+    const dtb = getDtb() orelse @panic("boot: DTB required for hardware discovery");
     hwinfo.init(boot.dtb_ptr, dtb);
 
     arch.mmu.expandPhysmap(hwinfo.info.total_memory);
 
     arch.mmu.removeIdentityMapping();
-    console.print("[5] VIRT: identity mapping removed\n");
+    boot_log.virt();
 
     // Initialize timer frequency (ARM64 reads register, RISC-V uses hwinfo value)
     timer.initFrequency(hwinfo.info.timer_frequency);

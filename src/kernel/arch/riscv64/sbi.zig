@@ -12,8 +12,8 @@
 //! TODO(sbi): Add IPI extension for SMP, HSM for hart management, RFENCE for TLB shootdown.
 
 const panic_msg = struct {
-    const PUTCHAR_FAILED = "SBI: console putchar failed";
-    const SET_TIMER_FAILED = "SBI: set_timer failed";
+    const PUTCHAR_FAILED = "sbi: console putchar failed";
+    const SET_TIMER_FAILED = "sbi: set_timer failed";
 };
 
 /// SBI Timer Extension ID (ASCII "TIME").
