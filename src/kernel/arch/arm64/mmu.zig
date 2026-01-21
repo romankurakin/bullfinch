@@ -9,7 +9,7 @@
 //! 3-level page table walk (L1 -> L2 -> L3). Boot uses 1GB blocks at L1 to avoid
 //! allocating L2/L3 tables.
 //!
-//! ARM calls page table entries "descriptors" but we use "Pte" to match OS literature.
+//! ARM calls page table entries "descriptors" but we use "PageTableEntry" to match OS literature.
 //!
 //! See ARM Architecture Reference Manual, Chapter D8 (The AArch64 Virtual Memory
 //! System Architecture).
@@ -52,7 +52,7 @@ pub inline fn virtToPhys(vaddr: usize) usize {
 }
 
 /// Memory type for MAIR_EL1 indexing in PTEs.
-pub const MemAttr = enum(u3) {
+pub const MemoryAttribute = enum(u3) {
     device_nGnRnE = 0,
     device_nGnRE = 1,
     normal_nc = 2,
@@ -78,7 +78,7 @@ pub const Shareability = enum(u2) {
 };
 
 /// Page table descriptor. Same layout for L1/L2/L3; type determined by level and bits.
-pub const Pte = packed struct(u64) {
+pub const PageTableEntry = packed struct(u64) {
     valid: bool = false,
     type_bit: bool = false, // 0=block, 1=table/page
     attr_idx: u3 = 0,
@@ -96,36 +96,36 @@ pub const Pte = packed struct(u64) {
     sw_bits: u4 = 0,
     reserved2: u5 = 0,
 
-    pub const INVALID = Pte{};
+    pub const INVALID = PageTableEntry{};
 
-    pub inline fn isValid(self: Pte) bool {
+    pub inline fn isValid(self: PageTableEntry) bool {
         return self.valid;
     }
 
     /// Check if this is a table entry (pointer to next level).
-    pub inline fn isTable(self: Pte) bool {
+    pub inline fn isTable(self: PageTableEntry) bool {
         return self.valid and self.type_bit;
     }
 
     /// Check if this is a block entry (1GB or 2MB mapping).
-    pub inline fn isBlock(self: Pte) bool {
+    pub inline fn isBlock(self: PageTableEntry) bool {
         return self.valid and !self.type_bit;
     }
 
-    pub inline fn physAddr(self: Pte) usize {
+    pub inline fn physAddr(self: PageTableEntry) usize {
         return @as(usize, self.output_addr) << PAGE_SHIFT;
     }
 
     /// Create table entry pointing to next level page table.
-    pub fn table(next_table_phys: usize) Pte {
+    pub fn table(next_table_phys: usize) PageTableEntry {
         return .{ .valid = true, .type_bit = true, .output_addr = @truncate(next_table_phys >> PAGE_SHIFT) };
     }
 
     /// Create kernel block entry (1GB or 2MB). All valid mappings are implicitly readable.
-    pub fn kernelBlock(phys_addr: usize, write: bool, exec: bool) Pte {
+    pub fn kernelBlock(phys_addr: usize, write: bool, exec: bool) PageTableEntry {
         return .{
             .valid = true,
-            .attr_idx = @intFromEnum(MemAttr.normal_wbwa),
+            .attr_idx = @intFromEnum(MemoryAttribute.normal_wbwa),
             .ap2 = !write,
             .sh = .inner_shareable,
             .af = true,
@@ -135,10 +135,10 @@ pub const Pte = packed struct(u64) {
         };
     }
 
-    pub fn deviceBlock(phys_addr: usize) Pte {
+    pub fn deviceBlock(phys_addr: usize) PageTableEntry {
         return .{
             .valid = true,
-            .attr_idx = @intFromEnum(MemAttr.device_nGnRnE),
+            .attr_idx = @intFromEnum(MemoryAttribute.device_nGnRnE),
             .sh = .outer_shareable,
             .af = true,
             .output_addr = @truncate(phys_addr >> PAGE_SHIFT),
@@ -148,11 +148,11 @@ pub const Pte = packed struct(u64) {
     }
 
     /// Create kernel page entry (4KB). All valid mappings are implicitly readable.
-    pub fn kernelPage(phys_addr: usize, write: bool, exec: bool) Pte {
+    pub fn kernelPage(phys_addr: usize, write: bool, exec: bool) PageTableEntry {
         return .{
             .valid = true,
             .type_bit = true,
-            .attr_idx = @intFromEnum(MemAttr.normal_wbwa),
+            .attr_idx = @intFromEnum(MemoryAttribute.normal_wbwa),
             .ap2 = !write,
             .sh = .inner_shareable,
             .af = true,
@@ -163,11 +163,11 @@ pub const Pte = packed struct(u64) {
     }
 
     /// Create user page entry (4KB). Sets non-global bit for per-ASID TLB invalidation.
-    pub fn userPage(phys_addr: usize, write: bool, exec: bool) Pte {
+    pub fn userPage(phys_addr: usize, write: bool, exec: bool) PageTableEntry {
         return .{
             .valid = true,
             .type_bit = true,
-            .attr_idx = @intFromEnum(MemAttr.normal_wbwa),
+            .attr_idx = @intFromEnum(MemoryAttribute.normal_wbwa),
             .ap1 = true,
             .ap2 = !write,
             .sh = .inner_shareable,
@@ -181,20 +181,20 @@ pub const Pte = packed struct(u64) {
 };
 
 comptime {
-    if (@sizeOf(Pte) != 8) @compileError("Pte must be 8 bytes");
+    if (@sizeOf(PageTableEntry) != 8) @compileError("PageTableEntry must be 8 bytes");
 }
 
 /// Page table containing 512 entries (one 4KB page).
 pub const PageTable = struct {
-    entries: [ENTRIES_PER_TABLE]Pte,
+    entries: [ENTRIES_PER_TABLE]PageTableEntry,
 
-    pub const EMPTY = PageTable{ .entries = [_]Pte{Pte.INVALID} ** ENTRIES_PER_TABLE };
+    pub const EMPTY = PageTable{ .entries = [_]PageTableEntry{PageTableEntry.INVALID} ** ENTRIES_PER_TABLE };
 
-    pub inline fn get(self: *const PageTable, index: usize) Pte {
+    pub inline fn get(self: *const PageTable, index: usize) PageTableEntry {
         return self.entries[index];
     }
 
-    pub inline fn set(self: *PageTable, index: usize, desc: Pte) void {
+    pub inline fn set(self: *PageTable, index: usize, desc: PageTableEntry) void {
         self.entries[index] = desc;
     }
 };
@@ -206,13 +206,13 @@ comptime {
 /// 39-bit VA parsing (T0SZ=25/T1SZ=25, no L0).
 /// TTBR0 handles addresses 0x0000_0000_0000_0000 to 0x0000_007F_FFFF_FFFF (bits 63:39 = 0).
 /// TTBR1 handles addresses 0xFFFF_FF80_0000_0000 to 0xFFFF_FFFF_FFFF_FFFF (bits 63:39 = 1).
-pub const VirtAddr = struct {
+pub const VirtualAddress = struct {
     l1: u9, // Bits 38:30
     l2: u9, // Bits 29:21
     l3: u9, // Bits 20:12
     offset: u12,
 
-    pub inline fn parse(vaddr: usize) VirtAddr {
+    pub inline fn parse(vaddr: usize) VirtualAddress {
         return .{
             .l1 = @truncate((vaddr >> 30) & 0x1FF),
             .l2 = @truncate((vaddr >> 21) & 0x1FF),
@@ -237,7 +237,7 @@ pub const VirtAddr = struct {
     }
 };
 
-pub const Tcr = struct {
+pub const TranslationControlRegister = struct {
     /// TCR_EL1: T0SZ=25 (39-bit VA), 4KB granule, both TTBR0 and TTBR1 enabled.
     pub fn build() u64 {
         var tcr: u64 = 0;
@@ -271,7 +271,7 @@ pub const Tcr = struct {
     }
 };
 
-const Sctlr = struct {
+const SystemControlRegister = struct {
     fn enableMmu() void {
         var sctlr: u64 = asm volatile ("mrs %[ret], sctlr_el1"
             : [ret] "=r" (-> u64),
@@ -309,7 +309,7 @@ inline fn tlbFlushLocal() void {
 
 // TODO(smp): After secondary cores are online, always use broadcast (flushAll).
 // During boot, use flushLocal() since secondary cores aren't initialized.
-pub const Tlb = struct {
+pub const TranslationLookasideBuffer = struct {
     /// Invalidate all TLB entries (broadcasts to inner shareable domain).
     /// Use after SMP init when all cores are running.
     pub inline fn flushAll() void {
@@ -373,10 +373,10 @@ pub const Tlb = struct {
 /// Walk page tables for a virtual address and return pointer to the leaf entry.
 /// Returns null if any level has an invalid entry or if a block mapping is found
 /// before reaching L3. Only walks to L3 (4KB page) level.
-pub fn walk(root: *PageTable, vaddr: usize) ?*Pte {
-    if (!VirtAddr.isCanonical(vaddr)) return null;
+pub fn walk(root: *PageTable, vaddr: usize) ?*PageTableEntry {
+    if (!VirtualAddress.isCanonical(vaddr)) return null;
 
-    const va = VirtAddr.parse(vaddr);
+    const va = VirtualAddress.parse(vaddr);
 
     // Level 1
     const l1_entry = &root.entries[va.l1];
@@ -398,9 +398,9 @@ pub fn walk(root: *PageTable, vaddr: usize) ?*Pte {
 /// Handles block mappings at any level as well as page mappings.
 /// Returns null if address is not mapped.
 pub fn translate(root: *PageTable, vaddr: usize) ?usize {
-    if (!VirtAddr.isCanonical(vaddr)) return null;
+    if (!VirtualAddress.isCanonical(vaddr)) return null;
 
-    const va = VirtAddr.parse(vaddr);
+    const va = VirtualAddress.parse(vaddr);
 
     // Level 1
     const l1_entry = root.entries[va.l1];
@@ -432,9 +432,9 @@ pub fn translate(root: *PageTable, vaddr: usize) ?usize {
 pub fn mapPage(root: *PageTable, vaddr: usize, paddr: usize, flags: PageFlags) MapError!void {
     if ((vaddr & (PAGE_SIZE - 1)) != 0) return MapError.NotAligned;
     if ((paddr & (PAGE_SIZE - 1)) != 0) return MapError.NotAligned;
-    if (!VirtAddr.isCanonical(vaddr)) return MapError.NotCanonical;
+    if (!VirtualAddress.isCanonical(vaddr)) return MapError.NotCanonical;
 
-    const va = VirtAddr.parse(vaddr);
+    const va = VirtualAddress.parse(vaddr);
 
     // Level 1 - must be a table entry
     const l1_entry = root.entries[va.l1];
@@ -453,9 +453,9 @@ pub fn mapPage(root: *PageTable, vaddr: usize, paddr: usize, flags: PageFlags) M
     if (l3_entry.isValid()) return MapError.AlreadyMapped;
 
     if (flags.user) {
-        l3_entry.* = Pte.userPage(paddr, flags.write, flags.exec);
+        l3_entry.* = PageTableEntry.userPage(paddr, flags.write, flags.exec);
     } else {
-        l3_entry.* = Pte.kernelPage(paddr, flags.write, flags.exec);
+        l3_entry.* = PageTableEntry.kernelPage(paddr, flags.write, flags.exec);
     }
     storeBarrier();
 }
@@ -467,15 +467,15 @@ pub fn mapPage(root: *PageTable, vaddr: usize, paddr: usize, flags: PageFlags) M
 pub fn mapPageWithAlloc(root: *PageTable, vaddr: usize, paddr: usize, flags: PageFlags, allocator: std.mem.Allocator) MapError!void {
     if ((vaddr & (PAGE_SIZE - 1)) != 0) return MapError.NotAligned;
     if ((paddr & (PAGE_SIZE - 1)) != 0) return MapError.NotAligned;
-    if (!VirtAddr.isCanonical(vaddr)) return MapError.NotCanonical;
+    if (!VirtualAddress.isCanonical(vaddr)) return MapError.NotCanonical;
 
-    const va = VirtAddr.parse(vaddr);
+    const va = VirtualAddress.parse(vaddr);
 
     // Level 1 - allocate L2 table if needed
     var l1_entry = &root.entries[va.l1];
     if (!l1_entry.isValid()) {
         const l2_phys = allocPageTable(allocator) orelse return MapError.OutOfMemory;
-        l1_entry.* = Pte.table(l2_phys);
+        l1_entry.* = PageTableEntry.table(l2_phys);
         storeBarrier();
     } else if (!l1_entry.isTable()) {
         return MapError.SuperpageConflict;
@@ -486,7 +486,7 @@ pub fn mapPageWithAlloc(root: *PageTable, vaddr: usize, paddr: usize, flags: Pag
     var l2_entry = &l2_table.entries[va.l2];
     if (!l2_entry.isValid()) {
         const l3_phys = allocPageTable(allocator) orelse return MapError.OutOfMemory;
-        l2_entry.* = Pte.table(l3_phys);
+        l2_entry.* = PageTableEntry.table(l3_phys);
         storeBarrier();
     } else if (!l2_entry.isTable()) {
         return MapError.SuperpageConflict;
@@ -498,9 +498,9 @@ pub fn mapPageWithAlloc(root: *PageTable, vaddr: usize, paddr: usize, flags: Pag
     if (l3_entry.isValid()) return MapError.AlreadyMapped;
 
     if (flags.user) {
-        l3_entry.* = Pte.userPage(paddr, flags.write, flags.exec);
+        l3_entry.* = PageTableEntry.userPage(paddr, flags.write, flags.exec);
     } else {
-        l3_entry.* = Pte.kernelPage(paddr, flags.write, flags.exec);
+        l3_entry.* = PageTableEntry.kernelPage(paddr, flags.write, flags.exec);
     }
     storeBarrier();
 }
@@ -518,13 +518,13 @@ fn allocPageTable(allocator: std.mem.Allocator) ?usize {
 /// Does NOT flush TLB - caller must do that after unmapping (allows batching).
 /// TODO(smp): Caller must hold page table lock.
 pub fn unmapPage(root: *PageTable, vaddr: usize) UnmapError!usize {
-    if (!VirtAddr.isCanonical(vaddr)) return UnmapError.NotCanonical;
+    if (!VirtualAddress.isCanonical(vaddr)) return UnmapError.NotCanonical;
 
     const entry = walk(root, vaddr) orelse return UnmapError.NotMapped;
     if (!entry.isValid()) return UnmapError.NotMapped;
 
     const paddr = entry.physAddr();
-    entry.* = Pte.INVALID;
+    entry.* = PageTableEntry.INVALID;
     storeBarrier();
     return paddr;
 }
@@ -533,7 +533,7 @@ pub fn unmapPage(root: *PageTable, vaddr: usize) UnmapError!usize {
 /// Convenience wrapper when batching is not needed.
 pub fn unmapPageAndFlush(root: *PageTable, vaddr: usize) UnmapError!usize {
     const paddr = try unmapPage(root, vaddr);
-    Tlb.flushAddr(vaddr);
+    TranslationLookasideBuffer.flushAddr(vaddr);
     return paddr;
 }
 
@@ -560,7 +560,7 @@ pub fn init(kernel_phys_load: usize, dtb_ptr: usize) void {
     );
     instructionBarrier();
 
-    Tcr.write(Tcr.DEFAULT);
+    TranslationControlRegister.write(TranslationControlRegister.DEFAULT);
     instructionBarrier();
 
     // Calculate mapping to cover both kernel and DTB
@@ -572,21 +572,21 @@ pub fn init(kernel_phys_load: usize, dtb_ptr: usize) void {
     physmap_end_gb = end_gb;
 
     // TTBR0: Identity mapping (for boot continuation after MMU enable)
-    l1_table_low.entries[0] = Pte.deviceBlock(0); // MMIO (first GB)
+    l1_table_low.entries[0] = PageTableEntry.deviceBlock(0); // MMIO (first GB)
 
     var gb: usize = start_gb;
     while (gb < end_gb) : (gb += 1) {
         if (gb == 0) continue;
-        l1_table_low.entries[gb] = Pte.kernelBlock(gb << 30, true, true);
+        l1_table_low.entries[gb] = PageTableEntry.kernelBlock(gb << 30, true, true);
     }
 
     // TTBR1: Higher-half kernel mapping
-    l1_table_high.entries[0] = Pte.deviceBlock(0); // MMIO in higher-half
+    l1_table_high.entries[0] = PageTableEntry.deviceBlock(0); // MMIO in higher-half
 
     gb = start_gb;
     while (gb < end_gb) : (gb += 1) {
         if (gb == 0) continue;
-        l1_table_high.entries[gb] = Pte.kernelBlock(gb << 30, true, true);
+        l1_table_high.entries[gb] = PageTableEntry.kernelBlock(gb << 30, true, true);
     }
 
     // Set both translation table base registers
@@ -601,9 +601,9 @@ pub fn init(kernel_phys_load: usize, dtb_ptr: usize) void {
     instructionBarrier();
 
     // Use local TLBI before MMU enable (broadcast can fault when MMU is off)
-    Tlb.flushLocal();
+    TranslationLookasideBuffer.flushLocal();
 
-    Sctlr.enableMmu();
+    SystemControlRegister.enableMmu();
 }
 
 /// Expand physmap to cover all RAM. Called after DTB is readable.
@@ -616,11 +616,11 @@ pub fn expandPhysmap(ram_size: usize) void {
     var gb = physmap_end_gb;
     while (gb < new_end_gb) : (gb += 1) {
         if (gb == 0) continue;
-        l1_table_high.entries[gb] = Pte.kernelBlock(gb << 30, true, true);
+        l1_table_high.entries[gb] = PageTableEntry.kernelBlock(gb << 30, true, true);
     }
 
     if (new_end_gb > physmap_end_gb) {
-        Tlb.flushLocal(); // Local only - secondary cores not running yet
+        TranslationLookasideBuffer.flushLocal(); // Local only - secondary cores not running yet
         physmap_end_gb = new_end_gb;
     }
 }
@@ -636,7 +636,7 @@ pub fn disable() void {
         : [val] "r" (sctlr),
     );
     instructionBarrier();
-    Tlb.flushAll();
+    TranslationLookasideBuffer.flushAll();
 }
 
 /// Remove identity mapping after transitioning to higher-half.
@@ -646,100 +646,100 @@ pub fn removeIdentityMapping() void {
     const start_gb = stored_kernel_phys_load >> 30;
     const end_gb = physmap_end_gb;
 
-    l1_table_low.entries[0] = Pte.INVALID; // Clear MMIO identity mapping
+    l1_table_low.entries[0] = PageTableEntry.INVALID; // Clear MMIO identity mapping
 
     var gb: usize = start_gb;
     while (gb < end_gb) : (gb += 1) {
-        l1_table_low.entries[gb] = Pte.INVALID;
+        l1_table_low.entries[gb] = PageTableEntry.INVALID;
     }
 
-    Tlb.flushLocal();
+    TranslationLookasideBuffer.flushLocal();
 }
 
 /// Post-MMU initialization for ARM64. No-op since ARM64 doesn't need
 /// register adjustments after switching to virtual addresses.
 pub fn postMmuInit() void {}
 
-test "Pte size and layout" {
-    try std.testing.expectEqual(@as(usize, 8), @sizeOf(Pte));
-    try std.testing.expectEqual(@as(usize, 64), @bitSizeOf(Pte));
+test "PageTableEntry size and layout" {
+    try std.testing.expectEqual(@as(usize, 8), @sizeOf(PageTableEntry));
+    try std.testing.expectEqual(@as(usize, 64), @bitSizeOf(PageTableEntry));
 }
 
-test "Pte.INVALID is all zeros" {
-    const invalid: u64 = @bitCast(Pte.INVALID);
+test "PageTableEntry.INVALID is all zeros" {
+    const invalid: u64 = @bitCast(PageTableEntry.INVALID);
     try std.testing.expectEqual(@as(u64, 0), invalid);
 }
 
-test "Pte.table creates valid table entry" {
-    const desc = Pte.table(0x80000000);
+test "PageTableEntry.table creates valid table entry" {
+    const desc = PageTableEntry.table(0x80000000);
     try std.testing.expect(desc.isValid());
     try std.testing.expect(desc.isTable());
     try std.testing.expect(!desc.isBlock());
     try std.testing.expectEqual(@as(usize, 0x80000000), desc.physAddr());
 }
 
-test "Pte.kernelBlock creates valid block entry" {
-    const desc = Pte.kernelBlock(0x40000000, true, true);
+test "PageTableEntry.kernelBlock creates valid block entry" {
+    const desc = PageTableEntry.kernelBlock(0x40000000, true, true);
     try std.testing.expect(desc.isValid());
     try std.testing.expect(desc.isBlock());
     try std.testing.expect(!desc.ng);
     try std.testing.expect(desc.af);
 }
 
-test "Pte.deviceBlock has correct attributes" {
-    const desc = Pte.deviceBlock(0x09000000);
+test "PageTableEntry.deviceBlock has correct attributes" {
+    const desc = PageTableEntry.deviceBlock(0x09000000);
     try std.testing.expect(desc.isValid());
     try std.testing.expect(desc.isBlock());
-    try std.testing.expectEqual(@intFromEnum(MemAttr.device_nGnRnE), desc.attr_idx);
+    try std.testing.expectEqual(@intFromEnum(MemoryAttribute.device_nGnRnE), desc.attr_idx);
     try std.testing.expect(desc.pxn);
     try std.testing.expect(desc.uxn);
 }
 
-test "Pte.userPage creates non-global entry" {
-    const desc = Pte.userPage(0x1000, true, false);
+test "PageTableEntry.userPage creates non-global entry" {
+    const desc = PageTableEntry.userPage(0x1000, true, false);
     try std.testing.expect(desc.isValid());
     try std.testing.expect(desc.ng);
     try std.testing.expect(desc.ap1);
     try std.testing.expect(desc.uxn);
 }
 
-test "VirtAddr.parse extracts correct indices" {
-    const va = VirtAddr.parse(0x40080000);
+test "VirtualAddress.parse extracts correct indices" {
+    const va = VirtualAddress.parse(0x40080000);
     try std.testing.expectEqual(@as(u9, 1), va.l1);
     try std.testing.expectEqual(@as(u9, 0), va.l2);
     try std.testing.expectEqual(@as(u9, 128), va.l3);
     try std.testing.expectEqual(@as(u12, 0), va.offset);
 }
 
-test "VirtAddr.isUserRange for TTBR0 (39-bit VA)" {
-    try std.testing.expect(VirtAddr.isUserRange(0x0000_0000_0000_0000));
-    try std.testing.expect(VirtAddr.isUserRange(0x0000_007F_FFFF_FFFF));
-    try std.testing.expect(!VirtAddr.isUserRange(0x0000_0080_0000_0000));
+test "VirtualAddress.isUserRange for TTBR0 (39-bit VA)" {
+    try std.testing.expect(VirtualAddress.isUserRange(0x0000_0000_0000_0000));
+    try std.testing.expect(VirtualAddress.isUserRange(0x0000_007F_FFFF_FFFF));
+    try std.testing.expect(!VirtualAddress.isUserRange(0x0000_0080_0000_0000));
 }
 
-test "VirtAddr.isKernel for TTBR1 addresses" {
-    try std.testing.expect(VirtAddr.isKernel(0xFFFF_FF80_0000_0000));
-    try std.testing.expect(VirtAddr.isKernel(0xFFFF_FFFF_FFFF_FFFF));
-    try std.testing.expect(VirtAddr.isKernel(KERNEL_VIRT_BASE));
-    try std.testing.expect(!VirtAddr.isKernel(0x0000_0000_0000_0000));
-    try std.testing.expect(!VirtAddr.isKernel(0x0000_007F_FFFF_FFFF));
+test "VirtualAddress.isKernel for TTBR1 addresses" {
+    try std.testing.expect(VirtualAddress.isKernel(0xFFFF_FF80_0000_0000));
+    try std.testing.expect(VirtualAddress.isKernel(0xFFFF_FFFF_FFFF_FFFF));
+    try std.testing.expect(VirtualAddress.isKernel(KERNEL_VIRT_BASE));
+    try std.testing.expect(!VirtualAddress.isKernel(0x0000_0000_0000_0000));
+    try std.testing.expect(!VirtualAddress.isKernel(0x0000_007F_FFFF_FFFF));
 }
 
-test "VirtAddr.isCanonical accepts both ranges" {
-    try std.testing.expect(VirtAddr.isCanonical(0x0000_0000_0000_0000));
-    try std.testing.expect(VirtAddr.isCanonical(0x0000_007F_FFFF_FFFF));
-    try std.testing.expect(VirtAddr.isCanonical(0xFFFF_FF80_0000_0000));
-    try std.testing.expect(VirtAddr.isCanonical(0xFFFF_FFFF_FFFF_FFFF));
-    try std.testing.expect(!VirtAddr.isCanonical(0x0000_0080_0000_0000));
-    try std.testing.expect(!VirtAddr.isCanonical(0x8000_0000_0000_0000));
+test "VirtualAddress.isCanonical accepts both ranges" {
+    try std.testing.expect(VirtualAddress.isCanonical(0x0000_0000_0000_0000));
+    try std.testing.expect(VirtualAddress.isCanonical(0x0000_007F_FFFF_FFFF));
+    try std.testing.expect(VirtualAddress.isCanonical(0xFFFF_FF80_0000_0000));
+    try std.testing.expect(VirtualAddress.isCanonical(0xFFFF_FFFF_FFFF_FFFF));
+    try std.testing.expect(!VirtualAddress.isCanonical(0x0000_0080_0000_0000));
+    try std.testing.expect(!VirtualAddress.isCanonical(0x8000_0000_0000_0000));
 }
 
 test "PageTable size matches page size" {
     try std.testing.expectEqual(PAGE_SIZE, @sizeOf(PageTable));
 }
 
-test "Tcr.DEFAULT produces valid configuration" {
-    const tcr = Tcr.DEFAULT;
+test "TranslationControlRegister.DEFAULT produces valid configuration" {
+    const tcr = TranslationControlRegister.DEFAULT;
     try std.testing.expectEqual(@as(u64, 25), tcr & 0x3F);
     try std.testing.expectEqual(@as(u64, 25), (tcr >> 16) & 0x3F);
     try std.testing.expectEqual(@as(u64, 0b10), (tcr >> 12) & 0x3);
@@ -747,7 +747,7 @@ test "Tcr.DEFAULT produces valid configuration" {
 
 test "translate handles 1GB block mappings" {
     var root = PageTable.EMPTY;
-    root.entries[1] = Pte.kernelBlock(0x40000000, true, true);
+    root.entries[1] = PageTableEntry.kernelBlock(0x40000000, true, true);
 
     const pa = translate(&root, 0x40123456);
     try std.testing.expectEqual(@as(?usize, 0x40123456), pa);
@@ -756,7 +756,7 @@ test "translate handles 1GB block mappings" {
 
 test "translate returns null for non-canonical addresses" {
     var root = PageTable.EMPTY;
-    root.entries[1] = Pte.kernelBlock(0x40000000, true, true);
+    root.entries[1] = PageTableEntry.kernelBlock(0x40000000, true, true);
     try std.testing.expectEqual(@as(?usize, null), translate(&root, 0x0000_0080_0000_0000));
 }
 
@@ -774,7 +774,7 @@ test "mapPage returns NotCanonical for non-canonical addresses" {
 
 test "mapPage returns SuperpageConflict for block mappings" {
     var root = PageTable.EMPTY;
-    root.entries[1] = Pte.kernelBlock(0x40000000, true, true);
+    root.entries[1] = PageTableEntry.kernelBlock(0x40000000, true, true);
     try std.testing.expectError(MapError.SuperpageConflict, mapPage(&root, 0x40001000, 0x80001000, .{}));
 }
 
@@ -785,13 +785,13 @@ test "mapPage returns TableNotPresent without intermediate tables" {
 
 test "walk returns null for unmapped address" {
     var root = PageTable.EMPTY;
-    try std.testing.expectEqual(@as(?*Pte, null), walk(&root, 0x40001000));
+    try std.testing.expectEqual(@as(?*PageTableEntry, null), walk(&root, 0x40001000));
 }
 
 test "walk returns null for block mapping" {
     var root = PageTable.EMPTY;
-    root.entries[1] = Pte.kernelBlock(0x40000000, true, true);
-    try std.testing.expectEqual(@as(?*Pte, null), walk(&root, 0x40001000));
+    root.entries[1] = PageTableEntry.kernelBlock(0x40000000, true, true);
+    try std.testing.expectEqual(@as(?*PageTableEntry, null), walk(&root, 0x40001000));
 }
 
 test "physToVirt adds KERNEL_VIRT_BASE" {

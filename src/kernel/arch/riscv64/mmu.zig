@@ -54,7 +54,7 @@ pub inline fn virtToPhys(vaddr: usize) usize {
 /// Sv48 Page Table Entry (8 bytes).
 /// Leaf vs branch: if any of read/write/execute set, it's a leaf (final translation).
 /// If valid=1 and read=write=execute=0, it's a branch (pointer to next level).
-pub const Pte = packed struct(u64) {
+pub const PageTableEntry = packed struct(u64) {
     v: bool = false, // Valid
     r: bool = false, // Read permission
     w: bool = false, // Write permission
@@ -67,36 +67,36 @@ pub const Pte = packed struct(u64) {
     ppn: u44 = 0, // Physical page number
     reserved: u10 = 0, // Reserved, must be zero
 
-    pub const INVALID = Pte{};
+    pub const INVALID = PageTableEntry{};
 
     /// Check if this entry is valid (present in page table).
-    pub inline fn isValid(self: Pte) bool {
+    pub inline fn isValid(self: PageTableEntry) bool {
         return self.v;
     }
 
     /// Check if this is a leaf entry (final translation with permissions).
-    pub inline fn isLeaf(self: Pte) bool {
+    pub inline fn isLeaf(self: PageTableEntry) bool {
         return self.r or self.w or self.x;
     }
 
     /// Check if this is a branch entry (pointer to next level table).
-    pub inline fn isBranch(self: Pte) bool {
+    pub inline fn isBranch(self: PageTableEntry) bool {
         return self.v and !self.isLeaf();
     }
 
     /// Extract the physical address from this entry.
-    pub inline fn physAddr(self: Pte) usize {
+    pub inline fn physAddr(self: PageTableEntry) usize {
         return @as(usize, self.ppn) << PAGE_SHIFT;
     }
 
     /// Create a branch entry pointing to the next level page table.
-    pub fn branch(phys_addr: usize) Pte {
+    pub fn branch(phys_addr: usize) PageTableEntry {
         return .{ .v = true, .ppn = @truncate(phys_addr >> PAGE_SHIFT) };
     }
 
     /// Kernel leaf entry. Pre-sets A/D bits to avoid page faults on first access
     /// since we don't rely on Svadu hardware support.
-    pub fn kernelLeaf(phys_addr: usize, write: bool, exec: bool) Pte {
+    pub fn kernelLeaf(phys_addr: usize, write: bool, exec: bool) PageTableEntry {
         return .{
             .v = true,
             .r = true, // W=1 R=0 is reserved
@@ -110,7 +110,7 @@ pub const Pte = packed struct(u64) {
     }
 
     /// User leaf entry. Sets user-accessible bit and pre-sets A/D bits.
-    pub fn userLeaf(phys_addr: usize, write: bool, exec: bool) Pte {
+    pub fn userLeaf(phys_addr: usize, write: bool, exec: bool) PageTableEntry {
         return .{
             .v = true,
             .r = true, // W=1 R=0 is reserved
@@ -125,22 +125,22 @@ pub const Pte = packed struct(u64) {
 };
 
 comptime {
-    if (@sizeOf(Pte) != 8) @compileError("PTE must be 8 bytes");
+    if (@sizeOf(PageTableEntry) != 8) @compileError("PTE must be 8 bytes");
 }
 
 /// Page table containing 512 entries (one 4KB page).
 pub const PageTable = struct {
-    entries: [ENTRIES_PER_TABLE]Pte,
+    entries: [ENTRIES_PER_TABLE]PageTableEntry,
 
-    pub const EMPTY = PageTable{ .entries = [_]Pte{Pte.INVALID} ** ENTRIES_PER_TABLE };
+    pub const EMPTY = PageTable{ .entries = [_]PageTableEntry{PageTableEntry.INVALID} ** ENTRIES_PER_TABLE };
 
     /// Read entry at given index.
-    pub inline fn get(self: *const PageTable, index: usize) Pte {
+    pub inline fn get(self: *const PageTable, index: usize) PageTableEntry {
         return self.entries[index];
     }
 
     /// Write entry at given index.
-    pub inline fn set(self: *PageTable, index: usize, pte: Pte) void {
+    pub inline fn set(self: *PageTable, index: usize, pte: PageTableEntry) void {
         self.entries[index] = pte;
     }
 };
@@ -150,7 +150,7 @@ comptime {
 }
 
 /// Sv48 virtual address parsing into page table indices.
-pub const VirtAddr = struct {
+pub const VirtualAddress = struct {
     vpn3: u9, // Bits 47:39 (L3, root)
     vpn2: u9, // Bits 38:30 (L2)
     vpn1: u9, // Bits 29:21 (L1)
@@ -158,7 +158,7 @@ pub const VirtAddr = struct {
     offset: u12,
 
     /// Parse a virtual address into its component indices.
-    pub inline fn parse(vaddr: usize) VirtAddr {
+    pub inline fn parse(vaddr: usize) VirtualAddress {
         return .{
             .vpn3 = @truncate((vaddr >> 39) & 0x1FF),
             .vpn2 = @truncate((vaddr >> 30) & 0x1FF),
@@ -176,7 +176,7 @@ pub const VirtAddr = struct {
 };
 
 /// SATP register (mode + address space ID + root physical page number).
-pub const Satp = packed struct(u64) {
+pub const SupervisorAddressTranslation = packed struct(u64) {
     ppn: u44, // Physical page number of root table
     asid: u16, // Address space identifier
     mode: u4, // Translation mode (0=bare, 8=Sv39, 9=Sv48)
@@ -186,24 +186,24 @@ pub const Satp = packed struct(u64) {
     pub const MODE_SV48: u4 = 9;
 
     /// Create SATP value for Sv48 mode with given root table and address space ID.
-    pub fn sv48(root_phys: usize, asid: u16) Satp {
+    pub fn sv48(root_phys: usize, asid: u16) SupervisorAddressTranslation {
         return .{ .ppn = @truncate(root_phys >> PAGE_SHIFT), .asid = asid, .mode = MODE_SV48 };
     }
 
     /// Create SATP value for bare mode (MMU disabled).
-    pub fn bare() Satp {
+    pub fn bare() SupervisorAddressTranslation {
         return .{ .ppn = 0, .asid = 0, .mode = MODE_BARE };
     }
 
     /// Read current SATP register value.
-    pub fn read() Satp {
+    pub fn read() SupervisorAddressTranslation {
         return @bitCast(asm volatile ("csrr %[ret], satp"
             : [ret] "=r" (-> u64),
         ));
     }
 
     /// Write SATP register to change address translation mode.
-    pub fn write(self: Satp) void {
+    pub fn write(self: SupervisorAddressTranslation) void {
         asm volatile ("csrw satp, %[val]"
             :
             : [val] "r" (@as(u64, @bitCast(self))),
@@ -212,7 +212,7 @@ pub const Satp = packed struct(u64) {
 };
 
 comptime {
-    if (@sizeOf(Satp) != 8) @compileError("SATP must be 8 bytes");
+    if (@sizeOf(SupervisorAddressTranslation) != 8) @compileError("SATP must be 8 bytes");
 }
 
 /// Memory barrier for page table updates.
@@ -224,7 +224,7 @@ inline fn fence() void {
 // Note: sfence.vma is local-only on RISC-V.
 // TODO(smp): After secondary harts are online, send IPI via SBI for TLB shootdown.
 
-pub const Tlb = struct {
+pub const TranslationLookasideBuffer = struct {
     /// Invalidate all cached address translations (local hart only).
     /// TODO(smp): Send IPI to other harts to trigger remote sfence.
     pub inline fn flushAll() void {
@@ -274,10 +274,10 @@ pub const Tlb = struct {
 /// Walk page tables for a virtual address and return pointer to the leaf entry.
 /// Returns null if any level has an invalid entry or if a superpage is found
 /// before reaching level 0. Only walks to level 0 (4KB page).
-pub fn walk(root: *PageTable, vaddr: usize) ?*Pte {
-    if (!VirtAddr.isCanonical(vaddr)) return null;
+pub fn walk(root: *PageTable, vaddr: usize) ?*PageTableEntry {
+    if (!VirtualAddress.isCanonical(vaddr)) return null;
 
-    const va = VirtAddr.parse(vaddr);
+    const va = VirtualAddress.parse(vaddr);
 
     // Level 3 (root)
     const l3_entry = &root.entries[va.vpn3];
@@ -305,9 +305,9 @@ pub fn walk(root: *PageTable, vaddr: usize) ?*Pte {
 /// Handles superpages at any level as well as regular pages.
 /// Returns null if address is not mapped.
 pub fn translate(root: *PageTable, vaddr: usize) ?usize {
-    if (!VirtAddr.isCanonical(vaddr)) return null;
+    if (!VirtualAddress.isCanonical(vaddr)) return null;
 
-    const va = VirtAddr.parse(vaddr);
+    const va = VirtualAddress.parse(vaddr);
     const TERAPAGE_MASK: usize = (1 << 39) - 1;
 
     // Level 3 (root)
@@ -349,9 +349,9 @@ pub fn translate(root: *PageTable, vaddr: usize) ?usize {
 pub fn mapPage(root: *PageTable, vaddr: usize, paddr: usize, flags: PageFlags) MapError!void {
     if ((vaddr & (PAGE_SIZE - 1)) != 0) return MapError.NotAligned;
     if ((paddr & (PAGE_SIZE - 1)) != 0) return MapError.NotAligned;
-    if (!VirtAddr.isCanonical(vaddr)) return MapError.NotCanonical;
+    if (!VirtualAddress.isCanonical(vaddr)) return MapError.NotCanonical;
 
-    const va = VirtAddr.parse(vaddr);
+    const va = VirtualAddress.parse(vaddr);
 
     // Level 3 (root) - must be a branch entry
     const l3_entry = root.entries[va.vpn3];
@@ -376,9 +376,9 @@ pub fn mapPage(root: *PageTable, vaddr: usize, paddr: usize, flags: PageFlags) M
     if (l0_entry.isValid()) return MapError.AlreadyMapped;
 
     if (flags.user) {
-        l0_entry.* = Pte.userLeaf(paddr, flags.write, flags.exec);
+        l0_entry.* = PageTableEntry.userLeaf(paddr, flags.write, flags.exec);
     } else {
-        l0_entry.* = Pte.kernelLeaf(paddr, flags.write, flags.exec);
+        l0_entry.* = PageTableEntry.kernelLeaf(paddr, flags.write, flags.exec);
     }
     fence();
 }
@@ -391,15 +391,15 @@ pub fn mapPage(root: *PageTable, vaddr: usize, paddr: usize, flags: PageFlags) M
 pub fn mapPageWithAlloc(root: *PageTable, vaddr: usize, paddr: usize, flags: PageFlags, allocator: std.mem.Allocator) MapError!void {
     if ((vaddr & (PAGE_SIZE - 1)) != 0) return MapError.NotAligned;
     if ((paddr & (PAGE_SIZE - 1)) != 0) return MapError.NotAligned;
-    if (!VirtAddr.isCanonical(vaddr)) return MapError.NotCanonical;
+    if (!VirtualAddress.isCanonical(vaddr)) return MapError.NotCanonical;
 
-    const va = VirtAddr.parse(vaddr);
+    const va = VirtualAddress.parse(vaddr);
 
     // Level 3 (root) - allocate L2 table if needed
     var l3_entry = &root.entries[va.vpn3];
     if (!l3_entry.isValid()) {
         const l2_phys = allocPageTable(allocator) orelse return MapError.OutOfMemory;
-        l3_entry.* = Pte.branch(l2_phys);
+        l3_entry.* = PageTableEntry.branch(l2_phys);
         fence();
     } else if (l3_entry.isLeaf()) {
         return MapError.SuperpageConflict;
@@ -410,7 +410,7 @@ pub fn mapPageWithAlloc(root: *PageTable, vaddr: usize, paddr: usize, flags: Pag
     var l2_entry = &l2_table.entries[va.vpn2];
     if (!l2_entry.isValid()) {
         const l1_phys = allocPageTable(allocator) orelse return MapError.OutOfMemory;
-        l2_entry.* = Pte.branch(l1_phys);
+        l2_entry.* = PageTableEntry.branch(l1_phys);
         fence();
     } else if (l2_entry.isLeaf()) {
         return MapError.SuperpageConflict;
@@ -421,7 +421,7 @@ pub fn mapPageWithAlloc(root: *PageTable, vaddr: usize, paddr: usize, flags: Pag
     var l1_entry = &l1_table.entries[va.vpn1];
     if (!l1_entry.isValid()) {
         const l0_phys = allocPageTable(allocator) orelse return MapError.OutOfMemory;
-        l1_entry.* = Pte.branch(l0_phys);
+        l1_entry.* = PageTableEntry.branch(l0_phys);
         fence();
     } else if (l1_entry.isLeaf()) {
         return MapError.SuperpageConflict;
@@ -433,9 +433,9 @@ pub fn mapPageWithAlloc(root: *PageTable, vaddr: usize, paddr: usize, flags: Pag
     if (l0_entry.isValid()) return MapError.AlreadyMapped;
 
     if (flags.user) {
-        l0_entry.* = Pte.userLeaf(paddr, flags.write, flags.exec);
+        l0_entry.* = PageTableEntry.userLeaf(paddr, flags.write, flags.exec);
     } else {
-        l0_entry.* = Pte.kernelLeaf(paddr, flags.write, flags.exec);
+        l0_entry.* = PageTableEntry.kernelLeaf(paddr, flags.write, flags.exec);
     }
     fence();
 }
@@ -454,13 +454,13 @@ fn allocPageTable(allocator: std.mem.Allocator) ?usize {
 ///
 /// TODO(smp): Caller must hold page table lock.
 pub fn unmapPage(root: *PageTable, vaddr: usize) UnmapError!usize {
-    if (!VirtAddr.isCanonical(vaddr)) return UnmapError.NotCanonical;
+    if (!VirtualAddress.isCanonical(vaddr)) return UnmapError.NotCanonical;
 
     const entry = walk(root, vaddr) orelse return UnmapError.NotMapped;
     if (!entry.isValid()) return UnmapError.NotMapped;
 
     const paddr = entry.physAddr();
-    entry.* = Pte.INVALID;
+    entry.* = PageTableEntry.INVALID;
     fence();
     return paddr;
 }
@@ -469,7 +469,7 @@ pub fn unmapPage(root: *PageTable, vaddr: usize) UnmapError!usize {
 /// Convenience wrapper when batching is not needed.
 pub fn unmapPageAndFlush(root: *PageTable, vaddr: usize) UnmapError!usize {
     const paddr = try unmapPage(root, vaddr);
-    Tlb.flushAddr(vaddr);
+    TranslationLookasideBuffer.flushAddr(vaddr);
     return paddr;
 }
 
@@ -507,30 +507,30 @@ pub fn init(kernel_phys_load: usize, dtb_ptr: usize) void {
     physmap_end_gb = end_gb;
 
     // L2 identity table: gigapages for boot continuation after MMU enable
-    l2_identity_table.entries[0] = Pte.kernelLeaf(0, true, false); // MMIO (first GB)
+    l2_identity_table.entries[0] = PageTableEntry.kernelLeaf(0, true, false); // MMIO (first GB)
 
     var gb: usize = start_gb;
     while (gb < end_gb) : (gb += 1) {
         if (gb == 0) continue;
-        l2_identity_table.entries[gb] = Pte.kernelLeaf(gb << 30, true, true);
+        l2_identity_table.entries[gb] = PageTableEntry.kernelLeaf(gb << 30, true, true);
     }
 
     // L2 physmap table: gigapages for kernel higher-half
-    l2_physmap_table.entries[0] = Pte.kernelLeaf(0, true, false); // MMIO in higher-half
+    l2_physmap_table.entries[0] = PageTableEntry.kernelLeaf(0, true, false); // MMIO in higher-half
 
     gb = start_gb;
     while (gb < end_gb) : (gb += 1) {
         if (gb == 0) continue;
-        l2_physmap_table.entries[gb] = Pte.kernelLeaf(gb << 30, true, true);
+        l2_physmap_table.entries[gb] = PageTableEntry.kernelLeaf(gb << 30, true, true);
     }
 
     // L3 root table: branches to L2 tables
-    root_table.entries[0] = Pte.branch(@intFromPtr(&l2_identity_table)); // Identity
-    root_table.entries[KERNEL_VPN3] = Pte.branch(@intFromPtr(&l2_physmap_table)); // Kernel
+    root_table.entries[0] = PageTableEntry.branch(@intFromPtr(&l2_identity_table)); // Identity
+    root_table.entries[KERNEL_VPN3] = PageTableEntry.branch(@intFromPtr(&l2_physmap_table)); // Kernel
 
     fence();
-    Satp.sv48(@intFromPtr(&root_table), 0).write();
-    Tlb.flushAll();
+    SupervisorAddressTranslation.sv48(@intFromPtr(&root_table), 0).write();
+    TranslationLookasideBuffer.flushAll();
 }
 
 /// Expand physmap to cover all RAM. Called after DTB is readable.
@@ -544,11 +544,11 @@ pub fn expandPhysmap(ram_size: usize) void {
     var gb = physmap_end_gb;
     while (gb < new_end_gb) : (gb += 1) {
         if (gb == 0) continue;
-        l2_physmap_table.entries[gb] = Pte.kernelLeaf(gb << 30, true, true);
+        l2_physmap_table.entries[gb] = PageTableEntry.kernelLeaf(gb << 30, true, true);
     }
 
     if (new_end_gb > physmap_end_gb) {
-        Tlb.flushAll();
+        TranslationLookasideBuffer.flushAll();
         physmap_end_gb = new_end_gb;
     }
 }
@@ -556,16 +556,16 @@ pub fn expandPhysmap(ram_size: usize) void {
 /// Disable MMU. Only safe if running from identity-mapped region.
 pub fn disable() void {
     fence();
-    Satp.bare().write();
-    Tlb.flushAll();
+    SupervisorAddressTranslation.bare().write();
+    TranslationLookasideBuffer.flushAll();
 }
 
 /// Remove identity mapping after transitioning to higher-half.
 /// Clears L3 entry 0 which points to l2_identity_table (the entire lower-half).
 /// Improves security by preventing kernel access via low addresses.
 pub fn removeIdentityMapping() void {
-    root_table.entries[0] = Pte.INVALID;
-    Tlb.flushAll();
+    root_table.entries[0] = PageTableEntry.INVALID;
+    TranslationLookasideBuffer.flushAll();
 }
 
 /// Post-MMU initialization for RISC-V.
@@ -580,26 +580,26 @@ pub fn postMmuInit() void {
     );
 }
 
-test "Pte size and layout" {
-    try std.testing.expectEqual(@as(usize, 8), @sizeOf(Pte));
-    try std.testing.expectEqual(@as(usize, 64), @bitSizeOf(Pte));
+test "PageTableEntry size and layout" {
+    try std.testing.expectEqual(@as(usize, 8), @sizeOf(PageTableEntry));
+    try std.testing.expectEqual(@as(usize, 64), @bitSizeOf(PageTableEntry));
 }
 
-test "Pte.INVALID is all zeros" {
-    const invalid: u64 = @bitCast(Pte.INVALID);
+test "PageTableEntry.INVALID is all zeros" {
+    const invalid: u64 = @bitCast(PageTableEntry.INVALID);
     try std.testing.expectEqual(@as(u64, 0), invalid);
 }
 
-test "Pte.branch creates valid branch entry" {
-    const pte = Pte.branch(0x80000000);
+test "PageTableEntry.branch creates valid branch entry" {
+    const pte = PageTableEntry.branch(0x80000000);
     try std.testing.expect(pte.isValid());
     try std.testing.expect(pte.isBranch());
     try std.testing.expect(!pte.isLeaf());
     try std.testing.expectEqual(@as(usize, 0x80000000), pte.physAddr());
 }
 
-test "Pte.kernelLeaf creates valid leaf entry" {
-    const pte = Pte.kernelLeaf(0x80200000, true, true);
+test "PageTableEntry.kernelLeaf creates valid leaf entry" {
+    const pte = PageTableEntry.kernelLeaf(0x80200000, true, true);
     try std.testing.expect(pte.isValid());
     try std.testing.expect(pte.isLeaf());
     try std.testing.expect(!pte.isBranch());
@@ -610,8 +610,8 @@ test "Pte.kernelLeaf creates valid leaf entry" {
     try std.testing.expect(!pte.u);
 }
 
-test "Pte.userLeaf creates valid user entry" {
-    const pte = Pte.userLeaf(0x1000, false, false);
+test "PageTableEntry.userLeaf creates valid user entry" {
+    const pte = PageTableEntry.userLeaf(0x1000, false, false);
     try std.testing.expect(pte.isValid());
     try std.testing.expect(pte.isLeaf());
     try std.testing.expect(pte.r);
@@ -619,9 +619,9 @@ test "Pte.userLeaf creates valid user entry" {
     try std.testing.expect(!pte.g);
 }
 
-test "VirtAddr.parse extracts correct indices" {
+test "VirtualAddress.parse extracts correct indices" {
     // Low address: 0x80200000 = 2GB + 2MB
-    const va = VirtAddr.parse(0x80200000);
+    const va = VirtualAddress.parse(0x80200000);
     try std.testing.expectEqual(@as(u9, 0), va.vpn3);
     try std.testing.expectEqual(@as(u9, 2), va.vpn2);
     try std.testing.expectEqual(@as(u9, 1), va.vpn1);
@@ -629,31 +629,31 @@ test "VirtAddr.parse extracts correct indices" {
     try std.testing.expectEqual(@as(u12, 0), va.offset);
 
     // Kernel address
-    const kva = VirtAddr.parse(KERNEL_VIRT_BASE + 0x80200000);
+    const kva = VirtualAddress.parse(KERNEL_VIRT_BASE + 0x80200000);
     try std.testing.expectEqual(@as(u9, 256), kva.vpn3); // KERNEL_VPN3
     try std.testing.expectEqual(@as(u9, 2), kva.vpn2);
     try std.testing.expectEqual(@as(u9, 1), kva.vpn1);
     try std.testing.expectEqual(@as(u9, 0), kva.vpn0);
 }
 
-test "VirtAddr.isCanonical validates addresses" {
+test "VirtualAddress.isCanonical validates addresses" {
     // Sv48: canonical if bits 63:47 are all same as bit 47
     // Lower canonical: 0 to 0x7FFF_FFFF_FFFF (128TB - 1)
-    try std.testing.expect(VirtAddr.isCanonical(0x0));
-    try std.testing.expect(VirtAddr.isCanonical(0x7FFF_FFFF_FFFF)); // Max lower canonical
+    try std.testing.expect(VirtualAddress.isCanonical(0x0));
+    try std.testing.expect(VirtualAddress.isCanonical(0x7FFF_FFFF_FFFF)); // Max lower canonical
 
     // Upper canonical: 0xFFFF_8000_0000_0000 to max
-    try std.testing.expect(VirtAddr.isCanonical(KERNEL_VIRT_BASE));
-    try std.testing.expect(VirtAddr.isCanonical(0xFFFF_FFFF_FFFF_FFFF));
+    try std.testing.expect(VirtualAddress.isCanonical(KERNEL_VIRT_BASE));
+    try std.testing.expect(VirtualAddress.isCanonical(0xFFFF_FFFF_FFFF_FFFF));
 
     // Non-canonical (hole)
-    try std.testing.expect(!VirtAddr.isCanonical(0x8000_0000_0000)); // Just above lower
-    try std.testing.expect(!VirtAddr.isCanonical(0xFFFF_7FFF_FFFF_FFFF)); // Just below upper
+    try std.testing.expect(!VirtualAddress.isCanonical(0x8000_0000_0000)); // Just above lower
+    try std.testing.expect(!VirtualAddress.isCanonical(0xFFFF_7FFF_FFFF_FFFF)); // Just below upper
 }
 
-test "Satp.sv48 creates correct value" {
-    const satp = Satp.sv48(0x80000000, 5);
-    try std.testing.expectEqual(@as(u4, Satp.MODE_SV48), satp.mode);
+test "SupervisorAddressTranslation.sv48 creates correct value" {
+    const satp = SupervisorAddressTranslation.sv48(0x80000000, 5);
+    try std.testing.expectEqual(@as(u4, SupervisorAddressTranslation.MODE_SV48), satp.mode);
     try std.testing.expectEqual(@as(u16, 5), satp.asid);
     try std.testing.expectEqual(@as(u44, 0x80000), satp.ppn);
 }
@@ -665,7 +665,7 @@ test "PageTable size matches page size" {
 test "translate handles terapage mappings" {
     // Sv48: terapage at L3 (512GB)
     var root = PageTable.EMPTY;
-    root.entries[1] = Pte.kernelLeaf(0x8000000000, true, true); // 512GB terapage at vpn3=1
+    root.entries[1] = PageTableEntry.kernelLeaf(0x8000000000, true, true); // 512GB terapage at vpn3=1
 
     // Address with vpn3=1 maps through terapage
     const pa = translate(&root, 0x8000123456);
@@ -696,7 +696,7 @@ test "mapPage returns NotCanonical for non-canonical addresses" {
 test "mapPage returns SuperpageConflict for terapage mappings" {
     // Sv48: terapage at L3 (512GB)
     var root = PageTable.EMPTY;
-    root.entries[1] = Pte.kernelLeaf(0x8000000000, true, true); // 512GB terapage at vpn3=1
+    root.entries[1] = PageTableEntry.kernelLeaf(0x8000000000, true, true); // 512GB terapage at vpn3=1
 
     // Try to map 4KB page within the terapage
     try std.testing.expectError(MapError.SuperpageConflict, mapPage(&root, 0x8000001000, 0x9000001000, .{}));
@@ -709,16 +709,16 @@ test "mapPage returns TableNotPresent without intermediate tables" {
 
 test "walk returns null for unmapped address" {
     var root = PageTable.EMPTY;
-    try std.testing.expectEqual(@as(?*Pte, null), walk(&root, 0x80001000));
+    try std.testing.expectEqual(@as(?*PageTableEntry, null), walk(&root, 0x80001000));
 }
 
 test "walk returns null for terapage mapping" {
     // Sv48: terapage at L3 (not walkable to L0)
     var root = PageTable.EMPTY;
-    root.entries[1] = Pte.kernelLeaf(0x8000000000, true, true); // 512GB terapage at vpn3=1
+    root.entries[1] = PageTableEntry.kernelLeaf(0x8000000000, true, true); // 512GB terapage at vpn3=1
 
     // Walk stops at terapage, returns null (no L0 entry)
-    try std.testing.expectEqual(@as(?*Pte, null), walk(&root, 0x8000001000));
+    try std.testing.expectEqual(@as(?*PageTableEntry, null), walk(&root, 0x8000001000));
 }
 
 test "physToVirt adds KERNEL_VIRT_BASE" {
