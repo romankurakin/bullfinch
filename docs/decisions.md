@@ -100,3 +100,48 @@ CPUs, simpler bookkeeping for fixed-size objects.
 
 **Alignment:** Cache-line (64 bytes) over natural alignment. Wastes memory but
 prevents false sharing on SMP—subtle bugs not worth the savings.
+
+---
+
+## Rung 8: Task Structures and Scheduler
+
+**Thread struct:** Minimal fields over premature abstraction. Adding a field
+later is trivial.
+
+**Scheduler:** Fair scheduling over round-robin or priority queues. Weight-based
+vruntime avoids starvation without complex rules. O(n) list scan now; optimize
+to min-heap at Tickless Scheduling if needed.
+
+**Preemption:** Preemptive from start over cooperative-first. Timer works,
+catches concurrency bugs early.
+
+**IPC field:** `blocked_on` now over adding at Synchronous IPC. Enables Liedtke
+direct process switch. 8 bytes cost, avoids later refactor.
+
+**Single-wait:** One wait pointer over wait block array. Multi-wait via
+notification binding over Port object. Thread receives on
+endpoint OR bound notification—2 primitives instead of 3.
+
+**Rung 8 structs:**
+
+```zig
+const Process = struct { id: ProcessId, threads: ?*Thread };
+
+const Thread = struct {
+    id: ThreadId,
+    process: *Process,
+    state: State,
+    context: arch.Context,
+    trap_frame: *TrapFrame,
+    kernel_stack: [*]u8,
+    sched_next: ?*Thread,
+    blocked_on: ?*WaitQueue,
+    weight: u32,
+    virtual_runtime: u64,
+};
+```
+
+**Evolution:** +page_table/asid (Per-Task VM), +cpu (SMP), +sched_node (Tickless),
++bound_notification (Async), +exception_channel (Faults).
+
+---

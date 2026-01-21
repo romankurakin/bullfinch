@@ -16,24 +16,23 @@ Capabilities-based security. WebAssembly userspace.
 - [ ] Rung 9: Per-Task Virtual Memory
 - [ ] Rung 10: Symmetric Multiprocessing
 - [ ] Rung 11: Tickless Scheduling
-- [ ] Rung 12: Kernel Object Model
-- [ ] Rung 13: Handle Tables
-- [ ] Rung 14: Rights and Validation
-- [ ] Rung 15: Derivation and Revocation
-- [ ] Rung 16: Memory Objects (VMO)
-- [ ] Rung 17: Address Space Management (VMAR)
-- [ ] Rung 18: Synchronous IPC
-- [ ] Rung 19: Handle Transfer
-- [ ] Rung 20: Async Notifications
-- [ ] Rung 21: Fault Handling
-- [ ] Rung 22: Hardware IRQ Objects
-- [ ] Rung 23: Memory Sharing
-- [ ] Rung 24: Process Creation
-- [ ] Rung 25: Initial Bootstrap
-- [ ] Rung 26: Process Manager
-- [ ] Rung 27: Device Manager
-- [ ] Rung 28: Filesystem Server
-- [ ] Rung 29: WASM Integration
+- [ ] Rung 12: Handle Tables
+- [ ] Rung 13: Rights and Validation
+- [ ] Rung 14: Derivation and Revocation
+- [ ] Rung 15: Memory Objects (VMO)
+- [ ] Rung 16: Address Space Management (VMAR)
+- [ ] Rung 17: Synchronous IPC
+- [ ] Rung 18: Handle Transfer
+- [ ] Rung 19: Async Notifications
+- [ ] Rung 20: Fault Handling
+- [ ] Rung 21: Hardware IRQ Objects
+- [ ] Rung 22: Memory Sharing
+- [ ] Rung 23: Process Creation
+- [ ] Rung 24: Initial Bootstrap
+- [ ] Rung 25: Process Manager
+- [ ] Rung 26: Device Manager
+- [ ] Rung 27: Filesystem Server
+- [ ] Rung 28: WASM Integration
 
 ---
 
@@ -167,8 +166,9 @@ page allocator for multi-page objects (stacks).
 
 ### Rung 8: Task Structures and Scheduler
 
-**Implement:** Task/thread data structures, per-arch register save sets, context
-switch, round-robin scheduler, preemption via timer interrupts.
+**Implement:** Thread and Process structs (minimal kernel-side), per-arch
+register save sets, context switch, fair scheduler (weight-based vruntime),
+preemption via timer interrupts.
 
 **Questions:**
 
@@ -180,9 +180,9 @@ switch, round-robin scheduler, preemption via timer interrupts.
 
 - OSTEP Chapter 4 (Process), Chapter 7 (Scheduling)
 - OSDI3 Section 2.1 (processes), Section 2.4 (scheduling)
-- MINIX: priority queues in kernel with policy delegated to userspace scheduler
-- Zircon: fair scheduler based on weighted fair queuing, plus deadline profiles
-- xv6: struct proc, scheduler, and swtch for minimal context switch
+- xv6: struct proc, struct context, swtch.S for minimal context switch
+- MINIX: struct proc with priority queues, policy delegated to userspace
+- Zircon: Thread as kernel object, fair scheduler with weighted fair queuing
 
 ### Rung 9: Per-Task Virtual Memory
 
@@ -244,23 +244,7 @@ periodic. Per-CPU timer management.
 
 ## Phase 3: Capability System
 
-### Rung 12: Kernel Object Model
-
-**Implement:** Reference-counted kernel objects, common object header, destroy
-on zero references.
-
-**Questions:**
-
-- Single object type enum or vtable-style dispatch?
-- Object debugging/introspection?
-
-**Research:**
-
-- Zircon: kernel objects are reference-counted with explicit creation syscalls
-- seL4: typed objects live in untyped memory and are created via Retype operation
-- MINIX: simpler model where servers manage their own object tables
-
-### Rung 13: Handle Tables
+### Rung 12: Handle Tables
 
 **Implement:** Per-process handle table, handle as index + generation, rights
 bitmap per entry.
@@ -276,7 +260,7 @@ bitmap per entry.
 - seL4: CNode is a table of capabilities with explicit slot management
 - OSDI3 Section 5.6.7 explains file descriptors as a simpler capability model
 
-### Rung 14: Rights and Validation
+### Rung 13: Rights and Validation
 
 **Implement:** Rights checking in syscall paths, rights per-handle not
 per-object.
@@ -292,7 +276,7 @@ per-object.
 - seL4: capabilities encode both object reference and permitted operations
 - OSDI3 Section 5.5 covers protection domains and access control concepts
 
-### Rung 15: Derivation and Revocation
+### Rung 14: Derivation and Revocation
 
 **Implement:** Handle derivation with attenuation (can only remove rights).
 
@@ -307,7 +291,7 @@ per-object.
 - capDL specification describes capability distribution at boot time
 - Zircon: handle duplication is flat, no derivation tree, simpler revocation
 
-### Rung 16: Memory Objects (VMO)
+### Rung 15: Memory Objects (VMO)
 
 **Implement:** VMO for physical memory representation, mapping into address
 spaces.
@@ -323,7 +307,7 @@ spaces.
 - seL4: Frame capabilities represent physical memory, mapped via VSpace
 - OSTEP Chapters 19 and 21 cover TLB management and demand paging concepts
 
-### Rung 17: Address Space Management (VMAR)
+### Rung 16: Address Space Management (VMAR)
 
 **Implement:** Virtual memory address regions, mapping VMOs into process address
 space.
@@ -339,15 +323,17 @@ space.
 - seL4: VSpace management requires explicit page table capability manipulation
 - FreeBSD: vm_map for a traditional mmap-style flat address space model
 
-### Rung 18: Synchronous IPC
+### Rung 17: Synchronous IPC
 
 **Implement:** Synchronous message passing, send/receive/call primitives.
+Receive wakes on endpoint OR bound notification.
 
 **Questions:**
 
 - Message size limits?
 - Register-based vs memory-based messages?
 - Blocking semantics and timeouts?
+- Return value format for message vs notification wake?
 
 **Research:**
 
@@ -357,7 +343,7 @@ space.
 - seL4: endpoints are rendezvous objects where sender blocks until receiver ready
 - Zircon: channels are bidirectional, buffered, and transfer handles
 
-### Rung 19: Handle Transfer
+### Rung 18: Handle Transfer
 
 **Implement:** Move handles between processes via IPC.
 
@@ -372,22 +358,24 @@ space.
 - seL4: capability transfer copies cap to receiver's CNode during IPC
 - MINIX: grants allow temporary memory sharing without full capability transfer
 
-### Rung 20: Async Notifications
+### Rung 19: Async Notifications
 
-**Implement:** Lightweight async signaling without full IPC.
+**Implement:** Lightweight async signaling without full IPC. Notification
+binding to threads for multiplexed receive.
 
 **Questions:**
 
 - Signal bits vs counters?
 - Edge vs level triggered?
+- Bind/unbind syscall design?
 
 **Research:**
 
 - MINIX: notify() provides lightweight signaling separate from message passing
-- seL4: Notification objects are the async IPC primitive, cheaper than endpoints
+- seL4: Notification objects with thread binding for multiplexed receive
 - Zircon: signals on kernel objects, event objects, and futex for userspace sync
 
-### Rung 21: Fault Handling
+### Rung 20: Fault Handling
 
 **Implement:** Deliver faults to userspace via IPC.
 
@@ -402,7 +390,7 @@ space.
 - seL4: fault endpoints let a supervisor receive and handle thread faults
 - MINIX: faults in servers trigger reincarnation server recovery logic
 
-### Rung 22: Hardware IRQ Objects
+### Rung 21: Hardware IRQ Objects
 
 **Implement:** Bind hardware interrupts to notifications, userspace drivers.
 
@@ -419,7 +407,7 @@ space.
 - Zircon: interrupts are kernel objects that can be bound to ports
 - ARM GIC and RISC-V PLIC specs for hardware-level configuration
 
-### Rung 23: Memory Sharing
+### Rung 22: Memory Sharing
 
 **Implement:** VMO sharing via handle duplication.
 
@@ -435,7 +423,7 @@ space.
 - MINIX: grants provide controlled memory sharing between processes
 - OSTEP Chapter 16 covers segmentation but COW is discussed in fork() context
 
-### Rung 24: Process Creation
+### Rung 23: Process Creation
 
 **Implement:** Spawn syscall, explicit capability passing.
 
@@ -455,7 +443,7 @@ space.
 
 ## Phase 4: Userspace Services
 
-### Rung 25: Initial Bootstrap
+### Rung 24: Initial Bootstrap
 
 **Implement:** Kernel creates init with bootstrap capabilities (root job, vDSO,
 boot image).
@@ -471,7 +459,7 @@ boot image).
 - seL4: BootInfo structure passed to root task describes available resources
 - MINIX: kernel starts PM and VFS which initialize before accepting requests
 
-### Rung 26: Process Manager
+### Rung 25: Process Manager
 
 **Implement:** Userspace process lifecycle server.
 
@@ -486,7 +474,7 @@ boot image).
 - MINIX: PM server maintains mproc table and handles syscalls via messages
 - Zircon: jobs form a hierarchy, processes belong to jobs for resource control
 
-### Rung 27: Device Manager
+### Rung 26: Device Manager
 
 **Implement:** Device enumeration, distribute IRQ and MMIO capabilities to
 drivers. UART as first userspace driver.
@@ -503,7 +491,7 @@ drivers. UART as first userspace driver.
 - Zircon: driver framework v2 uses FIDL for type-safe driver communication
 - seL4: drivers run as user processes with capabilities restricting hardware access
 
-### Rung 28: Filesystem Server
+### Rung 27: Filesystem Server
 
 **Implement:** Simple ramfs, direct channel to filesystem per-app.
 
@@ -523,7 +511,7 @@ drivers. UART as first userspace driver.
 
 ## Phase 5: WASM Runtime
 
-### Rung 29: WASM Integration
+### Rung 28: WASM Integration
 
 **Implement:** WASM interpreter process, WASI syscall layer, hello world
 end-to-end.
