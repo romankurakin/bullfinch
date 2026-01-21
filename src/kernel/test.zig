@@ -6,7 +6,6 @@ const builtin = @import("builtin");
 
 const fdt = @import("fdt/fdt.zig");
 const hwinfo = @import("hwinfo/hwinfo.zig");
-const lib = @import("lib/lib.zig");
 const memory = @import("memory/memory.zig");
 const once = @import("sync/once.zig");
 const pmm = @import("pmm/pmm.zig");
@@ -32,7 +31,6 @@ const arch_uart = switch (builtin.cpu.arch) {
 comptime {
     _ = fdt;
     _ = hwinfo;
-    _ = lib;
     _ = memory;
     _ = once;
     _ = pmm;

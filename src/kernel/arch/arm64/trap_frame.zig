@@ -105,7 +105,8 @@ const ExceptionClass = enum(u6) {
 
 /// Classify trap into architecture-independent kind.
 pub fn classify(frame: *const TrapFrame) TrapInfo {
-    const ec: ExceptionClass = @enumFromInt(@as(u6, @truncate(frame.esr >> 26)));
+    const ec_bits: u6 = @truncate(frame.esr >> 26);
+    const ec: ExceptionClass = @enumFromInt(ec_bits);
 
     return switch (ec) {
         .svc_aarch64 => .{ .kind = .syscall },

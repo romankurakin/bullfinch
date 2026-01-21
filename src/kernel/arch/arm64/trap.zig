@@ -213,7 +213,8 @@ export fn handleKernelIrq() void {
 
 /// Kernel trap handler. Kernel faults are bugs, always panic.
 export fn handleKernelTrap(frame: *TrapFrame) void {
-    const ec = @as(TrapClass, @enumFromInt(@as(u6, @truncate(frame.esr >> 26))));
+    const ec_bits: u6 = @truncate(frame.esr >> 26);
+    const ec: TrapClass = @enumFromInt(ec_bits);
     dumpTrap(frame, ec);
     // TODO(syscall): Handle SVC exceptions.
     // TODO(vm): Handle page faults.
@@ -236,7 +237,8 @@ export fn handleUserTrap(frame: *TrapFrame) void {
         return;
     }
 
-    const ec = @as(TrapClass, @enumFromInt(@as(u6, @truncate(frame.esr >> 26))));
+    const ec_bits: u6 = @truncate(frame.esr >> 26);
+    const ec: TrapClass = @enumFromInt(ec_bits);
     print("\nUser trap: ");
     print(ec.name());
     print("\n");

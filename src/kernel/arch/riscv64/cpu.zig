@@ -33,7 +33,11 @@ pub inline fn halt() noreturn {
 /// Spin until low 16 bits of value at `ptr` equals `expected`.
 /// Uses Zihintpause hint for power-efficient polling.
 pub fn spinWaitEq16(ptr: *const u32, expected: u16) void {
-    while (@as(u16, @truncate(loadAcquire32(ptr))) != expected) pause();
+    while (true) {
+        const current: u16 = @truncate(loadAcquire32(ptr));
+        if (current == expected) return;
+        pause();
+    }
 }
 
 /// Speculation barrier (FENCE). Use after bounds checks on untrusted indices.

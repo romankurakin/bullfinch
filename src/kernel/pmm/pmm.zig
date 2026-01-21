@@ -32,14 +32,88 @@ const limits = @import("../limits.zig");
 const memory = @import("../memory/memory.zig");
 const sync = @import("../sync/sync.zig");
 
-const lib = @import("../lib/lib.zig");
-pub const ListNode = lib.ListNode;
-pub const DoublyLinkedList = lib.DoublyLinkedList;
-
 const PAGE_SIZE = memory.PAGE_SIZE;
 
 /// Enable poison fills and extra validation in debug builds.
 const debug_kernel = builtin.mode == .Debug;
+
+// ============================================================================
+// Intrusive Doubly-Linked List (used for free page list)
+// ============================================================================
+
+/// Intrusive list node to embed in structures.
+const ListNode = struct {
+    prev: ?*ListNode = null,
+    next: ?*ListNode = null,
+};
+
+/// Doubly-linked intrusive list. O(1) push/pop/remove operations.
+fn DoublyLinkedList(comptime T: type, comptime node_field: []const u8) type {
+    return struct {
+        head: ?*T = null,
+        tail: ?*T = null,
+        len: usize = 0,
+
+        const Self = @This();
+
+        fn getNode(item: *T) *ListNode {
+            return &@field(item, node_field);
+        }
+
+        fn fromNode(node: *ListNode) *T {
+            return @fieldParentPtr(node_field, node);
+        }
+
+        pub fn pushFront(self: *Self, item: *T) void {
+            const node = getNode(item);
+            node.prev = null;
+            node.next = if (self.head) |h| getNode(h) else null;
+            if (self.head) |h| {
+                getNode(h).prev = node;
+            } else {
+                self.tail = item;
+            }
+            self.head = item;
+            self.len += 1;
+        }
+
+        pub fn pushBack(self: *Self, item: *T) void {
+            const node = getNode(item);
+            node.next = null;
+            node.prev = if (self.tail) |t| getNode(t) else null;
+            if (self.tail) |t| {
+                getNode(t).next = node;
+            } else {
+                self.head = item;
+            }
+            self.tail = item;
+            self.len += 1;
+        }
+
+        pub fn popFront(self: *Self) ?*T {
+            const head = self.head orelse return null;
+            self.remove(head);
+            return head;
+        }
+
+        pub fn remove(self: *Self, item: *T) void {
+            const node = getNode(item);
+            if (node.prev) |prev| {
+                prev.next = node.next;
+            } else {
+                self.head = if (node.next) |next| fromNode(next) else null;
+            }
+            if (node.next) |next| {
+                next.prev = node.prev;
+            } else {
+                self.tail = if (node.prev) |prev| fromNode(prev) else null;
+            }
+            node.prev = null;
+            node.next = null;
+            self.len -= 1;
+        }
+    };
+}
 
 /// Maximum number of memory arenas.
 pub const MAX_ARENAS = limits.MAX_MEMORY_ARENAS;
@@ -167,7 +241,7 @@ pub const Arena = struct {
 const FreeList = DoublyLinkedList(Page, "node");
 
 /// PMM global state.
-const Pmm = struct {
+const PhysicalMemoryManager = struct {
     /// Memory arenas discovered from device tree.
     arenas: [MAX_ARENAS]Arena = [_]Arena{.{}} ** MAX_ARENAS,
     arena_count: usize = 0,
@@ -184,7 +258,7 @@ const Pmm = struct {
 };
 
 /// Global PMM instance. Cache-line aligned to prevent false sharing.
-var pmm: Pmm align(64) = .{};
+var pmm: PhysicalMemoryManager align(64) = .{};
 
 /// Reserved range for tracking during initialization.
 const ReservedRange = struct { start: u64 = 0, end: u64 = 0 };
@@ -197,7 +271,7 @@ var reserved_count: usize = 0;
 /// Must be called on primary core before SMP initialization.
 pub fn init() void {
     // Reset state (allows re-initialization for testing)
-    pmm = Pmm{};
+    pmm = PhysicalMemoryManager{};
     reserved_count = 0;
 
     const hw = &hwinfo.info;
@@ -733,8 +807,4 @@ test "Page default state is free" {
 
 test "Page.Flags is packed and minimal" {
     try std.testing.expectEqual(@as(usize, 1), @sizeOf(Page.Flags));
-}
-
-test {
-    _ = lib; // Include lib tests
 }
