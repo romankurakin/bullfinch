@@ -3,7 +3,7 @@
    physical addresses (LMA). Boot code is position-independent until MMU
    enables the higher-half mapping. */
 
-STACK_SIZE = 64 * 1024; /* 64KB kernel stack */
+STACK_SIZE = 8 * 1024; /* 8KB boot stack */
 
 /* Memory layout constants */
 __dram_base = 0x40000000;              /* DRAM starts here on QEMU virt */
@@ -47,8 +47,7 @@ SECTIONS {
         __bss_end = .;
     }
 
-    /* Kernel boot stack. TODO(vm): Add guard page below stack - leave one
-       page unmapped so stack overflow faults instead of corrupting memory. */
+    /* Boot stack for primary CPU initialization. */
     . = ALIGN(16);
     __stack_bottom = .;
     . = . + STACK_SIZE;

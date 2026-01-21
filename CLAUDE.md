@@ -2,8 +2,7 @@
 
 Bullfinch is an educational microkernel inspired by MINIX 3 and Zircon.
 Prioritizes **clarity and correctness** over raw performance. Supports ARM64
-and RISC-V with capabilities-based security. See `docs/plan.md` for roadmap
-and `docs/decisions.md` for design decisions.
+and RISC-V with capabilities-based security.
 
 ## Commands
 
@@ -71,13 +70,17 @@ Single `build.zig` orchestrates:
 - **Privilege** — Exception vector alignment, register save sets, privilege boundary enforcement
 - **Hardware** — Interrupt controller config, timer access, MMU page table formats
 
-## Development Guidelines
+## Documentation
 
-For detailed conventions:
+**Always read the relevant doc before performing a task** (e.g., read
+`docs/commits.md` before committing, `docs/code-style.md` before writing code).
 
+- Roadmap: `docs/plan.md`
+- Design decisions: `docs/decisions.md`
 - Code style: `docs/code-style.md`
 - Testing structure: `docs/testing.md`
 - Commit format: `docs/commits.md`
+- References: `docs/references.md`
 
 ## Workflow
 
@@ -91,7 +94,3 @@ Use `/os-reference-search` to search architecture specs (ARM, RISC-V) and OS
 books (OSTEP, OSDI3). Use `/os-source-search` to look up implementation patterns
 in Linux, xv6, seL4, MINIX3, Fuchsia/Zircon, or FreeBSD.
 
-## References
-
-See `docs/references.md` for full bibliography (OSTEP, OSDI3, ARM/RISC-V specs,
-Zircon, seL4, papers).
