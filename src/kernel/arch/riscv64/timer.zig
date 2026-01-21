@@ -12,7 +12,7 @@
 const sbi = @import("sbi.zig");
 
 const panic_msg = struct {
-    const ZERO_FREQUENCY = "timer: frequency is zero";
+    const ZERO_FREQUENCY = "timer: timebase-frequency is zero (DTB bug)";
 };
 
 /// Timer frequency in Hz. Set by initFrequency() before use.

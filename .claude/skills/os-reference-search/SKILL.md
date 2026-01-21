@@ -6,7 +6,8 @@ allowed-tools: AskUserQuestion, Bash, Read
 
 # OS Reference Search Skill
 
-Search architecture specs and OS books using sova at `../sova/`.
+Search architecture specs and OS books using sova at `../sova/` (relative to
+bullfinch root).
 
 ## When to Use
 
