@@ -11,7 +11,8 @@ pub fn formatHex(val: u64) [16]u8 {
     var i: usize = 16;
     while (i > 0) {
         i -= 1;
-        buf[i] = hex_chars[@as(usize, @truncate(v & 0xF))];
+        const nibble: usize = @truncate(v & 0xF);
+        buf[i] = hex_chars[nibble];
         v >>= 4;
     }
     return buf;
@@ -30,7 +31,8 @@ pub fn formatDecimal(val: usize) struct { buf: [20]u8, len: usize } {
     }
 
     while (v > 0) : (i -= 1) {
-        buf[i - 1] = @as(u8, @truncate('0' + (v % 10)));
+        const digit: u8 = @truncate('0' + (v % 10));
+        buf[i - 1] = digit;
         v /= 10;
     }
 

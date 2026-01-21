@@ -20,7 +20,9 @@ pub const SpinWaitFn = *const fn (ptr: *u32, expected: u16) void;
 
 /// Default spin wait: simple busy-loop polling.
 fn defaultSpinWait(ptr: *u32, expected: u16) void {
-    while (@as(u16, @truncate(@atomicLoad(u32, ptr, .monotonic))) != expected) {
+    while (true) {
+        const current: u16 = @truncate(@atomicLoad(u32, ptr, .monotonic));
+        if (current == expected) return;
         std.atomic.spinLoopHint();
     }
 }
@@ -41,9 +43,10 @@ pub fn TicketLock(comptime spin_wait: SpinWaitFn) type {
         pub fn acquire(self: *Self) void {
             const old = self.state.fetchAdd(1 << TICKET_SHIFT, .monotonic);
             const my_ticket: u16 = @truncate(old >> TICKET_SHIFT);
+            const owner: u16 = @truncate(old);
 
             // Fast path: lock was free.
-            if (@as(u16, @truncate(old)) == my_ticket) return;
+            if (owner == my_ticket) return;
 
             // Slow path: spin until owner matches our ticket.
             spin_wait(&self.state.raw, my_ticket);

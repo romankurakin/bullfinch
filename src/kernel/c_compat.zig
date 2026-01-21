@@ -18,7 +18,8 @@ comptime {
 
 /// Fill n bytes of dest with byte value. Returns dest.
 fn memset_impl(dest: [*]u8, val: c_int, n: usize) callconv(.c) [*]u8 {
-    const byte = @as(u8, @truncate(@as(u32, @bitCast(val))));
+    const unsigned: u32 = @bitCast(val);
+    const byte: u8 = @truncate(unsigned);
     for (0..n) |i| {
         dest[i] = byte;
     }
@@ -63,7 +64,8 @@ export fn memcmp(p1: [*]const u8, p2: [*]const u8, n: usize) c_int {
 
 /// Find first occurrence of byte in n bytes. Returns pointer or null.
 export fn memchr(ptr: [*]const u8, value: c_int, n: usize) ?[*]const u8 {
-    const byte = @as(u8, @truncate(@as(u32, @bitCast(value))));
+    const unsigned: u32 = @bitCast(value);
+    const byte: u8 = @truncate(unsigned);
     for (0..n) |i| {
         if (ptr[i] == byte) return ptr + i;
     }
@@ -88,7 +90,8 @@ export fn strncmp(s1: [*]const u8, s2: [*]const u8, n: usize) c_int {
 
 /// Find first occurrence of char in string. Returns pointer or null.
 export fn strchr(s: [*:0]const u8, c: c_int) ?[*:0]const u8 {
-    const char = @as(u8, @truncate(@as(u32, @bitCast(c))));
+    const unsigned: u32 = @bitCast(c);
+    const char: u8 = @truncate(unsigned);
     var ptr = s;
     while (true) {
         if (ptr[0] == char) return ptr;
@@ -99,7 +102,8 @@ export fn strchr(s: [*:0]const u8, c: c_int) ?[*:0]const u8 {
 
 /// Find last occurrence of char in string. Returns pointer or null.
 export fn strrchr(s: [*:0]const u8, c: c_int) ?[*:0]const u8 {
-    const char = @as(u8, @truncate(@as(u32, @bitCast(c))));
+    const unsigned: u32 = @bitCast(c);
+    const char: u8 = @truncate(unsigned);
     const len = std.mem.len(s);
     var i = len + 1; // Include null terminator check
     while (i > 0) : (i -= 1) {
