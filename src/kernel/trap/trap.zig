@@ -1,23 +1,18 @@
 //! Trap Handling Infrastructure.
 //!
-//! Provides architecture-independent trap frame access, classification, and result
-//! types. Architecture-specific entry points and vector tables live in arch/.
+//! Provides architecture-independent trap frame access, formatting utilities,
+//! and backtrace support. Architecture-specific entry points and vector tables
+//! live in arch/.
 
+const hal = @import("../hal/hal.zig");
+
+pub const backtrace = @import("backtrace.zig");
 pub const fmt = @import("fmt.zig");
-pub const dispatch = @import("dispatch.zig");
-pub const result = @import("result.zig");
-pub const trap_frame = @import("trap_frame.zig");
 
-pub const TrapFrame = trap_frame.TrapFrame;
-pub const TrapKind = dispatch.TrapKind;
-pub const TrapInfo = dispatch.TrapInfo;
-pub const TrapResult = result.TrapResult;
-pub const classify = dispatch.classify;
-pub const kindName = dispatch.kindName;
+pub const TrapFrame = hal.trap_frame.TrapFrame;
+pub const readStackFrame = hal.trap_frame.readStackFrame;
 
 comptime {
+    _ = backtrace;
     _ = fmt;
-    _ = dispatch;
-    _ = result;
-    _ = trap_frame;
 }

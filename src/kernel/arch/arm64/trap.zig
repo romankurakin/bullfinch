@@ -22,11 +22,6 @@ const trap = @import("../../trap/trap.zig");
 const trap_entry = @import("trap_entry.zig");
 const trap_frame = @import("trap_frame.zig");
 
-const panic_msg = struct {
-    const UNHANDLED = "trap: unhandled exception";
-    const UNHANDLED_IRQ = "trap: unhandled interrupt";
-};
-
 // Use printUnsafe in trap context: we can't safely acquire locks here
 const print = console.printUnsafe;
 
@@ -199,26 +194,36 @@ const SPURIOUS_INTID: u32 = 1023;
 const TIMER_PPI = gic.TIMER_PPI;
 
 /// Kernel IRQ handler. Acknowledge, dispatch, end-of-interrupt.
+/// Note: No frame available (fast path) - only prints IRQ ID on panic.
 export fn handleKernelIrq() void {
     const intid = gic.acknowledge();
     if (intid == SPURIOUS_INTID) return;
 
     switch (intid) {
         TIMER_PPI => clock.handleTimerIrq(),
-        else => @panic(panic_msg.UNHANDLED_IRQ),
+        else => panicKernelIrq(intid),
     }
 
     gic.endOfInterrupt(intid);
 }
 
+/// Print minimal panic for unhandled kernel IRQ (no frame available).
+fn panicKernelIrq(intid: u32) noreturn {
+    _ = cpu.disableInterrupts();
+
+    print("\n[panic] unhandled kernel IRQ\n\n");
+    printField("intid", intid);
+
+    cpu.halt();
+}
+
 /// Kernel trap handler. Kernel faults are bugs, always panic.
-export fn handleKernelTrap(frame: *TrapFrame) void {
+export fn handleKernelTrap(frame: *TrapFrame) noreturn {
     const ec_bits: u6 = @truncate(frame.esr >> 26);
     const ec: TrapClass = @enumFromInt(ec_bits);
-    dumpTrap(frame, ec);
     // TODO(syscall): Handle SVC exceptions.
     // TODO(vm): Handle page faults.
-    @panic(panic_msg.UNHANDLED);
+    panicTrap(frame, ec.name());
 }
 
 /// User trap handler. Unified entry for all user-mode traps and interrupts.
@@ -230,7 +235,7 @@ export fn handleUserTrap(frame: *TrapFrame) void {
     if (intid != SPURIOUS_INTID) {
         switch (intid) {
             TIMER_PPI => clock.handleTimerIrq(),
-            else => @panic(panic_msg.UNHANDLED_IRQ),
+            else => panicIrq(frame, intid),
         }
         gic.endOfInterrupt(intid);
         // TODO(scheduler): Check need_resched flag and context switch if needed.
@@ -239,52 +244,59 @@ export fn handleUserTrap(frame: *TrapFrame) void {
 
     const ec_bits: u6 = @truncate(frame.esr >> 26);
     const ec: TrapClass = @enumFromInt(ec_bits);
-    print("\nUser trap: ");
-    print(ec.name());
-    print("\n");
-    dumpTrap(frame, ec);
     // TODO(syscall): Handle SVC from userspace.
     // TODO(vm): Handle user page faults.
-    @panic(panic_msg.UNHANDLED);
+    panicTrap(frame, ec.name());
 }
 
-/// Print trap information and register dump for debugging.
-fn dumpTrap(frame: *const TrapFrame, ec: TrapClass) void {
-    print("\nTrap: ");
-    print(ec.name());
-    print(" \n");
+const fmt = trap.fmt;
+const backtrace = trap.backtrace;
 
-    printKeyRegister("elr", frame.elr);
-    print(" ");
-    printKeyRegister("sp", frame.sp_saved);
-    print(" ");
-    printKeyRegister("esr", frame.esr);
-    print(" ");
-    printKeyRegister("far", frame.far);
-    print("\n");
+const cpu = @import("cpu.zig");
 
-    const reg_names = [_][]const u8{
-        "x0",  "x1",  "x2",  "x3",  "x4",  "x5",  "x6",  "x7",
-        "x8",  "x9",  "x10", "x11", "x12", "x13", "x14", "x15",
-        "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23",
-        "x24", "x25", "x26", "x27", "x28", "x29", "x30",
-    };
-    for (reg_names, 0..) |reg_name, i| {
-        print(&trap.fmt.formatRegName(reg_name));
-        print("0x");
-        print(&trap.fmt.formatHex(frame.regs[i]));
-        if ((i + 1) % 4 == 0) {
-            print("\n");
-        } else {
-            print(" ");
-        }
+/// Print minimal panic information and backtrace, then halt.
+fn panicTrap(frame: *const TrapFrame, cause_name: []const u8) noreturn {
+    _ = cpu.disableInterrupts();
+
+    print("\n[panic] ");
+    print(cause_name);
+    print("\n\n");
+
+    printField("pc", frame.pc());
+    printField("cause", frame.cause());
+    printField("addr", frame.faultAddr());
+
+    backtrace.printBacktrace(frame.fp(), frame.pc());
+
+    cpu.halt();
+}
+
+/// Print minimal panic information for IRQ, then halt.
+fn panicIrq(frame: *const TrapFrame, intid: u32) noreturn {
+    _ = cpu.disableInterrupts();
+
+    print("\n[panic] unhandled IRQ ");
+    print(&fmt.formatHex(intid));
+    print("\n\n");
+
+    printField("pc", frame.pc());
+
+    backtrace.printBacktrace(frame.fp(), frame.pc());
+
+    cpu.halt();
+}
+
+/// Print a field in "name   0x<value>" format.
+fn printField(name: []const u8, value: usize) void {
+    print(name);
+    // Pad to 7 characters
+    var padding: usize = 7 - @min(name.len, 7);
+    while (padding > 0) : (padding -= 1) {
+        print(" ");
     }
-}
-
-fn printKeyRegister(name: []const u8, value: u64) void {
-    print(&trap.fmt.formatRegName(name));
     print("0x");
-    print(&trap.fmt.formatHex(value));
+    print(&fmt.formatHex(value));
+    print("\n");
 }
 
 /// Initialize trap handling by installing the vector table.
@@ -309,7 +321,6 @@ pub fn testTriggerBreakpoint() void {
 pub fn testTriggerIllegalInstruction() void {
     asm volatile (".word 0x00000000"); // UDF #0
 }
-
 
 test "TrapFrame size and layout" {
     const std = @import("std");

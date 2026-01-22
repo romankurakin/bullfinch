@@ -1,9 +1,12 @@
-//! Simple smoke test runner.
+//! Smoke Test Runner.
+//!
 //! Runs pre-built kernels in QEMU, checks for success marker.
 //! Build kernels first with: just build-arm64 build-riscv64
 
 const std = @import("std");
-const markers = @import("test_markers");
+
+const BOOT_OK = "[BOOT:OK]";
+const PANIC = "[PANIC]";
 
 pub fn main() !u8 {
     var arm64_result: bool = false;
@@ -55,10 +58,10 @@ fn runQemu(name: []const u8, cmd: []const []const u8) !bool {
 
         const out_stdout = poller.reader(.stdout).buffered();
         const out_stderr = poller.reader(.stderr).buffered();
-        const saw_ok = std.mem.indexOf(u8, out_stdout, markers.BOOT_OK) != null or
-            std.mem.indexOf(u8, out_stderr, markers.BOOT_OK) != null;
-        const saw_panic = std.mem.indexOf(u8, out_stdout, markers.PANIC) != null or
-            std.mem.indexOf(u8, out_stderr, markers.PANIC) != null;
+        const saw_ok = std.mem.indexOf(u8, out_stdout, BOOT_OK) != null or
+            std.mem.indexOf(u8, out_stderr, BOOT_OK) != null;
+        const saw_panic = std.mem.indexOf(u8, out_stdout, PANIC) != null or
+            std.mem.indexOf(u8, out_stderr, PANIC) != null;
 
         if (saw_ok) {
             _ = qemu.kill() catch {};

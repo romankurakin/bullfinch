@@ -32,6 +32,7 @@ const memory = @import("../memory/memory.zig");
 pub const cpu = @import("cpu.zig");
 pub const interrupt = @import("interrupt.zig");
 pub const timer = @import("timer.zig");
+pub const trap_frame = @import("trap_frame.zig");
 
 const arch = switch (builtin.cpu.arch) {
     .aarch64 => @import("../arch/arm64/arch.zig"),
@@ -42,6 +43,10 @@ const arch = switch (builtin.cpu.arch) {
 pub const boot = arch.boot;
 pub const mmu = arch.mmu;
 pub const trap = arch.trap;
+
+const panic_msg = struct {
+    const DTB_REQUIRED = "hal: DTB required for hardware discovery";
+};
 
 /// Kernel physical memory range (load address to end of image).
 pub fn getKernelPhysRange() struct { start: usize, end: usize } {
@@ -70,17 +75,8 @@ comptime {
             @compileError("KERNEL_PHYS_LOAD must be page-aligned");
     }
 
-    const TrapFrame = arch.trap_frame.TrapFrame;
-    if (!@hasDecl(TrapFrame, "FRAME_SIZE"))
-        @compileError("TrapFrame must have FRAME_SIZE constant");
-    if (TrapFrame.FRAME_SIZE != @sizeOf(TrapFrame))
-        @compileError("TrapFrame.FRAME_SIZE must match @sizeOf(TrapFrame)");
-    if (!@hasDecl(TrapFrame, "getReg"))
-        @compileError("TrapFrame must have getReg function");
-    if (TrapFrame.FRAME_SIZE & 0xF != 0)
-        @compileError("TrapFrame.FRAME_SIZE must be 16-byte aligned");
-    if (@alignOf(TrapFrame) < 8)
-        @compileError("TrapFrame must be at least 8-byte aligned");
+    // TrapFrame checks are in hal/trap_frame.zig
+    _ = trap_frame;
 }
 
 /// Physical-mode initialization. Called from boot.zig before jumping to higher-half.
@@ -125,7 +121,7 @@ pub fn virtInit() void {
     // Switch console to virtual UART address (ARM64 only, RISC-V uses SBI)
     console.postMmuInit();
 
-    const dtb = getDtb() orelse @panic("boot: DTB required for hardware discovery");
+    const dtb = getDtb() orelse @panic(panic_msg.DTB_REQUIRED);
     hwinfo.init(boot.dtb_ptr, dtb);
 
     arch.mmu.expandPhysmap(hwinfo.info.total_memory);

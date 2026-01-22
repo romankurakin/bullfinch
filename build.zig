@@ -1,3 +1,7 @@
+//! Build Configuration.
+//!
+//! Orchestrates kernel, libs, and test builds for ARM64 and RISC-V targets.
+
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
@@ -47,11 +51,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // Shared modules
-    const test_markers_module = b.createModule(.{
-        .root_source_file = b.path("src/shared/test_markers.zig"),
-    });
-
     // Single kernel module with board dependency.
     const kernel_module = b.createModule(.{
         .root_source_file = b.path("src/kernel/main.zig"),
@@ -59,7 +58,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "board", .module = board_module },
-            .{ .name = "test_markers", .module = test_markers_module },
         },
     });
 
@@ -105,9 +103,6 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("tests/smoke.zig"),
         .target = native_target,
         .optimize = .Debug,
-        .imports = &.{
-            .{ .name = "test_markers", .module = test_markers_module },
-        },
     });
     const smoke_exe = b.addExecutable(.{
         .name = "smoke",

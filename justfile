@@ -59,23 +59,55 @@ peek-arm64: build-arm64
     #!/usr/bin/env bash
     llvm-objcopy -O binary zig-out/bin/kernel-arm64 zig-out/bin/kernel-arm64.bin
     output=$(qemu-system-aarch64 -machine virt,gic-version=3 -cpu cortex-a76 -smp 2 -m 2G -nographic -kernel zig-out/bin/kernel-arm64.bin 2>&1 & pid=$!; sleep 2; kill $pid; wait $pid 2>/dev/null)
-    echo "$output"
+    echo "$output" | while IFS= read -r line; do
+        if [[ "$line" =~ ^[[:space:]]*#[0-9]+[[:space:]]+(0x[0-9a-fA-F]+) ]]; then
+            addr="${BASH_REMATCH[1]}"
+            sym=$(llvm-symbolizer -e zig-out/bin/kernel-arm64 "$addr" 2>/dev/null | head -1)
+            echo "$line  $sym"
+        else
+            echo "$line"
+        fi
+    done
 
 peek-riscv64: build-riscv64
     #!/usr/bin/env bash
     output=$(qemu-system-riscv64 -machine virt -smp 2 -m 2G -nographic -bios default -kernel zig-out/bin/kernel-riscv64 2>&1 & pid=$!; sleep 2; kill $pid; wait $pid 2>/dev/null)
-    echo "$output"
+    echo "$output" | while IFS= read -r line; do
+        if [[ "$line" =~ ^[[:space:]]*#[0-9]+[[:space:]]+(0x[0-9a-fA-F]+) ]]; then
+            addr="${BASH_REMATCH[1]}"
+            sym=$(llvm-symbolizer -e zig-out/bin/kernel-riscv64 "$addr" 2>/dev/null | head -1)
+            echo "$line  $sym"
+        else
+            echo "$line"
+        fi
+    done
 
 peek-arm64-release: build-arm64-release
     #!/usr/bin/env bash
     llvm-objcopy -O binary zig-out/bin/kernel-arm64 zig-out/bin/kernel-arm64.bin
     output=$(qemu-system-aarch64 -machine virt,gic-version=3 -cpu cortex-a76 -smp 2 -m 2G -nographic -kernel zig-out/bin/kernel-arm64.bin 2>&1 & pid=$!; sleep 2; kill $pid; wait $pid 2>/dev/null)
-    echo "$output"
+    echo "$output" | while IFS= read -r line; do
+        if [[ "$line" =~ ^[[:space:]]*#[0-9]+[[:space:]]+(0x[0-9a-fA-F]+) ]]; then
+            addr="${BASH_REMATCH[1]}"
+            sym=$(llvm-symbolizer -e zig-out/bin/kernel-arm64 "$addr" 2>/dev/null | head -1)
+            echo "$line  $sym"
+        else
+            echo "$line"
+        fi
+    done
 
 peek-riscv64-release: build-riscv64-release
     #!/usr/bin/env bash
     output=$(qemu-system-riscv64 -machine virt -smp 2 -m 2G -nographic -bios default -kernel zig-out/bin/kernel-riscv64 2>&1 & pid=$!; sleep 2; kill $pid; wait $pid 2>/dev/null)
-    echo "$output"
+    echo "$output" | while IFS= read -r line; do
+        if [[ "$line" =~ ^[[:space:]]*#[0-9]+[[:space:]]+(0x[0-9a-fA-F]+) ]]; then
+            addr="${BASH_REMATCH[1]}"
+            sym=$(llvm-symbolizer -e zig-out/bin/kernel-riscv64 "$addr" 2>/dev/null | head -1)
+            echo "$line  $sym"
+        else
+            echo "$line"
+        fi
+    done
 
 # Tools
 

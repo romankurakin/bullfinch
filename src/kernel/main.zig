@@ -12,7 +12,6 @@ const console = @import("console/console.zig");
 const hal = @import("hal/hal.zig");
 const pmm = @import("pmm/pmm.zig");
 const sync = @import("sync/sync.zig");
-const test_markers = @import("test_markers");
 
 comptime {
     _ = hal.boot; // Force boot module inclusion for entry point
@@ -39,7 +38,7 @@ export fn kmain() noreturn {
     boot_log.clock();
     testClock();
 
-    console.print("\n" ++ test_markers.BOOT_OK ++ "\n");
+    console.print("\n[BOOT:OK]\n");
     hal.cpu.halt();
 }
 
@@ -52,7 +51,7 @@ pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, _: ?usize) noreturn {
 
     // Use printUnsafe to avoid potential deadlock if panic occurred
     // while console lock was held
-    console.printUnsafe("\n" ++ test_markers.PANIC ++ " ");
+    console.printUnsafe("\n[PANIC] ");
     console.printUnsafe(msg);
     console.printUnsafe("\n");
     hal.cpu.halt();
