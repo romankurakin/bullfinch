@@ -15,10 +15,12 @@
 //! TODO(fpu): Lazy FPU for userspace - trap on EC=0x07 (simd_fp), restore state,
 //!            set CPACR_EL1.FPEN=0b11, track fpu_owner per-CPU.
 
+const backtrace = @import("../../trap/backtrace.zig");
 const clock = @import("../../clock/clock.zig");
 const console = @import("../../console/console.zig");
+const cpu = @import("cpu.zig");
+const fmt = @import("../../trap/fmt.zig");
 const gic = @import("gic.zig");
-const trap = @import("../../trap/trap.zig");
 const trap_entry = @import("trap_entry.zig");
 const trap_frame = @import("trap_frame.zig");
 
@@ -248,11 +250,6 @@ export fn handleUserTrap(frame: *TrapFrame) void {
     // TODO(vm): Handle user page faults.
     panicTrap(frame, ec.name());
 }
-
-const fmt = trap.fmt;
-const backtrace = trap.backtrace;
-
-const cpu = @import("cpu.zig");
 
 /// Print minimal panic information and backtrace, then halt.
 fn panicTrap(frame: *const TrapFrame, cause_name: []const u8) noreturn {

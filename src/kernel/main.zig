@@ -6,6 +6,7 @@
 
 const std = @import("std");
 
+const boot_init = @import("boot/init.zig");
 const boot_log = @import("boot/log.zig");
 const clock = @import("clock/clock.zig");
 const console = @import("console/console.zig");
@@ -13,9 +14,12 @@ const hal = @import("hal/hal.zig");
 const pmm = @import("pmm/pmm.zig");
 const sync = @import("sync/sync.zig");
 
+// Force-include modules with exports called externally (not from Zig).
+// Without these references, dead code elimination would remove them.
 comptime {
-    _ = hal.boot; // Force boot module inclusion for entry point
-    _ = @import("c_compat.zig"); // C stdlib shim
+    _ = hal.boot;
+    _ = boot_init;
+    _ = @import("c_compat.zig");
 }
 
 fn testClock() void {
@@ -26,11 +30,12 @@ fn testClock() void {
 
 /// Kernel main, called from boot.zig after MMU enables higher-half mapping.
 export fn kmain() noreturn {
-    hal.virtInit();
+    boot_init.virtInit();
 
     boot_log.dtb();
 
-    pmm.init();
+    const krange = hal.getKernelPhysRange();
+    pmm.init(krange.start, krange.end);
     boot_log.pmm();
 
     hal.interrupt.init();
