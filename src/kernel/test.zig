@@ -17,11 +17,13 @@ const arch_mmu = switch (builtin.cpu.arch) {
     .riscv64 => @import("arch/riscv64/mmu.zig"),
     else => struct {},
 };
+
 const arch_trap_entry = switch (builtin.cpu.arch) {
     .aarch64 => @import("arch/arm64/trap_entry.zig"),
     .riscv64 => @import("arch/riscv64/trap_entry.zig"),
     else => struct {},
 };
+
 const arch_uart = switch (builtin.cpu.arch) {
     .aarch64 => @import("arch/arm64/uart.zig"),
     .riscv64 => @import("arch/riscv64/uart.zig"),

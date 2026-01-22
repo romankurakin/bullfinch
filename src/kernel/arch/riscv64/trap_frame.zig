@@ -10,10 +10,6 @@
 //! See RISC-V Privileged Specification, Chapter 12 (Supervisor-Level ISA).
 
 const std = @import("std");
-const dispatch = @import("../../trap/dispatch.zig");
-
-const TrapKind = dispatch.TrapKind;
-const TrapInfo = dispatch.TrapInfo;
 
 /// Saved register context during trap. Layout must match assembly save/restore order.
 /// RISC-V calling convention: a0-a7 arguments, s0-s11 callee-saved, ra return address.
@@ -56,6 +52,11 @@ pub const TrapFrame = extern struct {
         return self.stval;
     }
 
+    /// Frame pointer at trap (s0/x8 on RISC-V, stored at regs[7]).
+    pub inline fn fp(self: *const TrapFrame) usize {
+        return self.regs[7];
+    }
+
     /// Check if trap originated from user mode.
     /// sstatus.SPP (bit 8) is 0 for user mode, 1 for supervisor mode.
     pub inline fn isFromUser(self: *const TrapFrame) bool {
@@ -90,50 +91,12 @@ pub const TrapFrame = extern struct {
     }
 };
 
-/// RISC-V trap cause codes from scause register.
-/// Bit 63 distinguishes interrupts (1) from exceptions (0).
-const INTERRUPT_BIT: u64 = 1 << 63;
-
-const ExceptionCode = enum(u64) {
-    instruction_misaligned = 0,
-    instruction_access_fault = 1,
-    illegal_instruction = 2,
-    breakpoint = 3,
-    load_misaligned = 4,
-    load_access_fault = 5,
-    store_misaligned = 6,
-    store_access_fault = 7,
-    ecall_from_u = 8,
-    ecall_from_s = 9,
-    instruction_page_fault = 12,
-    load_page_fault = 13,
-    store_page_fault = 15,
-    // Interrupts (with INTERRUPT_BIT set)
-    supervisor_software = INTERRUPT_BIT | 1,
-    supervisor_timer = INTERRUPT_BIT | 5,
-    supervisor_external = INTERRUPT_BIT | 9,
-    _,
-};
-
-/// Classify trap into architecture-independent kind.
-pub fn classify(frame: *const TrapFrame) TrapInfo {
-    const code: ExceptionCode = @enumFromInt(frame.scause);
-
-    return switch (code) {
-        .ecall_from_u, .ecall_from_s => .{ .kind = .syscall },
-        .instruction_page_fault => .{ .kind = .page_fault, .aux = frame.stval },
-        .load_page_fault => .{ .kind = .page_fault, .aux = frame.stval },
-        .store_page_fault => .{ .kind = .page_fault, .aux = frame.stval },
-        .instruction_misaligned => .{ .kind = .alignment_fault, .aux = frame.stval },
-        .load_misaligned => .{ .kind = .alignment_fault, .aux = frame.stval },
-        .store_misaligned => .{ .kind = .alignment_fault, .aux = frame.stval },
-        .illegal_instruction => .{ .kind = .illegal_instruction, .aux = frame.stval },
-        .breakpoint => .{ .kind = .breakpoint },
-        .supervisor_timer => .{ .kind = .timer_irq },
-        .supervisor_external => .{ .kind = .external_irq },
-        .supervisor_software => .{ .kind = .software_irq },
-        else => .{ .kind = .unknown },
-    };
+/// Read previous frame pointer and return address from stack frame.
+/// RISC-V frame layout: [fp-16]=prev_fp, [fp-8]=ra.
+pub inline fn readStackFrame(fp: usize) struct { usize, usize } {
+    const prev_fp_ptr: *const usize = @ptrFromInt(fp -% 16);
+    const ra_ptr: *const usize = @ptrFromInt(fp -% 8);
+    return .{ prev_fp_ptr.*, ra_ptr.* };
 }
 
 test "TrapFrame.FRAME_SIZE is 288 bytes" {
@@ -184,27 +147,4 @@ test "TrapFrame syscall accessors" {
 
     frame.setSyscallRet(999);
     try std.testing.expectEqual(@as(u64, 999), frame.regs[9]);
-}
-
-test "classify identifies ecall as syscall" {
-    var frame: TrapFrame = undefined;
-    frame.scause = 8; // ecall_from_u
-    const info = classify(&frame);
-    try std.testing.expectEqual(TrapKind.syscall, info.kind);
-}
-
-test "classify identifies page fault" {
-    var frame: TrapFrame = undefined;
-    frame.scause = 13; // load_page_fault
-    frame.stval = 0xCAFEBABE;
-    const info = classify(&frame);
-    try std.testing.expectEqual(TrapKind.page_fault, info.kind);
-    try std.testing.expectEqual(@as(usize, 0xCAFEBABE), info.aux);
-}
-
-test "classify identifies timer interrupt" {
-    var frame: TrapFrame = undefined;
-    frame.scause = INTERRUPT_BIT | 5; // supervisor_timer
-    const info = classify(&frame);
-    try std.testing.expectEqual(TrapKind.timer_irq, info.kind);
 }

@@ -10,10 +10,6 @@
 //! See ARM Architecture Reference Manual, D1.4 (Exceptions).
 
 const std = @import("std");
-const dispatch = @import("../../trap/dispatch.zig");
-
-const TrapKind = dispatch.TrapKind;
-const TrapInfo = dispatch.TrapInfo;
 
 /// Saved register context during trap. Layout must match assembly save/restore order.
 /// ARM calling convention: x0-x7 arguments, x19-x28 callee-saved, x29 frame pointer, x30 link register.
@@ -56,6 +52,11 @@ pub const TrapFrame = extern struct {
         return self.far;
     }
 
+    /// Frame pointer at trap (x29 on ARM64).
+    pub inline fn fp(self: *const TrapFrame) usize {
+        return self.regs[29];
+    }
+
     /// Check if trap originated from user mode (EL0).
     /// SPSR.M[3:0] encodes the exception level: 0b0000 = EL0.
     pub inline fn isFromUser(self: *const TrapFrame) bool {
@@ -88,34 +89,11 @@ pub const TrapFrame = extern struct {
     }
 };
 
-/// Exception class from ESR_EL1[31:26].
-/// See ARM Architecture Reference Manual, ESR_EL1.EC field encoding.
-const ExceptionClass = enum(u6) {
-    unknown = 0x00,
-    svc_aarch64 = 0x15,
-    inst_abort_lower = 0x20,
-    inst_abort_same = 0x21,
-    pc_align = 0x22,
-    data_abort_lower = 0x24,
-    data_abort_same = 0x25,
-    sp_align = 0x26,
-    brk_aarch64 = 0x3C,
-    _,
-};
-
-/// Classify trap into architecture-independent kind.
-pub fn classify(frame: *const TrapFrame) TrapInfo {
-    const ec_bits: u6 = @truncate(frame.esr >> 26);
-    const ec: ExceptionClass = @enumFromInt(ec_bits);
-
-    return switch (ec) {
-        .svc_aarch64 => .{ .kind = .syscall },
-        .inst_abort_lower, .inst_abort_same => .{ .kind = .page_fault, .aux = frame.far },
-        .data_abort_lower, .data_abort_same => .{ .kind = .page_fault, .aux = frame.far },
-        .pc_align, .sp_align => .{ .kind = .alignment_fault, .aux = frame.far },
-        .brk_aarch64 => .{ .kind = .breakpoint },
-        else => .{ .kind = .unknown },
-    };
+/// Read previous frame pointer and return address from stack frame.
+/// ARM64 frame layout: [fp+0]=prev_fp, [fp+8]=ra.
+pub inline fn readStackFrame(fp: usize) struct { usize, usize } {
+    const ptr: *const [2]usize = @ptrFromInt(fp);
+    return .{ ptr[0], ptr[1] };
 }
 
 test "TrapFrame.FRAME_SIZE is 288 bytes" {
@@ -157,20 +135,4 @@ test "TrapFrame syscall accessors" {
 
     frame.setSyscallRet(999);
     try std.testing.expectEqual(@as(u64, 999), frame.regs[0]);
-}
-
-test "classify identifies syscall" {
-    var frame: TrapFrame = undefined;
-    frame.esr = @as(u64, 0x15) << 26; // EC = svc_aarch64
-    const info = classify(&frame);
-    try std.testing.expectEqual(TrapKind.syscall, info.kind);
-}
-
-test "classify identifies data abort" {
-    var frame: TrapFrame = undefined;
-    frame.esr = @as(u64, 0x24) << 26; // EC = data_abort_lower
-    frame.far = 0xDEADBEEF;
-    const info = classify(&frame);
-    try std.testing.expectEqual(TrapKind.page_fault, info.kind);
-    try std.testing.expectEqual(@as(usize, 0xDEADBEEF), info.aux);
 }

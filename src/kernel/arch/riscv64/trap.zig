@@ -23,10 +23,6 @@ const trap = @import("../../trap/trap.zig");
 const trap_entry = @import("trap_entry.zig");
 const trap_frame = @import("trap_frame.zig");
 
-const panic_msg = struct {
-    const UNHANDLED = "trap: unhandled exception";
-};
-
 // Use printUnsafe in trap context: we can't safely acquire locks here
 const print = console.printUnsafe;
 
@@ -199,15 +195,15 @@ export fn userTrapEntry() linksection(".trap") callconv(.naked) noreturn {
 }
 
 /// Kernel trap handler. Kernel faults are bugs, always panic.
-export fn handleKernelTrap(frame: *TrapFrame) void {
+export fn handleKernelTrap(frame: *TrapFrame) noreturn {
     const cause = @as(TrapCause, @enumFromInt(frame.scause));
-    dumpTrap(frame, cause);
     // TODO(syscall): Handle ECALL from S-mode.
     // TODO(vm): Handle kernel page faults.
-    @panic(panic_msg.UNHANDLED);
+    panicTrap(frame, cause.name());
 }
 
 /// Kernel interrupt handler. Dispatches timer, software, and external interrupts.
+/// Note: No frame available (fast path) - only prints scause on panic.
 export fn handleKernelInterrupt() void {
     const scause = asm volatile ("csrr %[ret], scause"
         : [ret] "=r" (-> u64),
@@ -216,17 +212,29 @@ export fn handleKernelInterrupt() void {
 
     switch (code) {
         5 => clock.handleTimerIrq(), // Supervisor timer
-        1 => {
-            // Clear SSIP to acknowledge; without this the interrupt re-triggers.
-            asm volatile ("csrc sip, %[mask]"
-                :
-                : [mask] "r" (@as(u64, 1 << 1)),
-            );
-            // TODO(ipi): Actual IPI handling
-        },
+        1 => handleSoftwareInterrupt(),
         9 => {}, // TODO(plic): Supervisor external interrupt
-        else => @panic(panic_msg.UNHANDLED),
+        else => panicKernelInterrupt(scause),
     }
+}
+
+/// Print minimal panic for unhandled kernel interrupt (no frame available).
+fn panicKernelInterrupt(scause: u64) noreturn {
+    _ = cpu.disableInterrupts();
+
+    print("\n[panic] unhandled kernel interrupt\n\n");
+    printField("scause", scause);
+
+    cpu.halt();
+}
+
+/// Clear SSIP to acknowledge software interrupt; without this it re-triggers.
+fn handleSoftwareInterrupt() void {
+    asm volatile ("csrc sip, %[mask]"
+        :
+        : [mask] "r" (@as(u64, 1 << 1)),
+    );
+    // TODO(ipi): Actual IPI handling
 }
 
 /// User trap handler. Unified entry for all user-mode traps and interrupts.
@@ -239,71 +247,52 @@ export fn handleUserTrap(frame: *TrapFrame) void {
         const code = TrapCause.code(frame.scause);
         switch (code) {
             5 => clock.handleTimerIrq(), // Supervisor timer
-            1 => {
-                // Clear SSIP to acknowledge; without this the interrupt re-triggers.
-                asm volatile ("csrc sip, %[mask]"
-                    :
-                    : [mask] "r" (@as(u64, 1 << 1)),
-                );
-                // TODO(ipi): Actual IPI handling
-            },
+            1 => handleSoftwareInterrupt(),
             9 => {}, // TODO(plic): Supervisor external interrupt
-            else => {
-                print("\nUser interrupt: ");
-                print(cause.name());
-                print("\n");
-                @panic(panic_msg.UNHANDLED);
-            },
+            else => panicTrap(frame, cause.name()),
         }
         // TODO(scheduler): Check need_resched flag and context switch if needed.
         return;
     }
 
-    print("\nUser trap: ");
-    print(cause.name());
-    print("\n");
-    dumpTrap(frame, cause);
     // TODO(syscall): Handle ECALL from U-mode.
     // TODO(vm): Handle user page faults.
-    @panic(panic_msg.UNHANDLED);
+    panicTrap(frame, cause.name());
 }
 
-fn dumpTrap(frame: *const TrapFrame, cause: TrapCause) void {
-    print("\nTrap: ");
-    print(cause.name());
-    print(" \n");
+const fmt = trap.fmt;
+const backtrace = trap.backtrace;
 
-    printKeyRegister("sepc", frame.sepc);
-    print(" ");
-    printKeyRegister("sp", frame.sp_saved);
-    print(" ");
-    printKeyRegister("scause", frame.scause);
-    print(" ");
-    printKeyRegister("stval", frame.stval);
-    print("\n");
+const cpu = @import("cpu.zig");
 
-    const reg_names = [_][]const u8{
-        "ra", "sp",  "gp",  "tp", "t0", "t1", "t2", "s0",
-        "s1", "a0",  "a1",  "a2", "a3", "a4", "a5", "a6",
-        "a7", "s2",  "s3",  "s4", "s5", "s6", "s7", "s8",
-        "s9", "s10", "s11", "t3", "t4", "t5", "t6",
-    };
-    for (reg_names, 0..) |name, i| {
-        print(&trap.fmt.formatRegName(name));
-        print("0x");
-        print(&trap.fmt.formatHex(frame.regs[i]));
-        if ((i + 1) % 4 == 0) {
-            print("\n");
-        } else {
-            print(" ");
-        }
+/// Print minimal panic information and backtrace, then halt.
+fn panicTrap(frame: *const TrapFrame, cause_name: []const u8) noreturn {
+    _ = cpu.disableInterrupts();
+
+    print("\n[panic] ");
+    print(cause_name);
+    print("\n\n");
+
+    printField("pc", frame.pc());
+    printField("cause", frame.cause());
+    printField("addr", frame.faultAddr());
+
+    backtrace.printBacktrace(frame.fp(), frame.pc());
+
+    cpu.halt();
+}
+
+/// Print a field in "name   0x<value>" format.
+fn printField(name: []const u8, value: usize) void {
+    print(name);
+    // Pad to 7 characters
+    var padding: usize = 7 - @min(name.len, 7);
+    while (padding > 0) : (padding -= 1) {
+        print(" ");
     }
-}
-
-fn printKeyRegister(name: []const u8, value: u64) void {
-    print(&trap.fmt.formatRegName(name));
     print("0x");
-    print(&trap.fmt.formatHex(value));
+    print(&fmt.formatHex(value));
+    print("\n");
 }
 
 /// Initialize trap handling by installing stvec (Vectored mode).
@@ -350,7 +339,6 @@ pub fn testTriggerBreakpoint() void {
 pub fn testTriggerIllegalInstruction() void {
     asm volatile (".word 0x00000000");
 }
-
 
 test "TrapFrame size and layout" {
     const std = @import("std");

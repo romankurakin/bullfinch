@@ -1,7 +1,7 @@
 //! Trap Formatting Utilities.
 //!
-//! Lock-free formatting helpers for register dumps and panic messages. These avoid
-//! std.fmt to work in panic context where allocators and locks are unavailable.
+//! Lock-free formatting helpers for panic messages. These avoid std.fmt to work
+//! in panic context where allocators and locks are unavailable.
 
 /// Format a 64-bit value as hexadecimal (16 characters, no prefix).
 pub fn formatHex(val: u64) [16]u8 {
@@ -44,16 +44,6 @@ pub fn formatDecimal(val: usize) struct { buf: [20]u8, len: usize } {
     return .{ .buf = result, .len = len };
 }
 
-/// Format a register name with padding to 7 characters.
-pub fn formatRegName(name: []const u8) [7]u8 {
-    var buf: [7]u8 = [_]u8{' '} ** 7;
-    const copy_len = @min(name.len, 7);
-    for (0..copy_len) |i| {
-        buf[i] = name[i];
-    }
-    return buf;
-}
-
 test "formatHex produces correct output" {
     const std = @import("std");
     try std.testing.expectEqualStrings("0000000000000000", &formatHex(0));
@@ -72,11 +62,4 @@ test "formatDecimal produces correct output" {
 
     const large = formatDecimal(1234567890);
     try std.testing.expectEqualStrings("1234567890", large.buf[0..large.len]);
-}
-
-test "formatRegName pads correctly" {
-    const std = @import("std");
-    try std.testing.expectEqualStrings("x0     ", &formatRegName("x0"));
-    try std.testing.expectEqualStrings("sepc   ", &formatRegName("sepc"));
-    try std.testing.expectEqualStrings("scause ", &formatRegName("scause"));
 }
