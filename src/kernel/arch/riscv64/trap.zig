@@ -17,9 +17,11 @@
 //! TODO(fpu): Lazy FPU for userspace - trap on illegal_instruction when FS=Off,
 //!            restore state, set sstatus.FS=Clean, track fpu_owner per-CPU.
 
+const backtrace = @import("../../trap/backtrace.zig");
 const clock = @import("../../clock/clock.zig");
 const console = @import("../../console/console.zig");
-const trap = @import("../../trap/trap.zig");
+const cpu = @import("cpu.zig");
+const fmt = @import("../../trap/fmt.zig");
 const trap_entry = @import("trap_entry.zig");
 const trap_frame = @import("trap_frame.zig");
 
@@ -259,11 +261,6 @@ export fn handleUserTrap(frame: *TrapFrame) void {
     // TODO(vm): Handle user page faults.
     panicTrap(frame, cause.name());
 }
-
-const fmt = trap.fmt;
-const backtrace = trap.backtrace;
-
-const cpu = @import("cpu.zig");
 
 /// Print minimal panic information and backtrace, then halt.
 fn panicTrap(frame: *const TrapFrame, cause_name: []const u8) noreturn {

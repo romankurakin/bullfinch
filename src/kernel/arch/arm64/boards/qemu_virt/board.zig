@@ -1,8 +1,8 @@
 //! Board-specific configuration for QEMU virt ARM64.
 
-/// Kernel load address. QEMU with raw binary loads at RAM base (0x40000000).
+/// Kernel load address. Offset from RAM base to leave room for DTB/bootloader.
 /// DTB is placed elsewhere in RAM and its address is passed in x0.
-pub const KERNEL_PHYS_LOAD: usize = 0x4000_0000;
+pub const KERNEL_PHYS_LOAD: usize = 0x4008_0000;
 
 /// UART base address for early boot console.
 pub const UART_PHYS: usize = 0x0900_0000;

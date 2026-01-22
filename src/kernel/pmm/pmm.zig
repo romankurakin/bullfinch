@@ -266,7 +266,7 @@ var reserved_count: usize = 0;
 
 /// Initialize PMM from hardware info.
 /// Must be called on primary core before SMP initialization.
-pub fn init() void {
+pub fn init(kernel_phys_start: usize, kernel_phys_end: usize) void {
     // Reset state (allows re-initialization for testing)
     pmm = PhysicalMemoryManager{};
     reserved_count = 0;
@@ -278,9 +278,8 @@ pub fn init() void {
     // If we don't reserve it first, our metadata array may overwrite it.
 
     // Reserve kernel image
-    const krange = hal.getKernelPhysRange();
-    const kernel_safe_end = @max(krange.end, krange.start + KERNEL_RESERVE_PAD);
-    recordReserved(krange.start, kernel_safe_end);
+    const kernel_safe_end = @max(kernel_phys_end, kernel_phys_start + KERNEL_RESERVE_PAD);
+    recordReserved(kernel_phys_start, kernel_safe_end);
 
     // Reserve DTB blob (must be done before iterating reserved regions!)
     if (hw.dtb_phys != 0 and hw.dtb_size > 0) {

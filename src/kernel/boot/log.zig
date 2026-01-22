@@ -17,14 +17,8 @@ pub const STAGES: u8 = 7;
 
 const MB: usize = 1024 * 1024;
 
-const arch_name = switch (builtin.cpu.arch) {
-    .aarch64 => "ARM64",
-    .riscv64 => "RISC-V",
-    else => "unknown",
-};
-
 pub fn header() void {
-    console.print("Bullfinch (" ++ arch_name ++ ")\n\n");
+    console.print("Bullfinch\n\n");
 }
 
 /// Print stage prefix: "[N/T] name " with 6-char name column (5 + separator).
