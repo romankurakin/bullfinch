@@ -7,6 +7,8 @@
 //! - acquire / release: O(1)
 //! - tryAcquire: O(1)
 //!
+//! Debug builds verify release is only called when lock is held.
+//!
 //! ```
 //! var lock = DefaultTicketLock{};
 //! lock.acquire();
@@ -14,6 +16,14 @@
 //! ```
 
 const std = @import("std");
+const builtin = @import("builtin");
+
+/// Enable extra validation in debug builds.
+const debug_kernel = builtin.mode == .Debug;
+
+const panic_msg = struct {
+    const RELEASE_UNHELD = "ticket: release called when lock not held";
+};
 
 /// Spin wait function type. Spins until low 16 bits of value at `ptr` equals `expected`.
 pub const SpinWaitFn = *const fn (ptr: *u32, expected: u16) void;
@@ -54,6 +64,13 @@ pub fn TicketLock(comptime spin_wait: SpinWaitFn) type {
 
         /// Release lock, waking next waiter.
         pub fn release(self: *Self) void {
+            if (debug_kernel) {
+                // Verify lock is actually held (owner != next).
+                const current = self.state.load(.monotonic);
+                const owner: u16 = @truncate(current);
+                const next: u16 = @truncate(current >> TICKET_SHIFT);
+                if (owner == next) @panic(panic_msg.RELEASE_UNHELD);
+            }
             _ = self.state.fetchAdd(1, .release);
         }
 

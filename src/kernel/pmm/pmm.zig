@@ -34,12 +34,8 @@ const sync = @import("../sync/sync.zig");
 
 const PAGE_SIZE = memory.PAGE_SIZE;
 
-/// Enable poison fills and extra validation in debug builds.
+/// Enable extra validation in debug builds.
 const debug_kernel = builtin.mode == .Debug;
-
-// ============================================================================
-// Intrusive Doubly-Linked List (used for free page list)
-// ============================================================================
 
 /// Intrusive list node to embed in structures.
 const ListNode = struct {
@@ -159,6 +155,7 @@ const panic_msg = struct {
     const CONTIGUOUS_NOT_ALLOCATED = "pmm: page not in allocated state";
     const ARITHMETIC_OVERFLOW = "pmm: arithmetic overflow";
     const ARENA_IDX_MISMATCH = "pmm: arena index mismatch";
+    const CONTIG_PAGE_NOT_FREE = "pmm: contiguous page not in free state";
 };
 
 /// Physical page states.
@@ -428,9 +425,9 @@ pub fn allocContiguous(count: usize, alignment_log2: u8) ?*Page {
                 for (start_idx..start_idx + count) |j| {
                     const p = &arena.pages[j];
 
-                    // Verify page is actually free before removal
+                    // Verify page is actually free before removal.
                     if (debug_kernel) {
-                        std.debug.assert(p.state == .free);
+                        if (p.state != .free) @panic(panic_msg.CONTIG_PAGE_NOT_FREE);
                     }
 
                     pmm.free_list.remove(p);
@@ -723,7 +720,7 @@ fn findArenaForPage(page: *const Page) ?*Arena {
 
     const arena = &pmm.arenas[idx];
 
-    // Verify page pointer is actually in this arena's metadata
+    // Verify page pointer is actually in this arena's metadata.
     if (debug_kernel) {
         const page_addr = @intFromPtr(page);
         const start = @intFromPtr(arena.pages.ptr);

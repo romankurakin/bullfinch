@@ -52,6 +52,10 @@ pub const FreeError = error{
 /// Enable extra validation in debug builds.
 const debug_kernel = builtin.mode == .Debug;
 
+const panic_msg = struct {
+    const SLAB_NO_FREE_SLOTS = "pool: slab has no free slots";
+};
+
 /// 64 bytes - standard cache line on ARM64 and modern x86.
 /// Ensures two objects never share a cache line (prevents false sharing).
 const CACHE_LINE_SIZE = 64;
@@ -193,7 +197,7 @@ pub fn Pool(comptime T: type) type {
         fn allocFromSlab(self: *Self, slab: *SlabData) ?*T {
             // Caller already checked free_count > 0.
             // Debug-only since we trust internal callers per error philosophy.
-            if (debug_kernel) std.debug.assert(slab.free_count > 0);
+            if (debug_kernel and slab.free_count == 0) @panic(panic_msg.SLAB_NO_FREE_SLOTS);
 
             // Find first free slot via @ctz (bit=1 means free)
             for (&slab.bitmap, 0..) |*word, word_idx| {
