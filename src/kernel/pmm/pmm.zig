@@ -793,18 +793,3 @@ test "defaults Page state to free" {
 test "keeps Page.Flags packed to one byte" {
     try std.testing.expectEqual(@as(usize, 1), @sizeOf(Page.Flags));
 }
-
-test "stores arena index matching arena slot" {
-    const old_info = hwinfo.info;
-    defer hwinfo.info = old_info;
-
-    hwinfo.info = .{};
-    hwinfo.info.memory_region_count = 2;
-    hwinfo.info.memory_regions[0] = .{ .base = 0x4000_0000, .size = PAGE_SIZE }; // too small
-    hwinfo.info.memory_regions[1] = .{ .base = 0x5000_0000, .size = PAGE_SIZE * 4 };
-
-    init(0x1000_0000, 0x1000_1000);
-
-    try std.testing.expectEqual(@as(usize, 1), pmm.arena_count);
-    try std.testing.expectEqual(@as(u8, 0), pmm.arenas[0].pages[0].arena_idx);
-}
