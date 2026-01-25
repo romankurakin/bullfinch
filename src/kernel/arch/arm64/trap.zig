@@ -319,12 +319,12 @@ pub fn testTriggerIllegalInstruction() void {
     asm volatile (".word 0x00000000"); // UDF #0
 }
 
-test "TrapFrame size and layout" {
+test "validates TrapFrame size and layout" {
     const std = @import("std");
     try std.testing.expectEqual(@as(usize, 288), TrapFrame.FRAME_SIZE);
 }
 
-test "TrapClass names are defined for known exceptions" {
+test "defines TrapClass names for known exceptions" {
     const std = @import("std");
     // Test specific known classes have meaningful names
     try std.testing.expect(TrapClass.brk_aarch64.name().len > 0);
@@ -340,7 +340,7 @@ test "TrapClass names are defined for known exceptions" {
     try std.testing.expectEqualStrings("other exception", unknown.name());
 }
 
-test "TrapFrame.getReg returns correct values" {
+test "returns correct values from TrapFrame.getReg" {
     const std = @import("std");
     var frame: TrapFrame = undefined;
 

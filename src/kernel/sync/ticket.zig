@@ -91,16 +91,16 @@ pub fn TicketLock(comptime spin_wait: SpinWaitFn) type {
 /// Default ticket lock using simple spin wait. Portable, suitable for tests.
 pub const DefaultTicketLock = TicketLock(defaultSpinWait);
 
-test "TicketLock size is 4 bytes" {
+test "keeps TicketLock size at 4 bytes" {
     try std.testing.expectEqual(@as(usize, 4), @sizeOf(DefaultTicketLock));
 }
 
-test "TicketLock initial state" {
+test "starts TicketLock in initial state" {
     const lock = DefaultTicketLock{};
     try std.testing.expectEqual(@as(u32, 0), lock.state.load(.monotonic));
 }
 
-test "TicketLock acquire and release" {
+test "acquires and releases TicketLock" {
     var lock = DefaultTicketLock{};
 
     lock.acquire();
@@ -110,7 +110,7 @@ test "TicketLock acquire and release" {
     try std.testing.expectEqual(@as(u32, (1 << 16) | 1), lock.state.load(.monotonic));
 }
 
-test "TicketLock multiple cycles" {
+test "handles multiple TicketLock cycles" {
     var lock = DefaultTicketLock{};
 
     lock.acquire();
@@ -123,7 +123,7 @@ test "TicketLock multiple cycles" {
     try std.testing.expectEqual(@as(u32, (3 << 16) | 3), lock.state.load(.monotonic));
 }
 
-test "TicketLock tryAcquire succeeds when free" {
+test "succeeds TicketLock.tryAcquire when free" {
     var lock = DefaultTicketLock{};
 
     try std.testing.expect(lock.tryAcquire());
@@ -132,7 +132,7 @@ test "TicketLock tryAcquire succeeds when free" {
     lock.release();
 }
 
-test "TicketLock tryAcquire fails when held" {
+test "fails TicketLock.tryAcquire when held" {
     var lock = DefaultTicketLock{};
 
     lock.acquire();

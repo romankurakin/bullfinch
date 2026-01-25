@@ -31,11 +31,11 @@ comptime {
         @compileError("ENTRIES_PER_TABLE * 8 must equal PAGE_SIZE");
 }
 
-test "PAGE_SIZE is 4KB" {
+test "sets PAGE_SIZE to 4KB" {
     try std.testing.expectEqual(@as(usize, 4096), PAGE_SIZE);
     try std.testing.expectEqual(@as(usize, 1) << PAGE_SHIFT, PAGE_SIZE);
 }
 
-test "ENTRIES_PER_TABLE fits one page" {
+test "fits ENTRIES_PER_TABLE in one page" {
     try std.testing.expectEqual(PAGE_SIZE, ENTRIES_PER_TABLE * 8);
 }

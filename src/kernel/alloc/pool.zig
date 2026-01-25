@@ -423,7 +423,7 @@ fn resetTestPages() void {
     test_freed_count = 0;
 }
 
-test "Pool capacity calculation" {
+test "calculates Pool capacity" {
     const SmallObj = extern struct { data: [32]u8 };
     const SmallPool = Pool(SmallObj);
 
@@ -431,7 +431,7 @@ test "Pool capacity calculation" {
     try testing.expectEqual(@as(usize, CACHE_LINE_SIZE), SmallPool.aligned_size);
 }
 
-test "Pool alloc and free" {
+test "allocates and frees from Pool" {
     resetTestPages();
 
     const TestObj = extern struct { id: u32, data: [60]u8 };
@@ -453,7 +453,7 @@ test "Pool alloc and free" {
     try testing.expectEqual(@as(usize, 0), pool.totalAllocated());
 }
 
-test "Pool grows with multiple slabs" {
+test "grows Pool across multiple slabs" {
     resetTestPages();
 
     const TestObj = extern struct { data: [960]u8 }; // Large object, few per slab
@@ -481,7 +481,7 @@ test "Pool grows with multiple slabs" {
     try testing.expectEqual(@as(usize, 0), pool.totalAllocated());
 }
 
-test "Pool free finds correct slab via back-pointer" {
+test "finds correct slab via back-pointer on Pool.free" {
     resetTestPages();
 
     const TestObj = extern struct { value: u64, padding: [56]u8 };
@@ -503,7 +503,7 @@ test "Pool free finds correct slab via back-pointer" {
     try testing.expectEqual(@as(usize, 0), pool.totalAllocated());
 }
 
-test "Pool reuses freed slot from full slab" {
+test "reuses freed slot from full slab" {
     resetTestPages();
 
     const TestObj = extern struct { value: u64, padding: [56]u8 };
@@ -530,7 +530,7 @@ test "Pool reuses freed slot from full slab" {
     try testing.expectEqual(@as(usize, 1), pool.slabCount());
 }
 
-test "Pool reclaims empty slab when above MIN_SLABS" {
+test "reclaims empty slab above MIN_SLABS" {
     resetTestPages();
 
     const TestObj = extern struct { value: u64, padding: [56]u8 };
@@ -564,7 +564,7 @@ test "Pool reclaims empty slab when above MIN_SLABS" {
     }
 }
 
-test "Pool free error paths" {
+test "handles Pool.free error paths" {
     resetTestPages();
 
     const TestObj = extern struct { value: u64, padding: [56]u8 };

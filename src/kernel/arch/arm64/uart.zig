@@ -114,7 +114,7 @@ pub fn print(s: []const u8) void {
     }
 }
 
-test "computeDivisors typical baud rates" {
+test "computes divisors for typical baud rates" {
     const std = @import("std");
     const testing = std.testing;
     const cases = [_]struct {
@@ -142,7 +142,7 @@ test "computeDivisors typical baud rates" {
     }
 }
 
-test "computeDivisors handles rounding edge cases" {
+test "handles rounding edge cases in computeDivisors" {
     const std = @import("std");
     const testing = std.testing;
     const divs = try computeDivisors(7_372_800, 115_200);
@@ -154,7 +154,7 @@ test "computeDivisors handles rounding edge cases" {
     try testing.expectEqual(@as(u32, 7), divs2.fbrd);
 }
 
-test "computeDivisors returns error for zero baud" {
+test "returns error for zero baud in computeDivisors" {
     const std = @import("std");
     try std.testing.expectError(error.BaudZero, computeDivisors(24_000_000, 0));
 }

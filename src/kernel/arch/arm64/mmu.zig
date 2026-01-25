@@ -660,17 +660,17 @@ pub fn removeIdentityMapping() void {
 /// register adjustments after switching to virtual addresses.
 pub fn postMmuInit() void {}
 
-test "PageTableEntry size and layout" {
+test "validates PageTableEntry size and layout" {
     try std.testing.expectEqual(@as(usize, 8), @sizeOf(PageTableEntry));
     try std.testing.expectEqual(@as(usize, 64), @bitSizeOf(PageTableEntry));
 }
 
-test "PageTableEntry.INVALID is all zeros" {
+test "sets PageTableEntry.INVALID to all zeros" {
     const invalid: u64 = @bitCast(PageTableEntry.INVALID);
     try std.testing.expectEqual(@as(u64, 0), invalid);
 }
 
-test "PageTableEntry.table creates valid table entry" {
+test "creates valid PageTableEntry.table entry" {
     const desc = PageTableEntry.table(0x80000000);
     try std.testing.expect(desc.isValid());
     try std.testing.expect(desc.isTable());
@@ -678,7 +678,7 @@ test "PageTableEntry.table creates valid table entry" {
     try std.testing.expectEqual(@as(usize, 0x80000000), desc.physAddr());
 }
 
-test "PageTableEntry.kernelBlock creates valid block entry" {
+test "creates valid PageTableEntry.kernelBlock entry" {
     const desc = PageTableEntry.kernelBlock(0x40000000, true, true);
     try std.testing.expect(desc.isValid());
     try std.testing.expect(desc.isBlock());
@@ -686,7 +686,7 @@ test "PageTableEntry.kernelBlock creates valid block entry" {
     try std.testing.expect(desc.af);
 }
 
-test "PageTableEntry.deviceBlock has correct attributes" {
+test "sets correct attributes for PageTableEntry.deviceBlock" {
     const desc = PageTableEntry.deviceBlock(0x09000000);
     try std.testing.expect(desc.isValid());
     try std.testing.expect(desc.isBlock());
@@ -695,7 +695,7 @@ test "PageTableEntry.deviceBlock has correct attributes" {
     try std.testing.expect(desc.uxn);
 }
 
-test "PageTableEntry.userPage creates non-global entry" {
+test "creates non-global PageTableEntry.userPage entry" {
     const desc = PageTableEntry.userPage(0x1000, true, false);
     try std.testing.expect(desc.isValid());
     try std.testing.expect(desc.ng);
@@ -703,7 +703,7 @@ test "PageTableEntry.userPage creates non-global entry" {
     try std.testing.expect(desc.uxn);
 }
 
-test "VirtualAddress.parse extracts correct indices" {
+test "extracts correct indices in VirtualAddress.parse" {
     const va = VirtualAddress.parse(0x40080000);
     try std.testing.expectEqual(@as(u9, 1), va.l1);
     try std.testing.expectEqual(@as(u9, 0), va.l2);
@@ -711,13 +711,13 @@ test "VirtualAddress.parse extracts correct indices" {
     try std.testing.expectEqual(@as(u12, 0), va.offset);
 }
 
-test "VirtualAddress.isUserRange for TTBR0 (39-bit VA)" {
+test "detects TTBR0 user range in VirtualAddress.isUserRange" {
     try std.testing.expect(VirtualAddress.isUserRange(0x0000_0000_0000_0000));
     try std.testing.expect(VirtualAddress.isUserRange(0x0000_007F_FFFF_FFFF));
     try std.testing.expect(!VirtualAddress.isUserRange(0x0000_0080_0000_0000));
 }
 
-test "VirtualAddress.isKernel for TTBR1 addresses" {
+test "detects TTBR1 kernel addresses in VirtualAddress.isKernel" {
     try std.testing.expect(VirtualAddress.isKernel(0xFFFF_FF80_0000_0000));
     try std.testing.expect(VirtualAddress.isKernel(0xFFFF_FFFF_FFFF_FFFF));
     try std.testing.expect(VirtualAddress.isKernel(KERNEL_VIRT_BASE));
@@ -725,7 +725,7 @@ test "VirtualAddress.isKernel for TTBR1 addresses" {
     try std.testing.expect(!VirtualAddress.isKernel(0x0000_007F_FFFF_FFFF));
 }
 
-test "VirtualAddress.isCanonical accepts both ranges" {
+test "accepts both ranges in VirtualAddress.isCanonical" {
     try std.testing.expect(VirtualAddress.isCanonical(0x0000_0000_0000_0000));
     try std.testing.expect(VirtualAddress.isCanonical(0x0000_007F_FFFF_FFFF));
     try std.testing.expect(VirtualAddress.isCanonical(0xFFFF_FF80_0000_0000));
@@ -734,18 +734,18 @@ test "VirtualAddress.isCanonical accepts both ranges" {
     try std.testing.expect(!VirtualAddress.isCanonical(0x8000_0000_0000_0000));
 }
 
-test "PageTable size matches page size" {
+test "matches PageTable size to page size" {
     try std.testing.expectEqual(PAGE_SIZE, @sizeOf(PageTable));
 }
 
-test "TranslationControlRegister.DEFAULT produces valid configuration" {
+test "produces valid TranslationControlRegister.DEFAULT configuration" {
     const tcr = TranslationControlRegister.DEFAULT;
     try std.testing.expectEqual(@as(u64, 25), tcr & 0x3F);
     try std.testing.expectEqual(@as(u64, 25), (tcr >> 16) & 0x3F);
     try std.testing.expectEqual(@as(u64, 0b10), (tcr >> 12) & 0x3);
 }
 
-test "translate handles 1GB block mappings" {
+test "translates 1GB block mappings" {
     var root = PageTable.EMPTY;
     root.entries[1] = PageTableEntry.kernelBlock(0x40000000, true, true);
 
@@ -754,68 +754,68 @@ test "translate handles 1GB block mappings" {
     try std.testing.expectEqual(@as(?usize, null), translate(&root, 0x80000000));
 }
 
-test "translate returns null for non-canonical addresses" {
+test "returns null for non-canonical addresses in translate" {
     var root = PageTable.EMPTY;
     root.entries[1] = PageTableEntry.kernelBlock(0x40000000, true, true);
     try std.testing.expectEqual(@as(?usize, null), translate(&root, 0x0000_0080_0000_0000));
 }
 
-test "mapPage returns NotAligned for misaligned addresses" {
+test "returns NotAligned for misaligned addresses in mapPage" {
     var root = PageTable.EMPTY;
     try std.testing.expectError(MapError.NotAligned, mapPage(&root, 0x1001, 0x2000, .{}));
     try std.testing.expectError(MapError.NotAligned, mapPage(&root, 0x1000, 0x2001, .{}));
 }
 
-test "mapPage returns NotCanonical for non-canonical addresses" {
+test "returns NotCanonical for non-canonical addresses in mapPage" {
     var root = PageTable.EMPTY;
     try std.testing.expectError(MapError.NotCanonical, mapPage(&root, 0x0000_0080_0000_0000, 0x1000, .{}));
     try std.testing.expectError(MapError.NotCanonical, mapPage(&root, 0x8000_0000_0000_0000, 0x1000, .{}));
 }
 
-test "mapPage returns SuperpageConflict for block mappings" {
+test "returns SuperpageConflict for block mappings in mapPage" {
     var root = PageTable.EMPTY;
     root.entries[1] = PageTableEntry.kernelBlock(0x40000000, true, true);
     try std.testing.expectError(MapError.SuperpageConflict, mapPage(&root, 0x40001000, 0x80001000, .{}));
 }
 
-test "mapPage returns TableNotPresent without intermediate tables" {
+test "returns TableNotPresent without intermediate tables in mapPage" {
     var root = PageTable.EMPTY;
     try std.testing.expectError(MapError.TableNotPresent, mapPage(&root, 0x40001000, 0x80001000, .{}));
 }
 
-test "walk returns null for unmapped address" {
+test "returns null for unmapped address in walk" {
     var root = PageTable.EMPTY;
     try std.testing.expectEqual(@as(?*PageTableEntry, null), walk(&root, 0x40001000));
 }
 
-test "walk returns null for block mapping" {
+test "returns null for block mapping in walk" {
     var root = PageTable.EMPTY;
     root.entries[1] = PageTableEntry.kernelBlock(0x40000000, true, true);
     try std.testing.expectEqual(@as(?*PageTableEntry, null), walk(&root, 0x40001000));
 }
 
-test "physToVirt adds KERNEL_VIRT_BASE" {
+test "adds KERNEL_VIRT_BASE in physToVirt" {
     const virt = physToVirt(0x40080000);
     try std.testing.expectEqual(@as(usize, 0xFFFF_FF80_4008_0000), virt);
 }
 
-test "virtToPhys subtracts KERNEL_VIRT_BASE" {
+test "subtracts KERNEL_VIRT_BASE in virtToPhys" {
     const phys = virtToPhys(0xFFFF_FF80_4008_0000);
     try std.testing.expectEqual(@as(usize, 0x40080000), phys);
 }
 
-test "physToVirt and virtToPhys are inverses" {
+test "treats physToVirt and virtToPhys as inverses" {
     const original: usize = 0x40080000;
     const round_trip = virtToPhys(physToVirt(original));
     try std.testing.expectEqual(original, round_trip);
 }
 
-test "unmapPage returns NotMapped for unmapped address" {
+test "returns NotMapped for unmapped address in unmapPage" {
     var root = PageTable.EMPTY;
     try std.testing.expectError(UnmapError.NotMapped, unmapPage(&root, 0x40001000));
 }
 
-test "unmapPage returns NotCanonical for non-canonical addresses" {
+test "returns NotCanonical for non-canonical addresses in unmapPage" {
     var root = PageTable.EMPTY;
     try std.testing.expectError(UnmapError.NotCanonical, unmapPage(&root, 0x0000_0080_0000_0000));
 }

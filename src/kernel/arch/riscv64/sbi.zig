@@ -55,7 +55,7 @@ pub fn setTimer(stime_value: u64) void {
         @panic(panic_msg.SET_TIMER_FAILED);
 }
 
-test "isError detects negative return values" {
+test "detects negative return values in isError" {
     const std = @import("std");
 
     // Positive values are success

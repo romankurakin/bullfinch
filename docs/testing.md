@@ -17,7 +17,6 @@ modules are tested via `just smoke` which boots in QEMU.
 
 Use `"Subject behavior"` pattern:
 
-- `"PageTableEntry.table creates valid entry"`
 - `"translate handles 1GB block mappings"`
 
 ## Review Checklist
