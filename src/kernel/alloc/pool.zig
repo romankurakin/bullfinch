@@ -105,6 +105,7 @@ pub fn Pool(comptime T: type) type {
 
     comptime {
         if (objects_per_slab == 0) @compileError("Object too large for single page");
+        if (objects_per_slab <= 1) @compileError("Object too large for usable slab (no free slots)");
     }
 
     return struct {
@@ -191,7 +192,18 @@ pub fn Pool(comptime T: type) type {
             // Need new slab
             const new_slab = self.allocNewSlab() orelse return null;
             self.current = new_slab;
-            return self.allocFromSlab(new_slab);
+            const obj = self.allocFromSlab(new_slab) orelse {
+                if (debug_kernel) @panic("pool: allocFromSlab failed for new slab");
+                self.unlinkSlab(new_slab);
+                self.slab_count -= 1;
+                if (debug_kernel) {
+                    const poison_ptr: *usize = @ptrFromInt(new_slab.page_addr);
+                    poison_ptr.* = 0xDEAD_BEEF_DEAD_BEEF;
+                }
+                self.free_page(new_slab.page_addr);
+                return null;
+            };
+            return obj;
         }
 
         fn allocFromSlab(self: *Self, slab: *SlabData) ?*T {
@@ -312,6 +324,9 @@ pub fn Pool(comptime T: type) type {
             // Read back-pointer to find slab
             const backptr: **SlabData = @ptrFromInt(page_base);
             const slab = backptr.*;
+            if (debug_kernel and slab.page_addr != page_base) {
+                @panic("pool: invalid slab back-pointer");
+            }
 
             // Calculate slot index
             const storage_base = page_base + usable_start;
@@ -547,4 +562,32 @@ test "Pool reclaims empty slab when above MIN_SLABS" {
     for (slab1_objs[0..cap]) |obj| {
         try pool.free(obj);
     }
+}
+
+test "Pool free error paths" {
+    resetTestPages();
+
+    const TestObj = extern struct { value: u64, padding: [56]u8 };
+    const TestPool = Pool(TestObj);
+
+    var pool = TestPool.init(testAllocPage, testFreePage);
+    const obj = pool.alloc() orelse return error.AllocFailed;
+
+    const obj_addr = @intFromPtr(obj);
+    const page_base = obj_addr & ~@as(usize, PAGE_SIZE - 1);
+    const storage_base = page_base + std.mem.alignForward(usize, BACKPTR_SIZE, CACHE_LINE_SIZE);
+
+    // Misaligned pointer.
+    try testing.expectError(error.MisalignedPointer, pool.free(@ptrFromInt(obj_addr + 1)));
+
+    // Metadata slot (slot 0).
+    try testing.expectError(error.MetadataSlot, pool.free(@ptrFromInt(storage_base)));
+
+    // Out-of-bounds slot index.
+    const oob_addr = storage_base + TestPool.capacity_per_slab * TestPool.aligned_size;
+    try testing.expectError(error.OutOfBounds, pool.free(@ptrFromInt(oob_addr)));
+
+    // Double free.
+    try pool.free(obj);
+    try testing.expectError(error.DoubleFree, pool.free(obj));
 }
