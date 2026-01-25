@@ -337,12 +337,12 @@ pub fn testTriggerIllegalInstruction() void {
     asm volatile (".word 0x00000000");
 }
 
-test "TrapFrame size and layout" {
+test "validates TrapFrame size and layout" {
     const std = @import("std");
     try std.testing.expectEqual(@as(usize, 288), TrapFrame.FRAME_SIZE);
 }
 
-test "TrapCause.isInterrupt detects interrupt bit" {
+test "detects interrupt bit in TrapCause.isInterrupt" {
     const std = @import("std");
     try std.testing.expect(TrapCause.isInterrupt(0x8000000000000005));
     try std.testing.expect(!TrapCause.isInterrupt(0x0000000000000005));
@@ -350,7 +350,7 @@ test "TrapCause.isInterrupt detects interrupt bit" {
     try std.testing.expectEqual(@as(u64, 5), TrapCause.code(0x0000000000000005));
 }
 
-test "TrapCause names are defined for known exceptions" {
+test "defines TrapCause names for known exceptions" {
     const std = @import("std");
     // Test specific known causes have meaningful names
     try std.testing.expect(TrapCause.breakpoint.name().len > 0);
@@ -365,7 +365,7 @@ test "TrapCause names are defined for known exceptions" {
     try std.testing.expectEqualStrings("unknown trap", unknown.name());
 }
 
-test "TrapFrame.getReg handles special cases" {
+test "handles special cases in TrapFrame.getReg" {
     const std = @import("std");
     var frame: TrapFrame = undefined;
 

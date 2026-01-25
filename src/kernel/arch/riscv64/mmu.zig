@@ -580,17 +580,17 @@ pub fn postMmuInit() void {
     );
 }
 
-test "PageTableEntry size and layout" {
+test "validates PageTableEntry size and layout" {
     try std.testing.expectEqual(@as(usize, 8), @sizeOf(PageTableEntry));
     try std.testing.expectEqual(@as(usize, 64), @bitSizeOf(PageTableEntry));
 }
 
-test "PageTableEntry.INVALID is all zeros" {
+test "sets PageTableEntry.INVALID to all zeros" {
     const invalid: u64 = @bitCast(PageTableEntry.INVALID);
     try std.testing.expectEqual(@as(u64, 0), invalid);
 }
 
-test "PageTableEntry.branch creates valid branch entry" {
+test "creates valid PageTableEntry.branch entry" {
     const pte = PageTableEntry.branch(0x80000000);
     try std.testing.expect(pte.isValid());
     try std.testing.expect(pte.isBranch());
@@ -598,7 +598,7 @@ test "PageTableEntry.branch creates valid branch entry" {
     try std.testing.expectEqual(@as(usize, 0x80000000), pte.physAddr());
 }
 
-test "PageTableEntry.kernelLeaf creates valid leaf entry" {
+test "creates valid PageTableEntry.kernelLeaf entry" {
     const pte = PageTableEntry.kernelLeaf(0x80200000, true, true);
     try std.testing.expect(pte.isValid());
     try std.testing.expect(pte.isLeaf());
@@ -610,7 +610,7 @@ test "PageTableEntry.kernelLeaf creates valid leaf entry" {
     try std.testing.expect(!pte.u);
 }
 
-test "PageTableEntry.userLeaf creates valid user entry" {
+test "creates valid PageTableEntry.userLeaf entry" {
     const pte = PageTableEntry.userLeaf(0x1000, false, false);
     try std.testing.expect(pte.isValid());
     try std.testing.expect(pte.isLeaf());
@@ -619,7 +619,7 @@ test "PageTableEntry.userLeaf creates valid user entry" {
     try std.testing.expect(!pte.g);
 }
 
-test "VirtualAddress.parse extracts correct indices" {
+test "extracts correct indices in VirtualAddress.parse" {
     // Low address: 0x80200000 = 2GB + 2MB
     const va = VirtualAddress.parse(0x80200000);
     try std.testing.expectEqual(@as(u9, 0), va.vpn3);
@@ -636,7 +636,7 @@ test "VirtualAddress.parse extracts correct indices" {
     try std.testing.expectEqual(@as(u9, 0), kva.vpn0);
 }
 
-test "VirtualAddress.isCanonical validates addresses" {
+test "validates addresses in VirtualAddress.isCanonical" {
     // Sv48: canonical if bits 63:47 are all same as bit 47
     // Lower canonical: 0 to 0x7FFF_FFFF_FFFF (128TB - 1)
     try std.testing.expect(VirtualAddress.isCanonical(0x0));
@@ -651,18 +651,18 @@ test "VirtualAddress.isCanonical validates addresses" {
     try std.testing.expect(!VirtualAddress.isCanonical(0xFFFF_7FFF_FFFF_FFFF)); // Just below upper
 }
 
-test "SupervisorAddressTranslation.sv48 creates correct value" {
+test "creates correct SupervisorAddressTranslation.sv48 value" {
     const satp = SupervisorAddressTranslation.sv48(0x80000000, 5);
     try std.testing.expectEqual(@as(u4, SupervisorAddressTranslation.MODE_SV48), satp.mode);
     try std.testing.expectEqual(@as(u16, 5), satp.asid);
     try std.testing.expectEqual(@as(u44, 0x80000), satp.ppn);
 }
 
-test "PageTable size matches page size" {
+test "matches PageTable size to page size" {
     try std.testing.expectEqual(PAGE_SIZE, @sizeOf(PageTable));
 }
 
-test "translate handles terapage mappings" {
+test "translates terapage mappings" {
     // Sv48: terapage at L3 (512GB)
     var root = PageTable.EMPTY;
     root.entries[1] = PageTableEntry.kernelLeaf(0x8000000000, true, true); // 512GB terapage at vpn3=1
@@ -675,19 +675,19 @@ test "translate handles terapage mappings" {
     try std.testing.expectEqual(@as(?usize, null), translate(&root, 0x10000000000)); // vpn3=2
 }
 
-test "translate returns null for non-canonical addresses" {
+test "returns null for non-canonical addresses in translate" {
     var root = PageTable.EMPTY;
     // Non-canonical address (in Sv48 hole)
     try std.testing.expectEqual(@as(?usize, null), translate(&root, 0x8000_0000_0000));
 }
 
-test "mapPage returns NotAligned for misaligned addresses" {
+test "returns NotAligned for misaligned addresses in mapPage" {
     var root = PageTable.EMPTY;
     try std.testing.expectError(MapError.NotAligned, mapPage(&root, 0x1001, 0x2000, .{}));
     try std.testing.expectError(MapError.NotAligned, mapPage(&root, 0x1000, 0x2001, .{}));
 }
 
-test "mapPage returns NotCanonical for non-canonical addresses" {
+test "returns NotCanonical for non-canonical addresses in mapPage" {
     var root = PageTable.EMPTY;
     // Sv48 non-canonical (in hole)
     try std.testing.expectError(MapError.NotCanonical, mapPage(&root, 0x8000_0000_0000, 0x1000, .{}));
@@ -702,17 +702,17 @@ test "mapPage returns SuperpageConflict for terapage mappings" {
     try std.testing.expectError(MapError.SuperpageConflict, mapPage(&root, 0x8000001000, 0x9000001000, .{}));
 }
 
-test "mapPage returns TableNotPresent without intermediate tables" {
+test "returns TableNotPresent without intermediate tables in mapPage" {
     var root = PageTable.EMPTY;
     try std.testing.expectError(MapError.TableNotPresent, mapPage(&root, 0x80001000, 0x90001000, .{}));
 }
 
-test "walk returns null for unmapped address" {
+test "returns null for unmapped address in walk" {
     var root = PageTable.EMPTY;
     try std.testing.expectEqual(@as(?*PageTableEntry, null), walk(&root, 0x80001000));
 }
 
-test "walk returns null for terapage mapping" {
+test "returns null for terapage mapping in walk" {
     // Sv48: terapage at L3 (not walkable to L0)
     var root = PageTable.EMPTY;
     root.entries[1] = PageTableEntry.kernelLeaf(0x8000000000, true, true); // 512GB terapage at vpn3=1
@@ -721,28 +721,28 @@ test "walk returns null for terapage mapping" {
     try std.testing.expectEqual(@as(?*PageTableEntry, null), walk(&root, 0x8000001000));
 }
 
-test "physToVirt adds KERNEL_VIRT_BASE" {
+test "adds KERNEL_VIRT_BASE in physToVirt" {
     const virt = physToVirt(0x80200000);
     try std.testing.expectEqual(@as(usize, KERNEL_VIRT_BASE + 0x80200000), virt);
 }
 
-test "virtToPhys subtracts KERNEL_VIRT_BASE" {
+test "subtracts KERNEL_VIRT_BASE in virtToPhys" {
     const phys = virtToPhys(KERNEL_VIRT_BASE + 0x80200000);
     try std.testing.expectEqual(@as(usize, 0x80200000), phys);
 }
 
-test "physToVirt and virtToPhys are inverses" {
+test "treats physToVirt and virtToPhys as inverses" {
     const original: usize = 0x80200000;
     const round_trip = virtToPhys(physToVirt(original));
     try std.testing.expectEqual(original, round_trip);
 }
 
-test "unmapPage returns NotMapped for unmapped address" {
+test "returns NotMapped for unmapped address in unmapPage" {
     var root = PageTable.EMPTY;
     try std.testing.expectError(UnmapError.NotMapped, unmapPage(&root, 0x80001000));
 }
 
-test "unmapPage returns NotCanonical for non-canonical addresses" {
+test "returns NotCanonical for non-canonical addresses in unmapPage" {
     var root = PageTable.EMPTY;
     try std.testing.expectError(UnmapError.NotCanonical, unmapPage(&root, 0x8000_0000_0000));
 }

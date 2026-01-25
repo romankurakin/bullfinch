@@ -197,7 +197,7 @@ pub fn getReservedRegions(fdt: Fdt) RegionIterator {
     };
 }
 
-test "CellSizes.entrySize calculates correctly" {
+test "computes CellSizes.entrySize correctly" {
     const cases = [_]struct { addr: u8, size: u8, expected: usize }{
         .{ .addr = 1, .size = 1, .expected = 8 }, // 32-bit addr + 32-bit size
         .{ .addr = 2, .size = 2, .expected = 16 }, // 64-bit addr + 64-bit size
@@ -210,7 +210,7 @@ test "CellSizes.entrySize calculates correctly" {
     }
 }
 
-test "readCells parses big-endian values" {
+test "parses readCells big-endian values" {
     // 32-bit value
     const data32 = [_]u8{ 0x12, 0x34, 0x56, 0x78 };
     try std.testing.expectEqual(@as(u64, 0x12345678), readCells(&data32, 1).?);
@@ -228,7 +228,7 @@ test "readCells parses big-endian values" {
     try std.testing.expect(readCells(&data32, 3) == null);
 }
 
-test "parseRegEntry parses memory regions" {
+test "parses memory regions in parseRegEntry" {
     const cases = [_]struct {
         addr_cells: u8,
         size_cells: u8,
@@ -265,7 +265,7 @@ test "parseRegEntry parses memory regions" {
     }
 }
 
-test "parseRegEntry handles multiple entries" {
+test "handles multiple entries in parseRegEntry" {
     const cells = CellSizes{ .addr_cells = 2, .size_cells = 1 };
 
     // GIC reg: GICD at 0x8000000 + GICR at 0x80A0000
@@ -283,7 +283,7 @@ test "parseRegEntry handles multiple entries" {
     try std.testing.expectEqual(@as(u64, 0xF60000), region2.size);
 }
 
-test "parseRegEntry returns null for insufficient data" {
+test "returns null from parseRegEntry for insufficient data" {
     const cells = CellSizes{ .addr_cells = 2, .size_cells = 2 };
 
     const short = [_]u8{ 0x00, 0x00, 0x00, 0x00 };

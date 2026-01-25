@@ -302,9 +302,9 @@ pub fn init(kernel_phys_start: usize, kernel_phys_end: usize) void {
     }
 
     // Initialize each arena
-    for (regions, 0..) |region, idx| {
+    for (regions) |region| {
         if (pmm.arena_count >= MAX_ARENAS) break;
-        if (initArena(region.base, region.size, @intCast(idx))) {
+        if (initArena(region.base, region.size, @intCast(pmm.arena_count))) {
             pmm.arena_count += 1;
         }
     }
@@ -472,12 +472,12 @@ pub fn freeContiguous(head: *Page, count: usize) FreeContiguousError!void {
 
     if (count == 0) return;
 
+    const held = pmm.lock.guard();
+    defer held.release();
+
     if (!head.flags.contiguous_head) {
         return error.NotContiguousHead;
     }
-
-    const held = pmm.lock.guard();
-    defer held.release();
 
     // Find arena containing this page
     const arena = findArenaForPage(head) orelse return error.AddressNotInArena;
@@ -527,20 +527,9 @@ pub fn physToPage(phys: usize) ?*Page {
     return null;
 }
 
-/// Returns count of free pages.
-pub fn freeCount() usize {
-    return @atomicLoad(usize, &pmm.free_count, .acquire);
-}
-
 /// Returns total pages across all arenas. Constant after init.
 pub fn totalPages() usize {
     return pmm.total_pages;
-}
-
-/// Returns count of allocated pages.
-/// total_pages is immutable after init, so no atomic needed.
-pub fn allocatedCount() usize {
-    return pmm.total_pages - @atomicLoad(usize, &pmm.free_count, .acquire);
 }
 
 /// Returns number of managed arenas.
@@ -745,11 +734,11 @@ fn alignUp64(value: u64, alignment: usize) u64 {
     return (value + mask) & ~mask;
 }
 
-test "Page size is 24 bytes" {
+test "keeps Page size within metadata budget" {
     try std.testing.expectEqual(@as(usize, 24), @sizeOf(Page));
 }
 
-test "alignUp64 rounds to page boundaries" {
+test "rounds up to page boundary with alignUp64" {
     const expectEqual = std.testing.expectEqual;
     try expectEqual(@as(u64, 0), alignUp64(0, 4096));
     try expectEqual(@as(u64, 4096), alignUp64(1, 4096));
@@ -758,7 +747,7 @@ test "alignUp64 rounds to page boundaries" {
     try expectEqual(@as(u64, 8192), alignUp64(4097, 4096));
 }
 
-test "Arena.physToPage and pageToPhys roundtrip" {
+test "maps arena pages to physical addresses and back" {
     var pages: [4]Page = [_]Page{.{}} ** 4;
     var arena = Arena{
         .base_phys = 0x1000,
@@ -779,7 +768,7 @@ test "Arena.physToPage and pageToPhys roundtrip" {
     try std.testing.expectEqual(@as(?*Page, null), arena.physToPage(0x5000));
 }
 
-test "Arena.containsPhys" {
+test "detects arena physical boundaries" {
     var pages: [4]Page = [_]Page{.{}} ** 4;
     var arena = Arena{
         .base_phys = 0x1000,
@@ -795,12 +784,27 @@ test "Arena.containsPhys" {
     try std.testing.expect(!arena.containsPhys(0x5000));
 }
 
-test "Page default state is free" {
+test "defaults Page state to free" {
     const page = Page{};
     try std.testing.expectEqual(PageState.free, page.state);
     try std.testing.expect(!page.flags.contiguous_head);
 }
 
-test "Page.Flags is packed and minimal" {
+test "keeps Page.Flags packed to one byte" {
     try std.testing.expectEqual(@as(usize, 1), @sizeOf(Page.Flags));
+}
+
+test "stores arena index matching arena slot" {
+    const old_info = hwinfo.info;
+    defer hwinfo.info = old_info;
+
+    hwinfo.info = .{};
+    hwinfo.info.memory_region_count = 2;
+    hwinfo.info.memory_regions[0] = .{ .base = 0x4000_0000, .size = PAGE_SIZE }; // too small
+    hwinfo.info.memory_regions[1] = .{ .base = 0x5000_0000, .size = PAGE_SIZE * 4 };
+
+    init(0x1000_0000, 0x1000_1000);
+
+    try std.testing.expectEqual(@as(usize, 1), pmm.arena_count);
+    try std.testing.expectEqual(@as(u8, 0), pmm.arenas[0].pages[0].arena_idx);
 }

@@ -96,11 +96,11 @@ pub inline fn readStackFrame(fp: usize) struct { usize, usize } {
     return .{ ptr[0], ptr[1] };
 }
 
-test "TrapFrame.FRAME_SIZE is 288 bytes" {
+test "sets TrapFrame.FRAME_SIZE to 288 bytes" {
     try std.testing.expectEqual(@as(usize, 288), TrapFrame.FRAME_SIZE);
 }
 
-test "TrapFrame.getReg returns correct values" {
+test "returns correct values from TrapFrame.getReg" {
     var frame: TrapFrame = undefined;
     for (0..31) |i| {
         frame.regs[i] = @as(u64, i) + 100;
@@ -112,7 +112,7 @@ test "TrapFrame.getReg returns correct values" {
     try std.testing.expectEqual(@as(u64, 0), frame.getReg(31)); // out of bounds
 }
 
-test "TrapFrame.isFromUser detects EL0" {
+test "detects EL0 in TrapFrame.isFromUser" {
     var frame: TrapFrame = undefined;
     frame.spsr = 0x00; // EL0
     try std.testing.expect(frame.isFromUser());
@@ -121,7 +121,7 @@ test "TrapFrame.isFromUser detects EL0" {
     try std.testing.expect(!frame.isFromUser());
 }
 
-test "TrapFrame syscall accessors" {
+test "reads syscall accessors from TrapFrame" {
     var frame: TrapFrame = undefined;
     frame.regs[8] = 42; // syscall number
     frame.regs[0] = 100;

@@ -44,7 +44,7 @@ pub fn formatDecimal(val: usize) struct { buf: [20]u8, len: usize } {
     return .{ .buf = result, .len = len };
 }
 
-test "formatHex produces correct output" {
+test "formats hex output correctly" {
     const std = @import("std");
     try std.testing.expectEqualStrings("0000000000000000", &formatHex(0));
     try std.testing.expectEqualStrings("000000000000000f", &formatHex(0xF));
@@ -52,7 +52,7 @@ test "formatHex produces correct output" {
     try std.testing.expectEqualStrings("ffffffffffffffff", &formatHex(0xFFFFFFFFFFFFFFFF));
 }
 
-test "formatDecimal produces correct output" {
+test "formats decimal output correctly" {
     const std = @import("std");
     const zero = formatDecimal(0);
     try std.testing.expectEqualStrings("0", zero.buf[0..zero.len]);

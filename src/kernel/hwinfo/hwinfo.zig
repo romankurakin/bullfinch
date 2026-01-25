@@ -208,13 +208,13 @@ comptime {
 
 const testing = std.testing;
 
-test "GicInfo defaults to not present" {
+test "defaults GicInfo to not present" {
     const gic = GicInfo{};
     try testing.expectEqual(@as(u8, 0), gic.version);
     try testing.expectEqual(@as(u64, 0), gic.gicd_base);
 }
 
-test "GicInfo.version distinguishes GIC versions" {
+test "distinguishes GIC versions via GicInfo.version" {
     const v2 = GicInfo{ .version = 2, .gicd_base = 0x8000000, .gicc_base = 0x8010000 };
     const v3 = GicInfo{ .version = 3, .gicd_base = 0x8000000, .gicr_base = 0x80A0000 };
 
@@ -224,7 +224,7 @@ test "GicInfo.version distinguishes GIC versions" {
     try testing.expect(v3.gicr_base != 0); // GICv3 uses GICR
 }
 
-test "HardwareInfo.memoryRegions returns valid slice" {
+test "returns valid slice from HardwareInfo.memoryRegions" {
     var hw = HardwareInfo{};
     hw.memory_regions[0] = .{ .base = 0x8000_0000, .size = 0x1000_0000 };
     hw.memory_regions[1] = .{ .base = 0x4000_0000, .size = 0x800_0000 };
@@ -236,7 +236,7 @@ test "HardwareInfo.memoryRegions returns valid slice" {
     try testing.expectEqual(@as(u64, 0x4000_0000), regions[1].base);
 }
 
-test "HardwareInfo.reservedRegions returns valid slice" {
+test "returns valid slice from HardwareInfo.reservedRegions" {
     var hw = HardwareInfo{};
     hw.reserved_regions[0] = .{ .base = 0x8000_0000, .size = 0x20_0000 };
     hw.reserved_region_count = 1;
@@ -246,7 +246,7 @@ test "HardwareInfo.reservedRegions returns valid slice" {
     try testing.expectEqual(@as(u64, 0x8000_0000), regions[0].base);
 }
 
-test "sortRegionsBySize sorts descending" {
+test "sorts regions by size descending" {
     var regions = [_]Region{
         .{ .base = 0x1000, .size = 100 },
         .{ .base = 0x2000, .size = 500 },
@@ -260,7 +260,7 @@ test "sortRegionsBySize sorts descending" {
     try testing.expectEqual(@as(u64, 100), regions[2].size);
 }
 
-test "sortRegionsBySize handles empty and single element" {
+test "handles empty and single region in sortRegionsBySize" {
     var empty = [_]Region{};
     sortRegionsBySize(&empty);
 

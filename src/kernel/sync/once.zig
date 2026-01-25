@@ -35,7 +35,7 @@ pub const Once = struct {
     }
 };
 
-test "Once tryOnce returns true only first time" {
+test "returns true only on first Once.tryOnce" {
     var once = Once{};
 
     try std.testing.expect(once.tryOnce());
@@ -43,7 +43,7 @@ test "Once tryOnce returns true only first time" {
     try std.testing.expect(!once.tryOnce());
 }
 
-test "Once isDone tracks state" {
+test "tracks state with Once.isDone" {
     var once = Once{};
 
     try std.testing.expect(!once.isDone());
@@ -51,6 +51,6 @@ test "Once isDone tracks state" {
     try std.testing.expect(once.isDone());
 }
 
-test "Once size is minimal" {
+test "keeps Once size minimal" {
     try std.testing.expectEqual(@as(usize, 1), @sizeOf(Once));
 }

@@ -177,7 +177,7 @@ fn genCallerRestoreAsm() []const u8 {
 
 const mem = std.mem;
 
-test "genEntryAsm full save contains expected structure" {
+test "generates full-save entry asm with expected structure" {
     const asm_str = comptime genEntryAsm(.{
         .full_save = true,
         .handler = "handleTrap",
@@ -194,7 +194,7 @@ test "genEntryAsm full save contains expected structure" {
     try std.testing.expect(mem.indexOf(u8, asm_str, "eret") != null);
 }
 
-test "genEntryAsm fast path omits callee-saved registers" {
+test "omits callee-saved registers in fast-path entry asm" {
     const asm_str = comptime genCallerSaveAsm();
 
     try std.testing.expect(mem.indexOf(u8, asm_str, "x0, x1") != null);
@@ -203,7 +203,7 @@ test "genEntryAsm fast path omits callee-saved registers" {
     try std.testing.expect(mem.indexOf(u8, asm_str, "x28") == null);
 }
 
-test "save and restore have consistent register coverage" {
+test "keeps save/restore register coverage consistent" {
     const full_stp = comptime mem.count(u8, genFullSaveAsm(false), "stp");
     const full_ldp = comptime mem.count(u8, genFullRestoreAsm(), "ldp");
     const full_ldr = comptime mem.count(u8, genFullRestoreAsm(), "ldr ");
