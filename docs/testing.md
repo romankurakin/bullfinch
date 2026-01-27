@@ -5,7 +5,7 @@
 ```bash
 just test                 # Unit tests (portable, host)
 just test-filter "name"   # Filter by name
-just smoke                # Integration (QEMU, both archs)
+just smoke                # Integration (QEMU, dev+release on both archs)
 ```
 
 ## Structure

@@ -118,8 +118,7 @@ catches concurrency bugs early.
 **IPC field:** `blocked_on` now over adding at Synchronous IPC. Enables Liedtke
 direct process switch. 8 bytes cost, avoids later refactor.
 
-**Single-wait:** One wait pointer over wait block array. Multi-wait via
-notification binding over Port object. Thread receives on
+**Single-wait:** One wait pointer over wait block array. Thread receives on
 endpoint OR bound notification—2 primitives instead of 3.
 
 **Rung 8 structs:**
