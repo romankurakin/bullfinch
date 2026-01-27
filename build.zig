@@ -3,6 +3,7 @@
 //! Orchestrates kernel, libs, and test builds for ARM64 and RISC-V targets.
 
 const std = @import("std");
+const boards = @import("build/boards.zig");
 
 pub fn build(b: *std.Build) void {
     var query = b.standardTargetOptionsQueryOnly(.{});
@@ -23,11 +24,12 @@ pub fn build(b: *std.Build) void {
     }
     const target = b.resolveTargetQuery(query);
 
-    const arch_dir = switch (target.result.cpu.arch) {
-        .aarch64 => "arm64",
-        .riscv64 => "riscv64",
+    const arch = switch (target.result.cpu.arch) {
+        .aarch64 => boards.Arch.arm64,
+        .riscv64 => boards.Arch.riscv64,
         else => @panic("Unsupported architecture"),
     };
+    const board_info = boards.find(board, arch) orelse @panic("Unknown board for target arch");
 
     // libfdt - read-only subset for parsing bootloader DTB
     const libfdt_module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = false });
@@ -44,9 +46,8 @@ pub fn build(b: *std.Build) void {
     const libfdt = b.addLibrary(.{ .linkage = .static, .name = "fdt", .root_module = libfdt_module });
 
     // Board module - injected as dependency so kernel code imports via @import("board").
-    const board_path = b.pathJoin(&.{ "src", "kernel", "arch", arch_dir, "boards", board, "board.zig" });
     const board_module = b.createModule(.{
-        .root_source_file = b.path(board_path),
+        .root_source_file = b.path(board_info.board_zig),
         .target = target,
         .optimize = optimize,
     });
@@ -75,14 +76,27 @@ pub fn build(b: *std.Build) void {
     kernel.linkLibrary(libfdt);
 
     // Linker script for memory layout.
-    const linker_script_path = b.pathJoin(&.{ "src", "kernel", "arch", arch_dir, "boards", board, "kernel.ld" });
-    kernel.setLinkerScript(b.path(linker_script_path));
+    kernel.setLinkerScript(b.path(board_info.linker_script));
 
     if (target.result.cpu.arch == .riscv64) {
         kernel.root_module.code_model = .medium;
     }
 
-    b.installArtifact(kernel);
+    const base_name = artifactBaseName(b, arch, board, optimize);
+    const elf_name = b.fmt("{s}.elf", .{base_name});
+    const install_kernel = b.addInstallArtifact(kernel, .{
+        .dest_dir = .{ .override = .prefix },
+        .dest_sub_path = b.fmt("kernel/{s}", .{elf_name}),
+    });
+    b.getInstallStep().dependOn(&install_kernel.step);
+
+    const bin_name = b.fmt("{s}.bin", .{base_name});
+    const objcopy = b.addSystemCommand(&.{ "llvm-objcopy", "-O", "binary" });
+    objcopy.addFileArg(kernel.getEmittedBin());
+    const objcopy_out = objcopy.addOutputFileArg(bin_name);
+    b.getInstallStep().dependOn(&objcopy.step);
+    const install_bin = b.addInstallFile(objcopy_out, b.fmt("kernel/{s}", .{bin_name}));
+    b.getInstallStep().dependOn(&install_bin.step);
 
     // Tests run on host (native target).
     const test_step = b.step("test", "Run all tests");
@@ -99,10 +113,18 @@ pub fn build(b: *std.Build) void {
 
     // Smoke test runner (runs on host, spawns QEMU)
     const smoke_step = b.step("smoke", "Run smoke tests");
+    const boards_module = b.createModule(.{
+        .root_source_file = b.path("build/boards.zig"),
+        .target = native_target,
+        .optimize = .Debug,
+    });
     const smoke_module = b.createModule(.{
         .root_source_file = b.path("tests/smoke.zig"),
         .target = native_target,
         .optimize = .Debug,
+        .imports = &.{
+            .{ .name = "boards", .module = boards_module },
+        },
     });
     const smoke_exe = b.addExecutable(.{
         .name = "smoke",
@@ -113,4 +135,28 @@ pub fn build(b: *std.Build) void {
         run_smoke.addArgs(args);
     }
     smoke_step.dependOn(&run_smoke.step);
+
+    _ = buildUserspace(b);
+}
+
+fn optimizeTag(optimize: std.builtin.OptimizeMode) []const u8 {
+    return switch (optimize) {
+        .Debug => "debug",
+        .ReleaseSafe, .ReleaseFast, .ReleaseSmall => "release",
+    };
+}
+
+fn artifactBaseName(
+    b: *std.Build,
+    arch: boards.Arch,
+    board: []const u8,
+    optimize: std.builtin.OptimizeMode,
+) []const u8 {
+    const arch_tag = boards.archTag(arch);
+    const optimize_tag = optimizeTag(optimize);
+    return b.fmt("{s}-{s}-{s}", .{ arch_tag, board, optimize_tag });
+}
+
+fn buildUserspace(b: *std.Build) *std.Build.Step {
+    return b.step("userspace", "Build userspace programs (stub)");
 }

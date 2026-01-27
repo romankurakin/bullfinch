@@ -1,0 +1,26 @@
+{
+  "variants": [
+    {
+      "board": "qemu_virt",
+      "arch": "arm64",
+      "optimize": "Debug"
+    },
+    {
+      "board": "qemu_virt",
+      "arch": "arm64",
+      "optimize": "ReleaseFast"
+    },
+    {
+      "board": "qemu_virt",
+      "arch": "riscv64",
+      "optimize": "Debug"
+    },
+    {
+      "board": "qemu_virt",
+      "arch": "riscv64",
+      "optimize": "ReleaseFast"
+    }
+  ],
+  "timeout_secs": 15,
+  "parallel": true
+}

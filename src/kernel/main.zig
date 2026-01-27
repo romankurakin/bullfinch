@@ -58,7 +58,7 @@ pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, _: ?usize) noreturn {
 
     // Use printUnsafe to avoid potential deadlock if panic occurred
     // while console lock was held
-    console.printUnsafe("\n[PANIC] ");
+    console.printUnsafe("\n");
     console.printUnsafe(msg);
     console.printUnsafe("\n");
     hal.cpu.halt();

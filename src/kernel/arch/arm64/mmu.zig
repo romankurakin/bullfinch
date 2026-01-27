@@ -564,10 +564,10 @@ pub fn init(kernel_phys_load: usize, dtb_ptr: usize) void {
     instructionBarrier();
 
     // Calculate mapping to cover both kernel and DTB
-    const kernel_start = kernel_phys_load;
+    const map_start = if (dtb_ptr > 0) @min(kernel_phys_load, dtb_ptr) else kernel_phys_load;
     const dtb_end = if (dtb_ptr > 0) dtb_ptr + DTB_MAX_SIZE else kernel_phys_load;
     const map_end = @max(kernel_phys_load + MIN_PHYSMAP_SIZE, dtb_end);
-    const start_gb = kernel_start >> 30;
+    const start_gb = map_start >> 30;
     const end_gb = (map_end + (1 << 30) - 1) >> 30;
     physmap_end_gb = end_gb;
 
