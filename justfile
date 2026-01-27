@@ -18,7 +18,7 @@ build-arm64-release:
 
 build-riscv64-release:
     @echo "build: riscv64 (release)"
-    @zig build -Dtarget=riscv64-freestanding -Dcpu=generic_rv64+zihintpause -Doptimize=ReleaseFast
+    @zig build -Dtarget=riscv64-freestanding -Doptimize=ReleaseFast
 
 # Run in QEMU
 
