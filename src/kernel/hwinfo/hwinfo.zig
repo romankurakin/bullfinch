@@ -15,6 +15,24 @@ const MAX_RESERVED_REGIONS = limits.MAX_RESERVED_REGIONS;
 
 pub const Region = fdt.Region;
 
+/// ARM64-specific features.
+pub const Arm64Features = struct {
+    /// GIC info (version=0 means not present).
+    gic: GicInfo = .{},
+};
+
+/// RISC-V-specific features.
+pub const RiscvFeatures = struct {
+    /// Zkr extension availability from DTB.
+    has_zkr: bool = false,
+};
+
+/// Architecture feature bundles.
+pub const Features = struct {
+    arm64: Arm64Features = .{},
+    riscv: RiscvFeatures = .{},
+};
+
 /// GIC interrupt controller info (ARM64 only).
 pub const GicInfo = struct {
     version: u8 = 0, // 0 = not present, 2 or 3 = GIC version
@@ -50,11 +68,11 @@ pub const HardwareInfo = struct {
     /// CPU count from /cpus node.
     cpu_count: u32 = 0,
 
-    /// GIC info (ARM64 only, version=0 means not present).
-    gic: GicInfo = .{},
-
     /// UART base address discovered from DTB.
     uart_base: u64 = 0,
+
+    /// Architecture-specific features from DTB.
+    features: Features = .{},
 
     /// Slice of valid memory regions.
     pub fn memoryRegions(self: *const HardwareInfo) []const Region {
@@ -101,8 +119,22 @@ pub fn init(dtb_phys: usize, dtb_handle: fdt.Fdt) void {
 
     info.timer_frequency = getTimerFrequency(dtb_handle) orelse 0;
     info.cpu_count = getCpuCount(dtb_handle);
-    info.gic = getGicInfo(dtb_handle);
+    info.features.riscv.has_zkr = getRiscvHasZkr(dtb_handle);
+    info.features.arm64.gic = getGicInfo(dtb_handle);
     info.uart_base = getUartBase(dtb_handle) orelse 0;
+}
+
+/// Sort regions by size descending (simple insertion sort, N is small).
+fn sortRegionsBySize(regions: []Region) void {
+    if (regions.len <= 1) return;
+    for (1..regions.len) |i| {
+        const key = regions[i];
+        var j: usize = i;
+        while (j > 0 and regions[j - 1].size < key.size) : (j -= 1) {
+            regions[j] = regions[j - 1];
+        }
+        regions[j] = key;
+    }
 }
 
 /// Get timer frequency from /cpus/timebase-frequency (RISC-V).
@@ -125,6 +157,68 @@ fn getCpuCount(dtb: fdt.Fdt) u32 {
         node = fdt.nextSubnode(dtb, offset);
     }
     return count;
+}
+
+/// Find the first CPU node under /cpus.
+fn firstCpuNode(dtb: fdt.Fdt) ?i32 {
+    const cpus = fdt.pathOffset(dtb, "/cpus") orelse return null;
+    var node = fdt.firstSubnode(dtb, cpus);
+    while (node) |offset| {
+        const name = fdt.getName(dtb, offset) orelse "";
+        if (std.mem.startsWith(u8, name, "cpu@")) return offset;
+        node = fdt.nextSubnode(dtb, offset);
+    }
+    return null;
+}
+
+/// Check for a string entry in a NUL-separated string list property.
+fn hasStringListEntry(prop: []const u8, entry: []const u8) bool {
+    var i: usize = 0;
+    while (i < prop.len) {
+        const start = i;
+        while (i < prop.len and prop[i] != 0) : (i += 1) {}
+        const item = prop[start..i];
+        if (item.len != 0 and std.mem.eql(u8, item, entry)) return true;
+        if (i < prop.len) i += 1; // skip NUL
+    }
+    return false;
+}
+
+/// Convert a DTB string property to a slice without trailing NULs.
+fn trimPropString(prop: []const u8) []const u8 {
+    if (std.mem.indexOfScalar(u8, prop, 0)) |nul| return prop[0..nul];
+    return prop;
+}
+
+/// Check for an underscore-delimited extension in a riscv,isa string.
+fn isaStringHasExtension(isa: []const u8, ext: []const u8) bool {
+    if (ext.len == 0 or isa.len < ext.len) return false;
+    var pos: usize = 0;
+    while (std.mem.indexOfPos(u8, isa, pos, ext)) |idx| {
+        const before_ok = idx == 0 or isa[idx - 1] == '_';
+        const after = idx + ext.len;
+        const after_ok = after == isa.len or isa[after] == '_';
+        if (before_ok and after_ok) return true;
+        pos = idx + 1;
+    }
+    return false;
+}
+
+/// Detect RISC-V Zkr support from DTB ISA properties.
+/// Checks riscv,isa-extensions first, then falls back to deprecated riscv,isa.
+fn getRiscvHasZkr(dtb: fdt.Fdt) bool {
+    const cpu = firstCpuNode(dtb) orelse return false;
+
+    if (fdt.getprop(dtb, cpu, "riscv,isa-extensions")) |prop| {
+        if (hasStringListEntry(prop, "zkr")) return true;
+    }
+
+    if (fdt.getprop(dtb, cpu, "riscv,isa")) |prop| {
+        const isa = trimPropString(prop);
+        return isaStringHasExtension(isa, "zkr");
+    }
+
+    return false;
 }
 
 /// Parse GIC info from DTB (ARM64 only).
@@ -185,19 +279,6 @@ fn parseDeviceBase(dtb: fdt.Fdt, node: i32) ?u64 {
     const cells = fdt.CellSizes{ .addr_cells = 2, .size_cells = 2 };
     const region = fdt.parseRegEntry(reg, 0, cells) orelse return null;
     return region.base;
-}
-
-/// Sort regions by size descending (simple insertion sort, N is small).
-fn sortRegionsBySize(regions: []Region) void {
-    if (regions.len <= 1) return;
-    for (1..regions.len) |i| {
-        const key = regions[i];
-        var j: usize = i;
-        while (j > 0 and regions[j - 1].size < key.size) : (j -= 1) {
-            regions[j] = regions[j - 1];
-        }
-        regions[j] = key;
-    }
 }
 
 comptime {
