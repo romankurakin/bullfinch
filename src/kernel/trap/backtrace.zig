@@ -3,8 +3,7 @@
 //! Lock-free frame pointer walker for panic context. Walks the call stack
 //! by following the frame pointer chain.
 //!
-//! Frame layout is architecture-specific - see hal/trap_frame.zig for details.
-//! Requires code compiled with frame pointers enabled (-fno-omit-frame-pointer).
+//! Frame layout is architecture-specific.
 
 const console = @import("../console/console.zig");
 const fmt = @import("fmt.zig");
@@ -15,10 +14,8 @@ const print = console.printUnsafe;
 
 /// Maximum stack depth to prevent infinite loops on corrupted stacks.
 const MAX_DEPTH = 16;
-
-/// Kernel address space starts at this address (higher half).
-/// Used to validate frame pointer addresses.
-const KERNEL_BASE: usize = 0xFFFF_0000_0000_0000;
+/// Maximum frame pointer delta to avoid wild jumps on corrupted stacks.
+const MAX_STRIDE: usize = 64 * 1024;
 
 /// Print a backtrace starting from the given frame pointer and PC.
 /// Frame #0 shows the current PC, subsequent frames show return addresses.
@@ -42,8 +39,13 @@ pub fn printBacktrace(fp: usize, pc: usize) void {
         // Read previous frame pointer and return address (arch-specific layout)
         const prev_fp, const ret_addr = readFrame(current_fp);
 
-        // Stop if return address looks invalid
+        // Stop if frame pointer does not progress as expected.
+        if (prev_fp <= current_fp) break;
+        if (prev_fp - current_fp > MAX_STRIDE) break;
+
+        // Stop if return address looks invalid.
         if (ret_addr == 0) break;
+        if (!hal.mmu.VirtualAddress.isKernel(ret_addr)) break;
 
         printFrame(depth, ret_addr);
 
@@ -59,7 +61,7 @@ const readFrame = hal.trap_frame.readStackFrame;
 /// Check if a frame pointer value could be valid.
 fn isValidFramePointer(fp: usize) bool {
     // Must be in kernel address space
-    if (fp < KERNEL_BASE) return false;
+    if (!hal.mmu.VirtualAddress.isKernel(fp)) return false;
 
     // Must be 16-byte aligned (ARM64 AAPCS64 / RISC-V ABI requirement)
     if (fp & 0xF != 0) return false;
