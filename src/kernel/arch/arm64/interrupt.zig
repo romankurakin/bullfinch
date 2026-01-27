@@ -15,7 +15,7 @@ const panic_msg = struct {
 /// Initialize interrupt controller from hardware info.
 /// Must be called before timer.start().
 pub fn init() void {
-    const gic_info = hwinfo.info.gic;
+    const gic_info = hwinfo.info.features.arm64.gic;
     if (gic_info.version == 0) @panic(panic_msg.GIC_NOT_FOUND);
     gic.init(.{
         .version = gic_info.version,
