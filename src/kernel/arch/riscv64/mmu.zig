@@ -36,6 +36,9 @@ const UnmapError = mmu_types.UnmapError;
 /// This is the lowest address in upper canonical range (bit 47 = 1).
 pub const KERNEL_VIRT_BASE: usize = 0xFFFF_8000_0000_0000;
 
+/// Highest exclusive address in lower canonical range (bit 47 = 0).
+const LOWER_CANONICAL_LIMIT: usize = @as(usize, 1) << 47;
+
 const GIGAPAGE_SIZE: usize = 1 << 30;
 const GIGAPAGE_MASK: usize = GIGAPAGE_SIZE - 1;
 const MEGAPAGE_SIZE: usize = 1 << 21;
@@ -168,10 +171,19 @@ pub const VirtualAddress = struct {
         };
     }
 
+    /// Check if address is in lower canonical range (user space).
+    pub inline fn isUserRange(vaddr: usize) bool {
+        return vaddr < LOWER_CANONICAL_LIMIT;
+    }
+
+    /// Check if address is in upper canonical range (kernel space).
+    pub inline fn isKernel(vaddr: usize) bool {
+        return vaddr >= KERNEL_VIRT_BASE;
+    }
+
     /// Check if address is canonical (bits 63:48 are sign-extension of bit 47).
     pub inline fn isCanonical(vaddr: usize) bool {
-        const high_bits = vaddr >> 47;
-        return high_bits == 0 or high_bits == 0x1FFFF;
+        return isUserRange(vaddr) or isKernel(vaddr);
     }
 };
 
