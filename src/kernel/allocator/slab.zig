@@ -1,6 +1,6 @@
-//! Fixed-Size Object Pool Allocator.
+//! Slab Allocator.
 //!
-//! Multi-page pool for kernel objects. Alloc is O(bitmap_words) in the worst
+//! Fixed-size object pool for kernel objects. Alloc is O(bitmap_words) in the worst
 //! case, but bitmap_words is typically 1-2 for common kernel objects (≤960B),
 //! making it effectively O(1). Free is always O(1). Objects are cache-line
 //! aligned (64B) to prevent false sharing on SMP.
@@ -15,8 +15,9 @@
 //! 0         64 (slot 0)
 //!
 //! Each slab is self-contained: back-pointer at page start points to SlabData
-//! in slot 0, which contains the free bitmap. This avoids needing a separate
-//! allocator for metadata (chicken-and-egg problem).
+//! in slot 0, which contains the free bitmap. The back-pointer is encoded with
+//! a per-pool cookie to harden frees against corruption. This avoids needing a
+//! separate allocator for metadata (chicken-and-egg problem).
 //!
 //! Allocation scans the bitmap with @ctz (count trailing zeros) to find the
 //! first free slot. Complexity is O(bitmap_words), but for typical kernel
@@ -37,6 +38,13 @@ const memory = @import("../memory/memory.zig");
 
 const PAGE_SIZE = memory.PAGE_SIZE;
 
+// Verify mix64 against known test vector from reference SplitMix64.
+// Catches accidental changes to constants or shift amounts.
+comptime {
+    const expected: usize = 0xE220A8397B1DCDAF;
+    if (mix64(0) != expected) @compileError("mix64 self-test failed");
+}
+
 /// Errors returned by pool free operations.
 pub const FreeError = error{
     /// Pointer not aligned to object boundary.
@@ -47,14 +55,25 @@ pub const FreeError = error{
     OutOfBounds,
     /// Slot already free (double-free).
     DoubleFree,
+    /// Pointer is not from this pool or slab metadata is corrupted.
+    InvalidSlab,
 };
 
 /// Enable extra validation in debug builds.
 const debug_kernel = builtin.mode == .Debug;
 
 const panic_msg = struct {
-    const SLAB_NO_FREE_SLOTS = "pool: slab has no free slots";
+    const SLAB_NO_FREE_SLOTS = "slab: no free slots";
 };
+
+/// Simple mixing function for cookies (SplitMix64).
+fn mix64(x: usize) usize {
+    var z = x +% 0x9E3779B97F4A7C15;
+    z = (z ^ (z >> 30)) *% 0xBF58476D1CE4E5B9;
+    z = (z ^ (z >> 27)) *% 0x94D049BB133111EB;
+    return z ^ (z >> 31);
+}
+
 
 /// 64 bytes - standard cache line on ARM64 and modern x86.
 /// Ensures two objects never share a cache line (prevents false sharing).
@@ -76,7 +95,7 @@ pub const PageFreeFn = *const fn (usize) void;
 ///
 /// ```
 /// // Create pool with PMM backing:
-/// var pool = Pool(Thread).init(pmmAllocPage, pmmFreePage);
+/// var pool = Pool(Thread).init(pmmAllocPage, pmmFreePage, null);
 ///
 /// // Allocate object (returns null if OOM):
 /// const thread = pool.alloc() orelse return error.OutOfMemory;
@@ -116,6 +135,9 @@ pub fn Pool(comptime T: type) type {
         /// Page deallocator function.
         free_page: PageFreeFn,
 
+        /// Per-pool cookie used to encode slab back-pointers and validate frees.
+        cookie: usize,
+
         /// Current slab for allocation (has free space).
         current: ?*SlabData = null,
         /// List of slabs with free space.
@@ -126,7 +148,7 @@ pub fn Pool(comptime T: type) type {
         slab_count: usize = 0,
 
         /// Lock for SMP safety.
-        /// TODO(smp): Add per-CPU magazine cache for lock-free fast path.
+        /// TODO(smp): Add per-CPU fast path (magazines or freelist-in-object).
         /// See Bonwick, "Magazines and Vmem" (USENIX 2001).
         lock: sync.SpinLock = .{},
 
@@ -134,6 +156,8 @@ pub fn Pool(comptime T: type) type {
         const SlabData = struct {
             /// Page base address (must be directly mapped).
             page_addr: usize,
+            /// Slab cookie for integrity checks.
+            cookie: usize,
             /// Free slot bitmap. Bit semantics: 1 = free, 0 = allocated.
             bitmap: [bitmap_words]u64,
             free_count: usize,
@@ -143,7 +167,9 @@ pub fn Pool(comptime T: type) type {
         };
 
         comptime {
-            // SlabData must fit in slot 0 (one object_size worth of space)
+            // SlabData lives in slot 0. With large objects, bitmap may grow
+            // too big to fit. The objects_per_slab calculation doesn't account
+            // for SlabData size, only bitmap words.
             if (@sizeOf(SlabData) > object_size) {
                 @compileError("SlabData too large for slot 0");
             }
@@ -155,12 +181,32 @@ pub fn Pool(comptime T: type) type {
         /// Object size after cache-line alignment.
         pub const aligned_size = object_size;
 
-        /// Initialize pool with page allocator functions.
-        pub fn init(alloc_page: PageAllocFn, free_page: PageFreeFn) Self {
+        /// Initialize pool with page allocator functions and optional seed.
+        pub fn init(alloc_page: PageAllocFn, free_page: PageFreeFn, seed: ?usize) Self {
+            const chosen_seed = seed orelse defaultSeed(alloc_page, free_page);
             return Self{
                 .alloc_page = alloc_page,
                 .free_page = free_page,
+                .cookie = mix64(chosen_seed),
             };
+        }
+
+        fn defaultSeed(alloc_page: PageAllocFn, free_page: PageFreeFn) usize {
+            // Best-effort seed from function pointers. Weak entropy - prefer passing
+            // a hardware-derived seed to init() when available.
+            return @intFromPtr(alloc_page) ^ @intFromPtr(free_page) ^ @intFromPtr(&mix64);
+        }
+
+        fn slabCookie(self: *const Self, page_addr: usize) usize {
+            return mix64(self.cookie ^ page_addr);
+        }
+
+        fn encodeBackptr(self: *const Self, page_addr: usize, slab: *SlabData) usize {
+            return @intFromPtr(slab) ^ self.slabCookie(page_addr);
+        }
+
+        fn decodeBackptr(self: *const Self, page_addr: usize, encoded: usize) *SlabData {
+            return @ptrFromInt(encoded ^ self.slabCookie(page_addr));
         }
 
         /// Allocate object. Returns null if out of memory.
@@ -296,6 +342,7 @@ pub fn Pool(comptime T: type) type {
 
             slab.* = .{
                 .page_addr = page_addr,
+                .cookie = self.slabCookie(page_addr),
                 .bitmap = bitmap,
                 .free_count = objects_per_slab - 1, // -1 because slot 0 used for SlabData
                 .next = null,
@@ -303,9 +350,9 @@ pub fn Pool(comptime T: type) type {
                 .in_partial_list = false,
             };
 
-            // Write back-pointer at page start for O(1) free lookup
-            const backptr: **SlabData = @ptrFromInt(page_addr);
-            backptr.* = slab;
+            // Write encoded back-pointer at page start for O(1) free lookup.
+            const backptr: *usize = @ptrFromInt(page_addr);
+            backptr.* = self.encodeBackptr(page_addr, slab);
 
             self.linkSlab(slab);
             self.slab_count += 1;
@@ -322,10 +369,14 @@ pub fn Pool(comptime T: type) type {
             const page_base = obj_addr & ~@as(usize, PAGE_SIZE - 1);
 
             // Read back-pointer to find slab
-            const backptr: **SlabData = @ptrFromInt(page_base);
-            const slab = backptr.*;
-            if (debug_kernel and slab.page_addr != page_base) {
-                @panic("pool: invalid slab back-pointer");
+            const backptr: *usize = @ptrFromInt(page_base);
+            const slab = self.decodeBackptr(page_base, backptr.*);
+            const expected_slab_addr = page_base + usable_start;
+            if (@intFromPtr(slab) != expected_slab_addr) {
+                return error.InvalidSlab;
+            }
+            if (slab.page_addr != page_base or slab.cookie != self.slabCookie(page_base)) {
+                return error.InvalidSlab;
             }
 
             // Calculate slot index
@@ -437,7 +488,7 @@ test "allocates and frees from Pool" {
     const TestObj = extern struct { id: u32, data: [60]u8 };
     const TestPool = Pool(TestObj);
 
-    var pool = TestPool.init(testAllocPage, testFreePage);
+    var pool = TestPool.init(testAllocPage, testFreePage, null);
 
     const obj1 = pool.alloc() orelse return error.AllocFailed;
     const obj2 = pool.alloc() orelse return error.AllocFailed;
@@ -459,7 +510,7 @@ test "grows Pool across multiple slabs" {
     const TestObj = extern struct { data: [960]u8 }; // Large object, few per slab
     const TestPool = Pool(TestObj);
 
-    var pool = TestPool.init(testAllocPage, testFreePage);
+    var pool = TestPool.init(testAllocPage, testFreePage, null);
 
     // Allocate more than one slab can hold
     var objs: [10]*TestObj = undefined;
@@ -487,7 +538,7 @@ test "finds correct slab via back-pointer on Pool.free" {
     const TestObj = extern struct { value: u64, padding: [56]u8 };
     const TestPool = Pool(TestObj);
 
-    var pool = TestPool.init(testAllocPage, testFreePage);
+    var pool = TestPool.init(testAllocPage, testFreePage, null);
 
     // Allocate objects that span multiple slabs
     const obj1 = pool.alloc() orelse return error.AllocFailed;
@@ -509,7 +560,7 @@ test "reuses freed slot from full slab" {
     const TestObj = extern struct { value: u64, padding: [56]u8 };
     const TestPool = Pool(TestObj);
 
-    var pool = TestPool.init(testAllocPage, testFreePage);
+    var pool = TestPool.init(testAllocPage, testFreePage, null);
 
     // Allocate until slab is full
     var objs: [TestPool.capacity_per_slab]*TestObj = undefined;
@@ -536,7 +587,7 @@ test "reclaims empty slab above MIN_SLABS" {
     const TestObj = extern struct { value: u64, padding: [56]u8 };
     const TestPool = Pool(TestObj);
 
-    var pool = TestPool.init(testAllocPage, testFreePage);
+    var pool = TestPool.init(testAllocPage, testFreePage, null);
 
     // Fill first slab completely to force second slab allocation
     const cap = TestPool.capacity_per_slab - 1; // -1 for SlabData in slot 0
@@ -570,7 +621,7 @@ test "handles Pool.free error paths" {
     const TestObj = extern struct { value: u64, padding: [56]u8 };
     const TestPool = Pool(TestObj);
 
-    var pool = TestPool.init(testAllocPage, testFreePage);
+    var pool = TestPool.init(testAllocPage, testFreePage, null);
     const obj = pool.alloc() orelse return error.AllocFailed;
 
     const obj_addr = @intFromPtr(obj);
@@ -590,4 +641,25 @@ test "handles Pool.free error paths" {
     // Double free.
     try pool.free(obj);
     try testing.expectError(error.DoubleFree, pool.free(obj));
+}
+
+test "rejects corrupted slab back-pointer" {
+    resetTestPages();
+
+    const TestObj = extern struct { value: u64, padding: [56]u8 };
+    const TestPool = Pool(TestObj);
+
+    var pool = TestPool.init(testAllocPage, testFreePage, null);
+    const obj = pool.alloc() orelse return error.AllocFailed;
+
+    const obj_addr = @intFromPtr(obj);
+    const page_base = obj_addr & ~@as(usize, PAGE_SIZE - 1);
+    const backptr: *usize = @ptrFromInt(page_base);
+    const saved = backptr.*;
+
+    backptr.* = 0;
+    try testing.expectError(error.InvalidSlab, pool.free(obj));
+
+    backptr.* = saved;
+    try pool.free(obj);
 }
