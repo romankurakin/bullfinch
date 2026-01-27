@@ -13,8 +13,11 @@
 //! - Reinit trap vector at virtual address
 //! - Switch console to virtual UART
 //! - Parse DTB for hardware info
-//! - Expand physmap, remove identity mapping
+//! - Expand physmap
+//! - Remove identity mapping
 //! - Init timer frequency
+//!
+//! Kernel subsystem init continues in kmain() after virtInit().
 
 const board = @import("board");
 const boot_log = @import("log.zig");
@@ -30,9 +33,10 @@ const panic_msg = struct {
 /// Kernel virtual base address, exported for boot.zig assembly.
 pub export const KERNEL_VIRT_BASE: usize = hal.mmu.KERNEL_VIRT_BASE;
 
-/// Physical-mode initialization. Called from boot.zig before jumping to higher-half.
-/// Initializes console, traps, and MMU (with identity + higher-half mappings).
-/// Returns to caller which then switches SP and jumps to kmain.
+/// Phase 1 boot, still running at physical addresses.
+/// Called from boot.zig before switching stacks or jumping to higher-half.
+/// Brings up console, installs early trap vectors, and enables MMU with
+/// identity + higher-half mappings, then returns to the arch boot stub.
 pub export fn physInit() void {
     console.init();
     console.print("\n");
@@ -49,7 +53,9 @@ pub export fn physInit() void {
     boot_log.mmu();
 }
 
-/// Finalizes address space transition and initializes timer hardware.
+/// Phase 2 boot, now running at virtual addresses.
+/// Reinitializes trap vectors and console for higher-half, parses DTB, grows
+/// physmap, removes identity mapping, and initializes timer frequency.
 pub fn virtInit() void {
     // Reinit trap vector to virtual address, must happen before removing identity mapping
     hal.trap.init();
