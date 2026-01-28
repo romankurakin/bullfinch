@@ -38,6 +38,12 @@ const memory = @import("../memory/memory.zig");
 
 const PAGE_SIZE = memory.PAGE_SIZE;
 
+comptime {
+    if (!std.math.isPowerOfTwo(PAGE_SIZE)) {
+        @compileError("PAGE_SIZE must be power of two for slab page masking");
+    }
+}
+
 // Verify mix64 against known test vector from reference SplitMix64.
 // Catches accidental changes to constants or shift amounts.
 comptime {
@@ -102,12 +108,15 @@ pub const PageFreeFn = *const fn (usize) void;
 /// defer pool.free(thread);
 /// ```
 pub fn Pool(comptime T: type) type {
-    // Cache-line alignment prevents false sharing when different cores access adjacent objects
+    // Cache-line alignment prevents false sharing when different cores access adjacent objects.
+    // Also honor the object's required alignment.
     const raw_object_size = @max(@sizeOf(T), 1);
-    const object_size = std.mem.alignForward(usize, raw_object_size, CACHE_LINE_SIZE);
+    const object_align = @max(@alignOf(T), CACHE_LINE_SIZE);
+    const object_size = std.mem.alignForward(usize, raw_object_size, object_align);
 
-    // Calculate capacity per slab, accounting for back-pointer at start and bitmap at end
-    const usable_start = std.mem.alignForward(usize, BACKPTR_SIZE, CACHE_LINE_SIZE);
+    // Calculate capacity per slab, accounting for back-pointer at start and bitmap at end.
+    // Use object alignment so slot 0 and subsequent objects are correctly aligned.
+    const usable_start = std.mem.alignForward(usize, BACKPTR_SIZE, object_align);
 
     const objects_per_slab = comptime blk: {
         var max_objects = (PAGE_SIZE - usable_start) / object_size;
