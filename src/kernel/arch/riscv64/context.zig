@@ -49,18 +49,18 @@ pub const Context = extern struct {
     }
 
     /// Store entry point and argument for threadTrampoline to retrieve.
-    /// Uses s2/s3 (s0 is fp, s1 may be used by compiler).
+    /// Uses s1/s2 (s0 is frame pointer per ABI). See RISC-V ABIs Specification, Table 1.
     pub fn setEntryData(ctx: *Context, entry: usize, arg: usize) void {
-        ctx.s2 = entry;
-        ctx.s3 = arg;
+        ctx.s1 = entry;
+        ctx.s2 = arg;
     }
 };
 
-/// First code a new thread runs. Reads entry/arg from s2/s3 then jumps to threadStart.
+/// First code a new thread runs. Reads entry/arg from s1/s2 then jumps to threadStart.
 pub fn threadTrampoline() callconv(.naked) noreturn {
     asm volatile (
-        \\ mv a0, s2
-        \\ mv a1, s3
+        \\ mv a0, s1
+        \\ mv a1, s2
         \\ j threadStart
     );
 }

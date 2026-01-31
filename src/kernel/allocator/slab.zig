@@ -213,8 +213,13 @@ pub fn Pool(comptime T: type) type {
             return @intFromPtr(slab) ^ self.slabCookie(page_addr);
         }
 
-        fn decodeBackptr(self: *const Self, page_addr: usize, encoded: usize) *SlabData {
-            return @ptrFromInt(encoded ^ self.slabCookie(page_addr));
+        /// Decode backptr and validate alignment before returning pointer.
+        /// Returns null if decoded address is misaligned (indicates wrong pool).
+        fn decodeBackptr(self: *const Self, page_addr: usize, encoded: usize) ?*SlabData {
+            const decoded = encoded ^ self.slabCookie(page_addr);
+            // SlabData requires natural alignment. Misaligned = wrong pool.
+            if (decoded % @alignOf(SlabData) != 0) return null;
+            return @ptrFromInt(decoded);
         }
 
         /// Allocate object. Returns null if out of memory.
@@ -378,7 +383,9 @@ pub fn Pool(comptime T: type) type {
 
             // Read back-pointer to find slab
             const backptr: *usize = @ptrFromInt(page_base);
-            const slab = self.decodeBackptr(page_base, backptr.*);
+            const slab = self.decodeBackptr(page_base, backptr.*) orelse {
+                return error.InvalidSlab;
+            };
             const expected_slab_addr = page_base + usable_start;
             if (@intFromPtr(slab) != expected_slab_addr) {
                 return error.InvalidSlab;

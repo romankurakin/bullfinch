@@ -1,23 +1,22 @@
 //! ARM64 Trap Handling.
 //!
-//! ARM64 uses a 16-entry exception vector table organized as 4 exception types
-//! (Synchronous, IRQ, FIQ, SError) × 4 sources (Current EL with SP0/SPx, Lower EL
-//! AArch64/AArch32). Each entry is 128 bytes and the table must be 2KB aligned.
+//! Exception vector table: 4 types (Sync, IRQ, FIQ, SError) x 4 sources
+//! (Current EL SP0/SPx, Lower EL AArch64/AArch32) = 16 entries. Each entry
+//! is 128 bytes; table must be 2KB aligned per VBAR_EL1 requirements.
 //!
-//! Hardware saves ELR_EL1 (return address), SPSR_EL1 (status), and masks interrupts
-//! before jumping to the vector. We save remaining registers in trap_entry.zig.
-//! Kernel traps use SP_EL1 directly; user traps read SP_EL0 to capture the user stack.
+//! Hardware saves ELR_EL1 and SPSR_EL1, masks interrupts, then jumps to vector.
+//! We save remaining registers in trap_entry.zig. Kernel traps use SP_EL1;
+//! user traps read SP_EL0 for the user stack pointer.
 //!
 //! See ARM Architecture Reference Manual, D1.4 (Exceptions).
 //!
-//! TODO(syscall): Fast path dispatch - skip slow path if no pending work flags.
-//! TODO(smp): Per-CPU trap state tracking reentry depth.
-//! TODO(fpu): Lazy FPU for userspace - trap on EC=0x07 (simd_fp), restore state,
-//!            set CPACR_EL1.FPEN=0b11, track fpu_owner per-CPU.
+//! TODO(syscall): Fast path dispatch for no pending work.
+//! TODO(smp): Per-CPU trap state for reentry tracking.
 
 const backtrace = @import("../../trap/backtrace.zig");
 const clock = @import("../../clock/clock.zig");
 const console = @import("../../console/console.zig");
+const hal_fpu = @import("../../hal/fpu.zig");
 const task = @import("../../task/task.zig");
 const trace = @import("../../debug/trace.zig");
 const cpu = @import("cpu.zig");
@@ -26,14 +25,13 @@ const gic = @import("gic.zig");
 const trap_entry = @import("trap_entry.zig");
 const trap_frame = @import("trap_frame.zig");
 
-// Use printUnsafe in trap context: we can't safely acquire locks here
+// printUnsafe: can't acquire locks in trap context
 const print = console.printUnsafe;
 
-/// Saved register context during trap. Layout must match assembly save/restore order.
+/// Saved register context. Layout must match assembly.
 const TrapFrame = trap_frame.TrapFrame;
 
-/// Exception class from ESR_EL1[31:26].
-/// See ARM Architecture Reference Manual, ESR_EL1.EC field encoding.
+/// Exception class from ESR_EL1[31:26]. See ARM Architecture Reference Manual, D24.2.45.
 pub const TrapClass = enum(u6) {
     unknown = 0x00,
     wfi_wfe = 0x01,
@@ -81,7 +79,6 @@ pub const TrapClass = enum(u6) {
     brk_aarch64 = 0x3C,
     _,
 
-    /// Get human-readable name for this exception class.
     pub fn name(self: TrapClass) []const u8 {
         return switch (self) {
             .unknown => "unknown exception",
@@ -109,56 +106,50 @@ pub const TrapClass = enum(u6) {
     }
 };
 
-/// VBAR_EL1 requires 2KB alignment (bits 10:0 must be 0).
+/// VBAR_EL1 requires 2KB alignment (bits 10:0 RES0).
 const VBAR_ALIGNMENT = 2048;
 
-/// Trap vector table - must be 2KB aligned per ARM spec.
-/// 16 entries × 128 bytes each. Kernel and user traps use separate entry points.
-/// Static assembly - no runtime patching needed, linker resolves offsets.
+/// Trap vector table. 16 entries × 128 bytes, 2KB aligned.
 export fn trap_vectors() align(VBAR_ALIGNMENT) linksection(".vectors") callconv(.naked) void {
-    // 16 vector entries, each 128 bytes (32 instructions).
-    // Entry order within each group: Synchronous, IRQ, FIQ, SError
     asm volatile (
-    // Current EL with SP_EL0 (0x000 - 0x1FF) - shouldn't happen, we use SP_ELx
-        \\ b kernelTrapEntry  // 0x000: Synchronous
+    // Current EL with SP_EL0 (0x000-0x1FF)
+        \\ b kernelTrapEntry
         \\ .balign 128
-        \\ b kernelIrqEntry   // 0x080: IRQ
+        \\ b kernelIrqEntry
         \\ .balign 128
-        \\ b kernelTrapEntry  // 0x100: FIQ
+        \\ b kernelTrapEntry
         \\ .balign 128
-        \\ b kernelTrapEntry  // 0x180: SError
+        \\ b kernelTrapEntry
         \\ .balign 128
-        // Current EL with SP_ELx (0x200 - 0x3FF) - kernel mode
-        \\ b kernelTrapEntry  // 0x200: Synchronous
+        // Current EL with SP_ELx (0x200-0x3FF)
+        \\ b kernelTrapEntry
         \\ .balign 128
-        \\ b kernelIrqEntry   // 0x280: IRQ
+        \\ b kernelIrqEntry
         \\ .balign 128
-        \\ b kernelTrapEntry  // 0x300: FIQ
+        \\ b kernelTrapEntry
         \\ .balign 128
-        \\ b kernelTrapEntry  // 0x380: SError
+        \\ b kernelTrapEntry
         \\ .balign 128
-        // Lower EL using AArch64 (0x400 - 0x5FF) - userspace
-        \\ b userTrapEntry    // 0x400: Synchronous
+        // Lower EL AArch64 (0x400-0x5FF)
+        \\ b userTrapEntry
         \\ .balign 128
-        \\ b userTrapEntry    // 0x480: IRQ (unified with traps)
+        \\ b userTrapEntry
         \\ .balign 128
-        \\ b userTrapEntry    // 0x500: FIQ
+        \\ b userTrapEntry
         \\ .balign 128
-        \\ b userTrapEntry    // 0x580: SError
+        \\ b userTrapEntry
         \\ .balign 128
-        // Lower EL using AArch32 (0x600 - 0x7FF) - not supported
-        \\ b userTrapEntry    // 0x600: Synchronous
+        // Lower EL AArch32 (0x600-0x7FF)
+        \\ b userTrapEntry
         \\ .balign 128
-        \\ b userTrapEntry    // 0x680: IRQ
+        \\ b userTrapEntry
         \\ .balign 128
-        \\ b userTrapEntry    // 0x700: FIQ
+        \\ b userTrapEntry
         \\ .balign 128
-        \\ b userTrapEntry    // 0x780: SError
+        \\ b userTrapEntry
         \\ .balign 128
     );
 }
-
-// Entry points generated from a single template (see trap_entry.zig).
 
 /// Kernel trap entry. Full save; kernel faults are bugs.
 export fn kernelTrapEntry() callconv(.naked) noreturn {
@@ -169,7 +160,7 @@ export fn kernelTrapEntry() callconv(.naked) noreturn {
         }));
 }
 
-/// Kernel IRQ entry. Full save to allow safe preemption.
+/// Kernel IRQ entry. Full save for preemption safety.
 export fn kernelIrqEntry() callconv(.naked) noreturn {
     asm volatile (trap_entry.genEntryAsm(.{
             .full_save = true,
@@ -179,9 +170,7 @@ export fn kernelIrqEntry() callconv(.naked) noreturn {
         }));
 }
 
-/// User trap entry. Full save for all user-mode traps and interrupts.
-/// Single entry point; handler checks for pending IRQs.
-/// Saves user SP from SP_EL0; kernel already uses SP_EL1 at EL1.
+/// User trap entry. Saves SP_EL0 (user stack).
 export fn userTrapEntry() callconv(.naked) noreturn {
     asm volatile (trap_entry.genEntryAsm(.{
             .full_save = true,
@@ -192,7 +181,7 @@ export fn userTrapEntry() callconv(.naked) noreturn {
         }));
 }
 
-/// Spurious interrupt ID returned by GIC when no interrupt is pending.
+/// Spurious interrupt ID (GIC returns this when no interrupt pending).
 const SPURIOUS_INTID: u32 = 1023;
 
 const TIMER_PPI = gic.TIMER_PPI;
@@ -224,11 +213,16 @@ fn panicKernelIrq(intid: u32) noreturn {
     cpu.halt();
 }
 
-/// Kernel trap handler. Kernel faults are bugs, always panic.
-export fn handleKernelTrap(frame: *TrapFrame) noreturn {
+/// Kernel trap handler. Most kernel faults are bugs, but FPU traps are expected.
+export fn handleKernelTrap(frame: *TrapFrame) callconv(.c) void {
     const ec_bits: u6 = @truncate(frame.esr >> 26);
     const ec: TrapClass = @enumFromInt(ec_bits);
     trace.emit(.trap_enter, frame.pc(), @intFromEnum(ec), 0);
+
+    switch (ec) {
+        .simd_fp => if (tryHandleFpuTrap()) return,
+        else => {},
+    }
     // TODO(syscall): Handle SVC exceptions.
     // TODO(vm): Handle page faults.
     panicTrap(frame, ec.name());
@@ -255,9 +249,21 @@ export fn handleUserTrap(frame: *TrapFrame) void {
     const ec_bits: u6 = @truncate(frame.esr >> 26);
     const ec: TrapClass = @enumFromInt(ec_bits);
     trace.emit(.trap_enter, frame.pc(), @intFromEnum(ec), 1);
+
+    switch (ec) {
+        .simd_fp => if (tryHandleFpuTrap()) return,
+        else => {},
+    }
     // TODO(syscall): Handle SVC from userspace.
     // TODO(vm): Handle user page faults.
     panicTrap(frame, ec.name());
+}
+
+/// Try to handle as lazy FPU trap. Returns true if handled.
+/// ARM64: simd_fp (EC=0x07) means FPU/SIMD access when FPEN traps.
+fn tryHandleFpuTrap() bool {
+    const thread = task.scheduler.current() orelse return false;
+    return hal_fpu.handleTrap(thread, @truncate(cpu.currentId()));
 }
 
 /// Print minimal panic information and backtrace, then halt.

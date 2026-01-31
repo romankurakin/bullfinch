@@ -39,6 +39,7 @@ fn kernelInit() void {
     boot_log.trace();
 
     hal.interrupt.init();
+    hal.fpu.bootInit();
     clock.init();
     boot_log.clock();
 

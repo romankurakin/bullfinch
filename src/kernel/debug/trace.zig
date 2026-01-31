@@ -34,6 +34,7 @@ pub const EventId = enum(u16) {
     sched_yield = 9,
     sched_exit = 10,
     sched_preempt = 11,
+    fpu_trap = 12,
 };
 
 pub const Event = extern struct {
@@ -182,6 +183,7 @@ fn shortName(id: EventId) []const u8 {
         .sched_preempt => "sched_preempt",
         .trap_enter => "irq",
         .trap_exit => "irq",
+        .fpu_trap => "fpu_trap",
     };
 }
 
@@ -236,6 +238,14 @@ fn printDetail(ev: Event) void {
         .trap_enter, .trap_exit => {
             console.printUnsafe("code=");
             printHexWithPrefix(ev.a, 16);
+        },
+        .fpu_trap => {
+            console.printUnsafe("tid=");
+            printDec(ev.a);
+            console.printUnsafe(" prev=");
+            printDec(ev.b);
+            console.printUnsafe(" alloc=");
+            printDec(ev.c);
         },
     }
 }

@@ -14,12 +14,12 @@
 //!
 //! TODO(syscall): Fast path dispatch - skip slow path if no pending work flags.
 //! TODO(smp): Per-CPU trap state tracking reentry depth.
-//! TODO(fpu): Lazy FPU for userspace - trap on illegal_instruction when FS=Off,
-//!            restore state, set sstatus.FS=Clean, track fpu_owner per-CPU.
 
 const backtrace = @import("../../trap/backtrace.zig");
 const clock = @import("../../clock/clock.zig");
 const console = @import("../../console/console.zig");
+const fpu = @import("fpu.zig");
+const hal_fpu = @import("../../hal/fpu.zig");
 const task = @import("../../task/task.zig");
 const trace = @import("../../debug/trace.zig");
 const cpu = @import("cpu.zig");
@@ -199,10 +199,15 @@ export fn userTrapEntry() linksection(".trap") callconv(.naked) noreturn {
         }));
 }
 
-/// Kernel trap handler. Kernel faults are bugs, always panic.
-export fn handleKernelTrap(frame: *TrapFrame) noreturn {
+/// Kernel trap handler. Most kernel faults are bugs, but FPU traps are expected.
+export fn handleKernelTrap(frame: *TrapFrame) callconv(.c) void {
     const cause = @as(TrapCause, @enumFromInt(frame.scause));
     trace.emit(.trap_enter, frame.pc(), @intFromEnum(cause), 0);
+
+    switch (cause) {
+        .illegal_instruction => if (tryHandleFpuTrap()) return,
+        else => {},
+    }
     // TODO(syscall): Handle ECALL from S-mode.
     // TODO(vm): Handle kernel page faults.
     panicTrap(frame, cause.name());
@@ -266,10 +271,25 @@ export fn handleUserTrap(frame: *TrapFrame) void {
         return;
     }
 
+    trace.emit(.trap_enter, frame.pc(), @intFromEnum(cause), 1);
+
+    switch (cause) {
+        .illegal_instruction => if (tryHandleFpuTrap()) return,
+        else => {},
+    }
     // TODO(syscall): Handle ECALL from U-mode.
     // TODO(vm): Handle user page faults.
-    trace.emit(.trap_enter, frame.pc(), @intFromEnum(cause), 1);
     panicTrap(frame, cause.name());
+}
+
+/// Try to handle as lazy FPU trap. Returns true if handled.
+/// Heuristic: illegal_instruction with sstatus.FS=Off is assumed to be FPU access.
+/// This may incorrectly handle non-FPU illegal instructions when FPU is disabled,
+/// but in practice kernel code doesn't execute unknown instructions.
+fn tryHandleFpuTrap() bool {
+    if (fpu.isEnabled()) return false;
+    const thread = task.scheduler.current() orelse return false;
+    return hal_fpu.handleTrap(thread, @truncate(cpu.currentId()));
 }
 
 /// Print minimal panic information and backtrace, then halt.

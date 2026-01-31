@@ -113,6 +113,7 @@ test "tracks thread count and returns true on last removal" {
         .weight = 1024,
         .virtual_runtime = 0,
         .process_next = null,
+        .fpu_state = null,
     };
 
     var t2 = Thread{
@@ -126,6 +127,7 @@ test "tracks thread count and returns true on last removal" {
         .weight = 1024,
         .virtual_runtime = 0,
         .process_next = null,
+        .fpu_state = null,
     };
 
     proc.addThread(&t1);

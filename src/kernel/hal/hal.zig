@@ -13,6 +13,7 @@ const memory = @import("../memory/memory.zig");
 pub const context = @import("context.zig");
 pub const cpu = @import("cpu.zig");
 pub const entropy = @import("entropy.zig");
+pub const fpu = @import("fpu.zig");
 pub const interrupt = @import("interrupt.zig");
 pub const timer = @import("timer.zig");
 pub const trap_frame = @import("trap_frame.zig");

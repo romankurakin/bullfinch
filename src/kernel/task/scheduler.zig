@@ -224,6 +224,9 @@ pub fn exit() noreturn {
         hal.cpu.halt();
     };
 
+    // Clean up FPU ownership before exiting.
+    hal.fpu.onThreadExit(curr, @truncate(hal.cpu.currentId()));
+
     curr.state = .exited;
     trace.emit(.sched_exit, curr.id, 0, 0);
 
@@ -305,6 +308,9 @@ inline fn switchTo(target: *Thread, held: sync.SpinLock.Held) void {
     current_thread = target;
     target.state = .running;
     trace.emit(.sched_switch, prev.id, target.id, 0);
+
+    // Lazy FPU: disable FPU so new thread traps on first use.
+    hal.fpu.onContextSwitch(@truncate(hal.cpu.currentId()));
 
     held.releaseNoIrqRestore();
 
