@@ -20,6 +20,8 @@
   v3.0, ratified 2025-07-16
 - [RISC-V PLIC Specification](https://github.com/riscv/riscv-plic-spec) v1.0.0,
   ratified 2023-03-12
+- [RISC-V ABIs Specification](https://github.com/riscv-non-isa/riscv-elf-psabi-doc)
+  v1.0, ratified 2022-11-08
 
 ### ARM
 
@@ -29,8 +31,8 @@
   (IHI 0069H.b), GICv3.3/v4.2
 - [ARM GIC-400 TRM](https://developer.arm.com/documentation/ddi0471/b)
   (DDI 0471B) — GICv2 for Pi 5
-- [ARM64 Procedure Call Standard](https://developer.arm.com/documentation/ihi0055/latest)
-  (AAPCS64)
+- [ARM64 Procedure Call Standard](https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst)
+  (AAPCS64), 2025Q4, 2026-01-23
 
 ## Capability Systems
 

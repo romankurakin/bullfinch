@@ -50,7 +50,7 @@ smoke ARGS="": build-arm64 build-arm64-release build-riscv64 build-riscv64-relea
     @echo "test: smoke"
     @zig build smoke -- {{ARGS}}
 
-peek: build-arm64 build-riscv64
+peek: build-arm64 build-arm64-release build-riscv64 build-riscv64-release
     @echo "test: peek"
     @zig build smoke -- --peek
 

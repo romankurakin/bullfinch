@@ -38,10 +38,12 @@ Returns `file.md:start-end` with preview. Use Read tool for full context (add
 - `riscv-sbi` — RISC-V SBI Specification
 - `riscv-privileged` — RISC-V Privileged Specification
 - `riscv-unprivileged` — RISC-V Unprivileged Specification
+- `riscv-abi` — RISC-V ABIs Specification
+- `arm_aapcs64` — Procedure Call Standard for the Arm 64-bit Architecture (AArch64)
 - `gic_architecture_specification` — ARM GIC Specification
 - `operating_systems_three_easy_pieces` — Operating Systems: Three Easy Pieces (OSTEP book)
 - `operating_systems_design_and_implementation` — Operating Systems: Design & Implementation (MINIX book)
-- `DDI0487_profile_architecture_reference_manual` — ARM Architecture Reference Manual
+- `arm_profile_architecture_reference_manual` — ARM Architecture Reference Manual
 
 ## Setup
 

@@ -12,7 +12,7 @@ Capabilities-based security. WebAssembly userspace.
 - [x] Rung 5: Device Tree Parsing
 - [x] Rung 6: Physical Memory Allocator
 - [x] Rung 7: Kernel Object Allocator
-- [ ] Rung 8: Task Structures and Scheduler
+- [x] Rung 8: Task Structures and Scheduler
 - [ ] Rung 9: Per-Task Virtual Memory
 - [ ] Rung 10: Symmetric Multiprocessing
 - [ ] Rung 11: Tickless Scheduling
@@ -461,18 +461,38 @@ boot image).
 
 ### Rung 25: Process Manager
 
-**Implement:** Userspace process lifecycle server.
+**Implement:** Userspace process lifecycle server with Erlang-style supervision
+tree. Root supervisor is kernel-restartable; all other supervisors are normal
+processes watching their children via IPC.
 
 **Questions:**
 
 - Capability-based process naming (no PIDs)?
 - Process hierarchy or flat?
+- Restart strategies: one-for-one, one-for-all, rest-for-one?
+- Supervisor state recovery after restart?
+- OOM policy: which processes to kill under memory pressure?
+
+**Design:**
+
+- Kernel only special-cases root supervisor (PID 1 or flagged at boot)
+- Root supervisor death → kernel restarts it directly (no IPC)
+- All other supervision is userspace processes using normal IPC
+- Supervisors can supervise other supervisors (tree structure)
+- Scheduling policy can be adjusted by process manager via syscall (mechanism
+  in kernel, policy in userspace)
+- Exited threads become zombies; parent reclaims resources via wait()
+- OOM handling: kernel notifies PM of memory pressure, PM decides policy
 
 **Research:**
 
 - OSDI3 Sections 4.7-4.8 describe MINIX PM design and implementation
 - MINIX: PM server maintains mproc table and handles syscalls via messages
 - Zircon: jobs form a hierarchy, processes belong to jobs for resource control
+- Erlang/OTP: supervision trees with restart strategies (one_for_one, etc.)
+- "Crash-Only Software" (Candea & Fox, 2003): design for restart, not shutdown
+- xv6: zombie state and wait() for safe thread resource cleanup
+- Linux: OOM killer selects victim based on memory usage and oom_score
 
 ### Rung 26: Device Manager
 
@@ -532,7 +552,7 @@ end-to-end.
 ## Phase 6: Future
 
 Network stack, virtio drivers, real filesystems, hardware testing (Pi 5, Orange
-RV2).
+RV2), security hardening (shadow call stack).
 
 ---
 

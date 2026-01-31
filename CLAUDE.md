@@ -13,8 +13,7 @@ just build-riscv64        # Build for RISC-V
 just qemu-arm64           # Run in QEMU (ARM64, interactive)
 just qemu-riscv64         # Run in QEMU (RISC-V, interactive)
 
-just peek-arm64           # Boot briefly, show console output
-just peek-riscv64         # Boot briefly, show console output
+just peek           # Boot briefly, show console output
 
 just test                 # Unit tests (portable, runs on host)
 just test-filter "name"   # Run tests matching filter
