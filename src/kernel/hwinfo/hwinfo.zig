@@ -8,6 +8,7 @@
 
 const std = @import("std");
 const fdt = @import("../fdt/fdt.zig");
+const hal_fpu = @import("../hal/fpu.zig");
 const limits = @import("../limits.zig");
 
 const MAX_MEMORY_REGIONS = limits.MAX_MEMORY_ARENAS;
@@ -74,6 +75,9 @@ pub const HardwareInfo = struct {
     /// Architecture-specific features from DTB.
     features: Features = .{},
 
+    /// FPU available (detected from CPU registers via HAL).
+    has_fpu: bool = false,
+
     /// Slice of valid memory regions.
     pub fn memoryRegions(self: *const HardwareInfo) []const Region {
         return self.memory_regions[0..self.memory_region_count];
@@ -87,6 +91,11 @@ pub const HardwareInfo = struct {
 
 /// Global hardware info, populated by init().
 pub var info: HardwareInfo = .{};
+
+/// Check if FPU is available on this platform.
+pub fn hasFpu() bool {
+    return info.has_fpu;
+}
 
 /// Initialize hardware info from DTB.
 /// Must be called early in virtInit(), before PMM and other DTB consumers.
@@ -122,6 +131,9 @@ pub fn init(dtb_phys: usize, dtb_handle: fdt.Fdt) void {
     info.features.riscv.has_zkr = getRiscvHasZkr(dtb_handle);
     info.features.arm64.gic = getGicInfo(dtb_handle);
     info.uart_base = getUartBase(dtb_handle) orelse 0;
+
+    // Detect FPU from CPU registers (via HAL, arch-independent)
+    info.has_fpu = hal_fpu.detect();
 }
 
 /// Sort regions by size descending (simple insertion sort, N is small).

@@ -25,18 +25,46 @@ const THREAD_SIZE = @sizeOf(Thread);
 
 pub const ThreadId = u32;
 
-/// Thread control block. Kernel's view of an execution context.
+/// Thread control block. Kernel's representation of an execution context.
+///
+/// Threads are the unit of scheduling. Multiple threads in the same process
+/// share address space and capabilities but have independent stacks and
+/// register state. The scheduler picks threads based on virtual_runtime
+/// (CFS-style fair scheduling).
 pub const Thread = struct {
     id: ThreadId,
     process: *Process,
     state: State,
+
+    /// Saved registers for context switch. 16-byte aligned for SIMD.
     context: hal.context.Context align(16),
+
+    /// Kernel stack. Null only for borrowed bootstrap contexts.
     stack: ?Stack,
-    rb_node: rbtree.Node, // Runqueue linkage (rbtree)
-    blocked_on: ?*anyopaque, // For Liedtke-style direct switch
-    weight: u32, // CFS weight: higher = more CPU time
-    virtual_runtime: u64, // CFS vruntime: lower = run sooner
-    process_next: ?*Thread, // Process thread list linkage
+
+    /// Red-black tree node for O(log n) runqueue insertion by vruntime.
+    rb_node: rbtree.Node,
+
+    /// What this thread is waiting on (mutex, channel, etc).
+    /// Enables Liedtke-style direct switch: unblock can context-switch
+    /// directly to the waiter without going through the scheduler.
+    blocked_on: ?*anyopaque,
+
+    /// CFS scheduling weight. Higher weight = larger time slice.
+    /// Default is SCHED_BASE_WEIGHT (1024); idle threads use SCHED_MIN_WEIGHT.
+    weight: u32,
+
+    /// Virtual runtime in nanoseconds. The scheduler always picks the thread
+    /// with the lowest vruntime, ensuring fair CPU distribution over time.
+    virtual_runtime: u64,
+
+    /// Intrusive list linkage for Process.threads. Allows O(1) thread
+    /// enumeration per process without separate allocation.
+    process_next: ?*Thread,
+
+    /// FPU/SIMD register state. Allocated lazily on first FPU instruction
+    /// trap to save memory for threads that never use floating point.
+    fpu_state: ?*hal.fpu.FpuState,
 
     pub const State = enum { ready, running, blocked, exited };
 
@@ -81,6 +109,7 @@ fn initThreadStruct(
         .weight = task.SCHED_BASE_WEIGHT,
         .virtual_runtime = 0,
         .process_next = null,
+        .fpu_state = null, // Allocated lazily on first FPU use
     };
     t.context.setEntryData(@intFromPtr(entry), optionalPtrToInt(arg));
 }
@@ -148,6 +177,7 @@ test "returns true for ready and running states" {
         .weight = 1024,
         .virtual_runtime = 0,
         .process_next = null,
+        .fpu_state = null,
     };
 
     thread.state = .ready;

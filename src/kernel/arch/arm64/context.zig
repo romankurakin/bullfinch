@@ -1,17 +1,17 @@
 //! ARM64 Context Switch.
 //!
-//! Callee-saved registers for voluntary context switch. This is separate from
-//! the TrapFrame which saves all registers during traps/interrupts.
+//! Saves registers needed for voluntary context switch. Separate from TrapFrame
+//! which saves all registers during traps/interrupts.
 //!
-//! AAPCS64 callee-saved: x19-x28, x29 (fp), x30 (lr), sp.
-//! Total: 13 registers × 8 bytes = 104 bytes.
-//! Padded to 128 bytes for 16-byte alignment and cache line efficiency.
+//! AAPCS64 callee-saved: x19-x28, x29 (fp), sp. We also save x30 (lr) because
+//! it holds the return address for resuming execution after switchContext.
+//! Total: 14 slots × 8 bytes = 112 bytes, padded to 128 for alignment.
 //!
-//! See AAPCS64, Section 6.1 (Core Registers).
+//! See AAPCS64, Table 2.
 
 const std = @import("std");
 
-/// Layout must match switchContext assembly.
+/// Saved context. Layout must match switchContext assembly.
 pub const Context = extern struct {
     x19: u64 = 0,
     x20: u64 = 0,
@@ -42,19 +42,19 @@ pub const Context = extern struct {
         if (@offsetOf(Context, "irq_enabled") != 104) @compileError("irq_enabled offset mismatch");
     }
 
-    /// fp=0 terminates backtraces.
+    /// Initialize for new thread. fp=0 terminates backtraces.
     pub fn init(entry_pc: usize, stack_top: usize) Context {
         return .{ .lr = entry_pc, .sp = stack_top, .irq_enabled = 1 };
     }
 
-    /// Store entry point and argument for threadTrampoline to retrieve.
+    /// Store entry/arg in x19/x20 for threadTrampoline.
     pub fn setEntryData(ctx: *Context, entry: usize, arg: usize) void {
         ctx.x19 = entry;
         ctx.x20 = arg;
     }
 };
 
-/// First code a new thread runs. Reads entry/arg from x19/x20 then jumps to threadStart.
+/// Entry point for new threads. Reads entry/arg from x19/x20, jumps to threadStart.
 pub fn threadTrampoline() callconv(.naked) noreturn {
     asm volatile (
         \\ mov x0, x19
@@ -90,9 +90,7 @@ comptime {
         \\     ldr x2, [x1, #96]
         \\     mov sp, x2
         \\
-        \\     // Restore IRQ state. DAIF writes take effect in program order
-        \\     // without ISB. See ARM ARM, C5.1.3: "Writes to PSTATE occur in
-        \\     // program order without the need for additional synchronization."
+        \\     // Restore IRQ state. PSTATE writes need no ISB.
         \\     ldr x2, [x1, #104]
         \\     cbz x2, 1f
         \\     msr daifclr, #3

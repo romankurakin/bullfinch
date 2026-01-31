@@ -62,12 +62,13 @@ pub fn genEntryAsm(comptime cfg: EntryConfig) []const u8 {
 fn genPreemptCheckAsm() []const u8 {
     // Load need_resched directly (exported from scheduler).
     // Uses x0 as scratch (will be restored from trap frame anyway).
-    return \\adrp x0, need_resched
-        \\ldrb w0, [x0, :lo12:need_resched]
-        \\cbz w0, 1f
-        \\bl preemptFromTrap
-        \\1:
-        \\
+    return 
+    \\adrp x0, need_resched
+    \\ldrb w0, [x0, :lo12:need_resched]
+    \\cbz w0, 1f
+    \\bl preemptFromTrap
+    \\1:
+    \\
     ;
 }
 
