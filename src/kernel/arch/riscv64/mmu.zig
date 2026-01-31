@@ -36,6 +36,11 @@ const UnmapError = mmu_types.UnmapError;
 /// This is the lowest address in upper canonical range (bit 47 = 1).
 pub const KERNEL_VIRT_BASE: usize = 0xFFFF_8000_0000_0000;
 
+/// Offset from KERNEL_VIRT_BASE for kernel stack region.
+/// Must be beyond physmap (RAM). 8GB offset supports systems up to 8GB RAM.
+/// Stays within L3[256] (physmap) to use existing page table hierarchy.
+pub const KSTACK_REGION_OFFSET: usize = 8 * (1 << 30); // 8GB
+
 /// Highest exclusive address in lower canonical range (bit 47 = 0).
 const LOWER_CANONICAL_LIMIT: usize = @as(usize, 1) << 47;
 
@@ -395,12 +400,16 @@ pub fn mapPage(root: *PageTable, vaddr: usize, paddr: usize, flags: PageFlags) M
     fence();
 }
 
+/// Function type for page table allocation.
+/// Must return virtual address of a zeroed page, or null on OOM.
+pub const PageAllocFn = *const fn () ?usize;
+
 /// Map a 4KB page, allocating intermediate tables as needed.
-/// Allocator must provide zeroed pages (use page_allocator from PMM wrapper).
+/// alloc_page must return virtual address of a zeroed page.
 /// Does NOT flush TLB - caller must do that after mapping.
 ///
 /// TODO(smp): Caller must hold page table lock.
-pub fn mapPageWithAlloc(root: *PageTable, vaddr: usize, paddr: usize, flags: PageFlags, allocator: std.mem.Allocator) MapError!void {
+pub fn mapPageWithAlloc(root: *PageTable, vaddr: usize, paddr: usize, flags: PageFlags, alloc_page: PageAllocFn) MapError!void {
     if ((vaddr & (PAGE_SIZE - 1)) != 0) return MapError.NotAligned;
     if ((paddr & (PAGE_SIZE - 1)) != 0) return MapError.NotAligned;
     if (!VirtualAddress.isCanonical(vaddr)) return MapError.NotCanonical;
@@ -410,8 +419,8 @@ pub fn mapPageWithAlloc(root: *PageTable, vaddr: usize, paddr: usize, flags: Pag
     // Level 3 (root) - allocate L2 table if needed
     var l3_entry = &root.entries[va.vpn3];
     if (!l3_entry.isValid()) {
-        const l2_phys = allocPageTable(allocator) orelse return MapError.OutOfMemory;
-        l3_entry.* = PageTableEntry.branch(l2_phys);
+        const l2_virt = alloc_page() orelse return MapError.OutOfMemory;
+        l3_entry.* = PageTableEntry.branch(virtToPhys(l2_virt));
         fence();
     } else if (l3_entry.isLeaf()) {
         return MapError.SuperpageConflict;
@@ -421,8 +430,8 @@ pub fn mapPageWithAlloc(root: *PageTable, vaddr: usize, paddr: usize, flags: Pag
     const l2_table: *PageTable = @ptrFromInt(physToVirt(l3_entry.physAddr()));
     var l2_entry = &l2_table.entries[va.vpn2];
     if (!l2_entry.isValid()) {
-        const l1_phys = allocPageTable(allocator) orelse return MapError.OutOfMemory;
-        l2_entry.* = PageTableEntry.branch(l1_phys);
+        const l1_virt = alloc_page() orelse return MapError.OutOfMemory;
+        l2_entry.* = PageTableEntry.branch(virtToPhys(l1_virt));
         fence();
     } else if (l2_entry.isLeaf()) {
         return MapError.SuperpageConflict;
@@ -432,8 +441,8 @@ pub fn mapPageWithAlloc(root: *PageTable, vaddr: usize, paddr: usize, flags: Pag
     const l1_table: *PageTable = @ptrFromInt(physToVirt(l2_entry.physAddr()));
     var l1_entry = &l1_table.entries[va.vpn1];
     if (!l1_entry.isValid()) {
-        const l0_phys = allocPageTable(allocator) orelse return MapError.OutOfMemory;
-        l1_entry.* = PageTableEntry.branch(l0_phys);
+        const l0_virt = alloc_page() orelse return MapError.OutOfMemory;
+        l1_entry.* = PageTableEntry.branch(virtToPhys(l0_virt));
         fence();
     } else if (l1_entry.isLeaf()) {
         return MapError.SuperpageConflict;
@@ -450,14 +459,6 @@ pub fn mapPageWithAlloc(root: *PageTable, vaddr: usize, paddr: usize, flags: Pag
         l0_entry.* = PageTableEntry.kernelLeaf(paddr, flags.write, flags.exec);
     }
     fence();
-}
-
-/// Allocate a zeroed page table using std.mem.Allocator.
-/// Returns physical address or null on OOM.
-fn allocPageTable(allocator: std.mem.Allocator) ?usize {
-    const page = allocator.alignedAlloc(u8, PAGE_SIZE, PAGE_SIZE) catch return null;
-    @memset(page, 0);
-    return virtToPhys(@intFromPtr(page.ptr));
 }
 
 /// Unmap a 4KB page at the given virtual address.
@@ -570,6 +571,12 @@ pub fn disable() void {
     fence();
     SupervisorAddressTranslation.bare().write();
     TranslationLookasideBuffer.flushAll();
+}
+
+/// Return pointer to kernel page table (L3 root, which covers both identity and kernel).
+/// Used for mapping kernel stack pages with guard pages.
+pub fn getKernelPageTable() *PageTable {
+    return &root_table;
 }
 
 /// Remove identity mapping after transitioning to higher-half.

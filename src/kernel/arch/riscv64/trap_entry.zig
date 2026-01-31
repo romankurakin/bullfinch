@@ -26,6 +26,9 @@ pub const EntryConfig = struct {
     /// Swap SP with sscratch to enter on kernel stack (user traps only).
     /// See RISC-V Privileged Specification, 4.1.4 (Supervisor Scratch Register).
     use_sscratch: bool = false,
+    /// Check need_resched flag and call preemptFromTrap before sret.
+    /// Use for interrupt handlers where preemption is safe.
+    check_preempt: bool = false,
 };
 
 /// Frame sizes (16-byte aligned).
@@ -52,10 +55,26 @@ pub fn genEntryAsm(comptime cfg: EntryConfig) []const u8 {
         genSaveAsm(cfg.full_save, cfg.use_sscratch) ++
         (if (cfg.pass_frame) "mv a0, sp\n" else "") ++
         "call " ++ cfg.handler ++ "\n" ++
+        (if (cfg.check_preempt) genPreemptCheckAsm() else "") ++
         genRestoreAsm(cfg.full_save) ++
         // Swap back: SP=user, sscratch=kernel (restored for next trap).
         (if (cfg.use_sscratch) "csrrw sp, sscratch, sp\n" else "") ++
         \\sret
+    ;
+}
+
+/// Generate preemption check: if need_resched is set, call preemptFromTrap.
+/// Called after handler returns, before trap frame restore.
+fn genPreemptCheckAsm() []const u8 {
+    // Load need_resched directly (exported from scheduler).
+    // Uses t0 as scratch (will be restored from trap frame anyway).
+    return
+    \\la t0, need_resched
+    \\lb t0, (t0)
+    \\beqz t0, 1f
+    \\call preemptFromTrap
+    \\1:
+    \\
     ;
 }
 
@@ -321,4 +340,10 @@ comptime {
         @compileError("scause offset mismatch - assembly uses 272(sp)");
     if (OFF_STVAL != 280)
         @compileError("stval offset mismatch - assembly uses 280(sp)");
+
+    // Fast path offsets (caller-saved only)
+    if (FAST_OFF_SEPC != 128)
+        @compileError("FAST_OFF_SEPC offset mismatch");
+    if (FAST_OFF_SSTATUS != 136)
+        @compileError("FAST_OFF_SSTATUS offset mismatch");
 }

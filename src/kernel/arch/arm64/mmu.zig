@@ -36,6 +36,11 @@ const UnmapError = mmu_types.UnmapError;
 /// With T1SZ=25 (39-bit VA), TTBR1 handles addresses where bits 63:39 are all 1s.
 pub const KERNEL_VIRT_BASE: usize = 0xFFFF_FF80_0000_0000;
 
+/// Offset from KERNEL_VIRT_BASE for kernel stack region.
+/// Must be beyond physmap (RAM). 8GB offset supports systems up to 8GB RAM.
+/// Each stack slot is 12KB; 256 threads need ~3MB of VA space.
+pub const KSTACK_REGION_OFFSET: usize = 8 * (1 << 30); // 8GB
+
 const BLOCK_1GB_SIZE: usize = 1 << 30;
 const BLOCK_1GB_MASK: usize = BLOCK_1GB_SIZE - 1;
 const BLOCK_2MB_SIZE: usize = 1 << 21;
@@ -460,11 +465,15 @@ pub fn mapPage(root: *PageTable, vaddr: usize, paddr: usize, flags: PageFlags) M
     storeBarrier();
 }
 
+/// Function type for page table allocation.
+/// Must return virtual address of a zeroed page, or null on OOM.
+pub const PageAllocFn = *const fn () ?usize;
+
 /// Map a 4KB page, allocating intermediate tables as needed.
-/// Allocator must provide zeroed pages (use page_allocator from PMM wrapper).
+/// alloc_page must return virtual address of a zeroed page.
 /// Does NOT flush TLB - caller must do that after mapping.
 /// TODO(smp): Caller must hold page table lock.
-pub fn mapPageWithAlloc(root: *PageTable, vaddr: usize, paddr: usize, flags: PageFlags, allocator: std.mem.Allocator) MapError!void {
+pub fn mapPageWithAlloc(root: *PageTable, vaddr: usize, paddr: usize, flags: PageFlags, alloc_page: PageAllocFn) MapError!void {
     if ((vaddr & (PAGE_SIZE - 1)) != 0) return MapError.NotAligned;
     if ((paddr & (PAGE_SIZE - 1)) != 0) return MapError.NotAligned;
     if (!VirtualAddress.isCanonical(vaddr)) return MapError.NotCanonical;
@@ -474,8 +483,8 @@ pub fn mapPageWithAlloc(root: *PageTable, vaddr: usize, paddr: usize, flags: Pag
     // Level 1 - allocate L2 table if needed
     var l1_entry = &root.entries[va.l1];
     if (!l1_entry.isValid()) {
-        const l2_phys = allocPageTable(allocator) orelse return MapError.OutOfMemory;
-        l1_entry.* = PageTableEntry.table(l2_phys);
+        const l2_virt = alloc_page() orelse return MapError.OutOfMemory;
+        l1_entry.* = PageTableEntry.table(virtToPhys(l2_virt));
         storeBarrier();
     } else if (!l1_entry.isTable()) {
         return MapError.SuperpageConflict;
@@ -485,8 +494,8 @@ pub fn mapPageWithAlloc(root: *PageTable, vaddr: usize, paddr: usize, flags: Pag
     const l2_table: *PageTable = @ptrFromInt(physToVirt(l1_entry.physAddr()));
     var l2_entry = &l2_table.entries[va.l2];
     if (!l2_entry.isValid()) {
-        const l3_phys = allocPageTable(allocator) orelse return MapError.OutOfMemory;
-        l2_entry.* = PageTableEntry.table(l3_phys);
+        const l3_virt = alloc_page() orelse return MapError.OutOfMemory;
+        l2_entry.* = PageTableEntry.table(virtToPhys(l3_virt));
         storeBarrier();
     } else if (!l2_entry.isTable()) {
         return MapError.SuperpageConflict;
@@ -503,14 +512,6 @@ pub fn mapPageWithAlloc(root: *PageTable, vaddr: usize, paddr: usize, flags: Pag
         l3_entry.* = PageTableEntry.kernelPage(paddr, flags.write, flags.exec);
     }
     storeBarrier();
-}
-
-/// Allocate a zeroed page table using std.mem.Allocator.
-/// Returns physical address or null on OOM.
-fn allocPageTable(allocator: std.mem.Allocator) ?usize {
-    const page = allocator.alignedAlloc(u8, PAGE_SIZE, PAGE_SIZE) catch return null;
-    @memset(page, 0);
-    return virtToPhys(@intFromPtr(page.ptr));
 }
 
 /// Unmap a 4KB page at the given virtual address.
@@ -637,6 +638,12 @@ pub fn disable() void {
     );
     instructionBarrier();
     TranslationLookasideBuffer.flushAll();
+}
+
+/// Return pointer to kernel page table (L1 for TTBR1).
+/// Used for mapping kernel stack pages with guard pages.
+pub fn getKernelPageTable() *PageTable {
+    return &l1_table_high;
 }
 
 /// Remove identity mapping after transitioning to higher-half.

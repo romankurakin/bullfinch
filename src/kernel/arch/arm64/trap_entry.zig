@@ -25,6 +25,9 @@ pub const EntryConfig = struct {
     /// Save user stack pointer from SP_EL0 (user traps only).
     /// When true, reads SP_EL0 instead of computing from current SP.
     save_sp_el0: bool = false,
+    /// Check need_resched flag and call preemptFromTrap before eret.
+    /// Use for interrupt handlers where preemption is safe.
+    check_preempt: bool = false,
 };
 
 /// Frame sizes (16-byte aligned).
@@ -48,8 +51,23 @@ pub fn genEntryAsm(comptime cfg: EntryConfig) []const u8 {
     return genSaveAsm(cfg.full_save, cfg.save_sp_el0) ++
         (if (cfg.pass_frame) "mov x0, sp\n" else "") ++
         "bl " ++ cfg.handler ++ "\n" ++
+        (if (cfg.check_preempt) genPreemptCheckAsm() else "") ++
         genRestoreAsm(cfg.full_save) ++
         \\eret
+    ;
+}
+
+/// Generate preemption check: if need_resched is set, call preemptFromTrap.
+/// Called after handler returns, before trap frame restore.
+fn genPreemptCheckAsm() []const u8 {
+    // Load need_resched directly (exported from scheduler).
+    // Uses x0 as scratch (will be restored from trap frame anyway).
+    return \\adrp x0, need_resched
+        \\ldrb w0, [x0, :lo12:need_resched]
+        \\cbz w0, 1f
+        \\bl preemptFromTrap
+        \\1:
+        \\
     ;
 }
 
@@ -220,7 +238,7 @@ test "keeps save/restore register coverage consistent" {
 
 // Compile-time verification
 comptime {
-    // Verify frame sizes are 16-byte aligned (ARM64 ABI requirement)
+    // Verify frame sizes are 16-byte aligned (AAPCS64 requirement)
     if (FULL_FRAME_SIZE & 0xF != 0)
         @compileError("FULL_FRAME_SIZE must be 16-byte aligned");
     if (FAST_FRAME_SIZE & 0xF != 0)
@@ -231,19 +249,24 @@ comptime {
         @compileError("FULL_FRAME_SIZE must match TrapFrame.FRAME_SIZE");
 
     // Verify assembly offsets match TrapFrame layout
-    // These catch if struct fields are reordered or resized
     if (OFF_REGS != 0)
         @compileError("regs must be at offset 0");
     if (OFF_X30 != 240)
         @compileError("x30 offset mismatch - check regs array size");
     if (OFF_SP != 248)
-        @compileError("sp_saved offset mismatch - assembly uses #248");
+        @compileError("sp_saved offset mismatch - assembly uses 248(sp)");
     if (OFF_ELR != 256)
-        @compileError("elr offset mismatch - assembly uses #256");
+        @compileError("elr offset mismatch - assembly uses 256(sp)");
     if (OFF_SPSR != 264)
-        @compileError("spsr offset mismatch - assembly uses #264");
+        @compileError("spsr offset mismatch - assembly uses 264(sp)");
     if (OFF_ESR != 272)
-        @compileError("esr offset mismatch - assembly uses #272");
+        @compileError("esr offset mismatch - assembly uses 272(sp)");
     if (OFF_FAR != 280)
-        @compileError("far offset mismatch - assembly uses #280");
+        @compileError("far offset mismatch - assembly uses 280(sp)");
+
+    // Fast path offsets (caller-saved only)
+    if (FAST_OFF_X18_X30 != 144)
+        @compileError("FAST_OFF_X18_X30 offset mismatch");
+    if (FAST_OFF_ELR != 160)
+        @compileError("FAST_OFF_ELR offset mismatch");
 }

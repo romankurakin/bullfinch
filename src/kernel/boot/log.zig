@@ -4,7 +4,7 @@
 //!
 //! Format: "[N/T] name message"
 //! - N/T: stage progress
-//! - name: subsystem, 6-char column (5 + separator)
+//! - name: subsystem, padded to a consistent column
 //! - message: description
 
 const builtin = @import("builtin");
@@ -13,28 +13,47 @@ const hwinfo = @import("../hwinfo/hwinfo.zig");
 const pmm_mod = @import("../pmm/pmm.zig");
 
 /// Total boot stages. Update when adding/removing stages.
-pub const STAGES: u8 = 7;
+pub const STAGES: u8 = 10;
 
 const MB: usize = 1024 * 1024;
+
+const STAGE_NAMES = [_][]const u8{
+    "uart",
+    "trap",
+    "mmu",
+    "virt",
+    "dtb",
+    "pmm",
+    "trace",
+    "clock",
+    "task",
+    "idle",
+};
+
+const STAGE_NAME_WIDTH: usize = blk: {
+    var max: usize = 0;
+    for (STAGE_NAMES) |name| {
+        if (name.len > max) max = name.len;
+    }
+    break :blk max;
+};
 
 pub fn header() void {
     console.print("Bullfinch\n\n");
 }
 
-/// Print stage prefix: "[N/T] name " with 6-char name column (5 + separator).
+/// Print stage prefix: "[N/T] name " with padded name column.
 /// Use for stages with dynamic content. Caller must print message and newline.
 fn stagePrefix(n: u8, name: []const u8) void {
     console.print("[");
+    if (n < 10) console.print("0");
     console.printDec(n);
     console.print("/");
+    if (STAGES < 10) console.print("0");
     console.printDec(STAGES);
     console.print("] ");
 
-    console.print(name);
-    var pad: usize = 5 -| name.len;
-    while (pad > 0) : (pad -= 1) {
-        console.print(" ");
-    }
+    printPadded(name, STAGE_NAME_WIDTH);
     console.print(" ");
 }
 
@@ -82,6 +101,24 @@ pub fn pmm() void {
     console.print("k pages\n");
 }
 
+pub fn trace() void {
+    stage(7, "trace", "ring ready");
+}
+
 pub fn clock() void {
-    stage(7, "clock", "timer ready");
+    stage(8, "clock", "timer ready");
+}
+
+pub fn task() void {
+    stage(9, "task", "scheduler ready");
+}
+
+pub fn idle() void {
+    stage(10, "idle", "entering idle thread");
+}
+
+fn printPadded(text: []const u8, width: usize) void {
+    console.print(text);
+    var pad: usize = width -| text.len;
+    while (pad > 0) : (pad -= 1) console.print(" ");
 }

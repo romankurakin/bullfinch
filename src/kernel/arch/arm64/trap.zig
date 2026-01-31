@@ -18,6 +18,8 @@
 const backtrace = @import("../../trap/backtrace.zig");
 const clock = @import("../../clock/clock.zig");
 const console = @import("../../console/console.zig");
+const task = @import("../../task/task.zig");
+const trace = @import("../../debug/trace.zig");
 const cpu = @import("cpu.zig");
 const fmt = @import("../../trap/fmt.zig");
 const gic = @import("gic.zig");
@@ -167,26 +169,26 @@ export fn kernelTrapEntry() callconv(.naked) noreturn {
         }));
 }
 
-/// Kernel IRQ entry. Fast path with caller-saved registers only.
-/// AAPCS64 guarantees x19-x28 are callee-saved, so handler preserves them.
+/// Kernel IRQ entry. Full save to allow safe preemption.
 export fn kernelIrqEntry() callconv(.naked) noreturn {
     asm volatile (trap_entry.genEntryAsm(.{
-            .full_save = false,
+            .full_save = true,
             .handler = "handleKernelIrq",
             .pass_frame = false,
+            .check_preempt = true,
         }));
 }
 
 /// User trap entry. Full save for all user-mode traps and interrupts.
 /// Single entry point; handler checks for pending IRQs.
 /// Saves user SP from SP_EL0; kernel already uses SP_EL1 at EL1.
-/// TODO(scheduler): Set SP_EL1 to per-thread kernel stack on context switch.
 export fn userTrapEntry() callconv(.naked) noreturn {
     asm volatile (trap_entry.genEntryAsm(.{
             .full_save = true,
             .handler = "handleUserTrap",
             .pass_frame = true,
             .save_sp_el0 = true,
+            .check_preempt = true,
         }));
 }
 
@@ -200,6 +202,7 @@ const TIMER_PPI = gic.TIMER_PPI;
 export fn handleKernelIrq() void {
     const intid = gic.acknowledge();
     if (intid == SPURIOUS_INTID) return;
+    trace.emit(.trap_enter, intid, 0, 0);
 
     switch (intid) {
         TIMER_PPI => clock.handleTimerIrq(),
@@ -207,6 +210,8 @@ export fn handleKernelIrq() void {
     }
 
     gic.endOfInterrupt(intid);
+    trace.emit(.trap_exit, intid, 0, 0);
+    // Preemption handled by check_preempt in assembly epilogue.
 }
 
 /// Print minimal panic for unhandled kernel IRQ (no frame available).
@@ -223,6 +228,7 @@ fn panicKernelIrq(intid: u32) noreturn {
 export fn handleKernelTrap(frame: *TrapFrame) noreturn {
     const ec_bits: u6 = @truncate(frame.esr >> 26);
     const ec: TrapClass = @enumFromInt(ec_bits);
+    trace.emit(.trap_enter, frame.pc(), @intFromEnum(ec), 0);
     // TODO(syscall): Handle SVC exceptions.
     // TODO(vm): Handle page faults.
     panicTrap(frame, ec.name());
@@ -235,17 +241,20 @@ export fn handleUserTrap(frame: *TrapFrame) void {
     // If a pending IRQ is latched, handle it; otherwise treat as sync exception.
     const intid = gic.acknowledge();
     if (intid != SPURIOUS_INTID) {
+        trace.emit(.trap_enter, intid, 0, 1);
         switch (intid) {
             TIMER_PPI => clock.handleTimerIrq(),
             else => panicIrq(frame, intid),
         }
         gic.endOfInterrupt(intid);
-        // TODO(scheduler): Check need_resched flag and context switch if needed.
+        trace.emit(.trap_exit, intid, 0, 1);
+        // Preemption handled by check_preempt in assembly epilogue.
         return;
     }
 
     const ec_bits: u6 = @truncate(frame.esr >> 26);
     const ec: TrapClass = @enumFromInt(ec_bits);
+    trace.emit(.trap_enter, frame.pc(), @intFromEnum(ec), 1);
     // TODO(syscall): Handle SVC from userspace.
     // TODO(vm): Handle user page faults.
     panicTrap(frame, ec.name());
@@ -305,18 +314,6 @@ pub fn init() void {
         : [vbar] "r" (vbar),
     );
     asm volatile ("isb");
-}
-
-/// Trigger a synchronous trap for testing (BRK instruction).
-/// BRK #0 generates EC=0x3C (brk_aarch64) in ESR_EL1.
-pub fn testTriggerBreakpoint() void {
-    asm volatile ("brk #0");
-}
-
-/// Trigger illegal instruction trap for testing.
-/// Uses UDF instruction which is guaranteed undefined on all ARM implementations.
-pub fn testTriggerIllegalInstruction() void {
-    asm volatile (".word 0x00000000"); // UDF #0
 }
 
 test "validates TrapFrame size and layout" {

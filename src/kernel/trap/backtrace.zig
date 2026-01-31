@@ -18,7 +18,8 @@ const MAX_DEPTH = 16;
 const MAX_STRIDE: usize = 64 * 1024;
 
 /// Print a backtrace starting from the given frame pointer and PC.
-/// Frame #0 shows the current PC, subsequent frames show return addresses.
+/// Frame #0 shows the current PC, subsequent frames show call site addresses.
+/// Return addresses are adjusted by -1 to point inside the calling function.
 pub fn printBacktrace(fp: usize, pc: usize) void {
     print("\n");
 
@@ -47,7 +48,10 @@ pub fn printBacktrace(fp: usize, pc: usize) void {
         if (ret_addr == 0) break;
         if (!hal.mmu.VirtualAddress.isKernel(ret_addr)) break;
 
-        printFrame(depth, ret_addr);
+        // Print call site address (return address - 1). Return addresses point
+        // to the instruction after the call; subtracting 1 lands inside the
+        // calling function for correct symbol resolution.
+        printFrame(depth, ret_addr - 1);
 
         current_fp = prev_fp;
         depth += 1;
@@ -69,7 +73,7 @@ fn isValidFramePointer(fp: usize) bool {
     return true;
 }
 
-/// Print a single frame entry: "  #N  0x<address>".
+/// Print a single frame entry.
 fn printFrame(depth: usize, addr: usize) void {
     print("  #");
     const decimal = fmt.formatDecimal(depth);

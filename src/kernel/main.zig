@@ -6,14 +6,17 @@
 
 const std = @import("std");
 
+const backtrace = @import("trap/backtrace.zig");
 const boot_init = @import("boot/init.zig");
 const boot_log = @import("boot/log.zig");
 const clock = @import("clock/clock.zig");
 const console = @import("console/console.zig");
+const trace = @import("debug/trace.zig");
 const hal = @import("hal/hal.zig");
 const kalloc = @import("allocator/allocator.zig");
 const pmm = @import("pmm/pmm.zig");
 const sync = @import("sync/sync.zig");
+const task = @import("task/task.zig");
 
 // Force-include modules with exports called externally (not from Zig).
 // Without these references, dead code elimination would remove them.
@@ -22,7 +25,6 @@ comptime {
     _ = boot_init;
     _ = @import("c_compat.zig");
 }
-
 
 /// Kernel-wide initialization after virtInit completes the address space.
 fn kernelInit() void {
@@ -33,9 +35,16 @@ fn kernelInit() void {
     boot_log.pmm();
     kalloc.init();
 
+    trace.init();
+    boot_log.trace();
+
     hal.interrupt.init();
     clock.init();
     boot_log.clock();
+
+    task.init();
+    clock.setSchedulerTick(task.scheduler.tick);
+    boot_log.task();
 }
 
 /// Kernel entry after arch boot hands off to the common kernel path.
@@ -45,8 +54,9 @@ export fn kmain() noreturn {
 
     kernelInit();
 
+    boot_log.idle();
     console.print("\n[BOOT:OK]\n");
-    hal.cpu.halt();
+    task.scheduler.enterIdle();
 }
 
 var panic_once: sync.Once = .{};
@@ -56,10 +66,9 @@ pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, _: ?usize) noreturn {
     _ = hal.cpu.disableInterrupts();
     if (!panic_once.tryOnce()) hal.cpu.halt();
 
-    // Use printUnsafe to avoid potential deadlock if panic occurred
-    // while console lock was held
-    console.printUnsafe("\n");
+    console.printUnsafe("\npanic: ");
     console.printUnsafe(msg);
-    console.printUnsafe("\n");
+    backtrace.printBacktrace(@frameAddress(), @returnAddress());
+    trace.dumpAllRecent(64);
     hal.cpu.halt();
 }

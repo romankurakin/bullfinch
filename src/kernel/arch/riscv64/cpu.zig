@@ -25,6 +25,20 @@ pub inline fn waitForInterrupt() void {
     asm volatile ("wfi");
 }
 
+/// Set kernel trap stack pointer in sscratch (used on user-mode traps).
+pub inline fn setKernelStack(sp: usize) void {
+    asm volatile ("csrw sscratch, %[sp]"
+        :
+        : [sp] "r" (sp),
+    );
+}
+
+/// Return current CPU ID.
+pub inline fn currentId() usize {
+    // TODO(smp): Use per-CPU hart ID storage once SMP bringup sets it.
+    return 0;
+}
+
 /// Halt CPU forever (interrupts remain enabled).
 pub inline fn halt() noreturn {
     while (true) asm volatile ("wfi");

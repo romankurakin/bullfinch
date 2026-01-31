@@ -99,5 +99,14 @@ pub const SpinLock = struct {
             self.lock.inner.release();
             if (self.irq_was_enabled) cpu.enableInterrupts();
         }
+
+        /// Release lock but keep interrupts disabled.
+        pub fn releaseNoIrqRestore(self: Held) void {
+            if (debug_kernel) {
+                if (!self.lock.held) @panic(panic_msg.RELEASE_UNHELD);
+                self.lock.held = false;
+            }
+            self.lock.inner.release();
+        }
     };
 };

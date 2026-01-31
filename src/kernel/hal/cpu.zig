@@ -14,3 +14,5 @@ pub const waitForInterrupt = arch.waitForInterrupt;
 pub const halt = arch.halt;
 pub const spinWaitEq16 = arch.spinWaitEq16;
 pub const speculationBarrier = arch.speculationBarrier;
+pub const setKernelStack = arch.setKernelStack;
+pub const currentId = arch.currentId;
