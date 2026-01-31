@@ -7,6 +7,9 @@ const std = @import("std");
 /// Page size in bytes (4KB on both ARM64 and RISC-V).
 pub const PAGE_SIZE: usize = 4096;
 
+/// Guard page size (one page, unmapped to catch stack overflow).
+pub const GUARD_SIZE: usize = PAGE_SIZE;
+
 /// Log2 of page size (for shifts instead of divides).
 pub const PAGE_SHIFT: u6 = 12;
 
@@ -21,6 +24,11 @@ pub const DTB_MAX_SIZE: usize = 1 << 20;
 /// Minimum physmap size during early boot (1GB).
 /// Ensures at least one gigapage is mapped before DTB parsing completes.
 pub const MIN_PHYSMAP_SIZE: usize = 1 << 30;
+
+/// Kernel stack slot size (guard page + stack pages).
+/// Each thread gets one slot in the kernel stack virtual region.
+/// Guard page is unmapped; only stack pages are backed by physical memory.
+pub const KSTACK_SLOT_SIZE: usize = GUARD_SIZE + (PAGE_SIZE * 2); // 4KB guard + 8KB stack
 
 comptime {
     if (PAGE_SIZE == 0 or (PAGE_SIZE & (PAGE_SIZE - 1)) != 0)

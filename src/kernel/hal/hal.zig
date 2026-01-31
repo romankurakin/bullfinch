@@ -10,6 +10,7 @@ const std = @import("std");
 const board = @import("board");
 const memory = @import("../memory/memory.zig");
 
+pub const context = @import("context.zig");
 pub const cpu = @import("cpu.zig");
 pub const entropy = @import("entropy.zig");
 pub const interrupt = @import("interrupt.zig");

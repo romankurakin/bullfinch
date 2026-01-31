@@ -20,6 +20,8 @@
 const backtrace = @import("../../trap/backtrace.zig");
 const clock = @import("../../clock/clock.zig");
 const console = @import("../../console/console.zig");
+const task = @import("../../task/task.zig");
+const trace = @import("../../debug/trace.zig");
 const cpu = @import("cpu.zig");
 const fmt = @import("../../trap/fmt.zig");
 const trap_entry = @import("trap_entry.zig");
@@ -173,32 +175,34 @@ export fn kernelTrapEntry() linksection(".trap") callconv(.naked) noreturn {
         }));
 }
 
-/// Kernel interrupt entry - fast path with caller-saved registers only.
+/// Kernel interrupt entry - full save to allow safe preemption.
 /// Handles timer, software, and external interrupts from kernel context.
 export fn kernelInterruptEntry() linksection(".trap") callconv(.naked) noreturn {
     asm volatile (trap_entry.genEntryAsm(.{
-            .full_save = false,
+            .full_save = true,
             .handler = "handleKernelInterrupt",
             .pass_frame = false,
+            .check_preempt = true,
         }));
 }
 
 /// User trap entry. Full save for all user-mode traps and interrupts.
 /// Single entry point; handler dispatches by scause.
 /// Swaps SP with sscratch to enter on kernel stack; saves user SP.
-/// TODO(scheduler): Update sscratch to per-thread kernel stack on context switch.
 export fn userTrapEntry() linksection(".trap") callconv(.naked) noreturn {
     asm volatile (trap_entry.genEntryAsm(.{
             .full_save = true,
             .handler = "handleUserTrap",
             .pass_frame = true,
             .use_sscratch = true,
+            .check_preempt = true,
         }));
 }
 
 /// Kernel trap handler. Kernel faults are bugs, always panic.
 export fn handleKernelTrap(frame: *TrapFrame) noreturn {
     const cause = @as(TrapCause, @enumFromInt(frame.scause));
+    trace.emit(.trap_enter, frame.pc(), @intFromEnum(cause), 0);
     // TODO(syscall): Handle ECALL from S-mode.
     // TODO(vm): Handle kernel page faults.
     panicTrap(frame, cause.name());
@@ -211,6 +215,7 @@ export fn handleKernelInterrupt() void {
         : [ret] "=r" (-> u64),
     );
     const code = TrapCause.code(scause);
+    trace.emit(.trap_enter, scause, code, 0);
 
     switch (code) {
         5 => clock.handleTimerIrq(), // Supervisor timer
@@ -218,6 +223,8 @@ export fn handleKernelInterrupt() void {
         9 => {}, // TODO(plic): Supervisor external interrupt
         else => panicKernelInterrupt(scause),
     }
+    trace.emit(.trap_exit, scause, code, 0);
+    // Preemption handled by check_preempt in assembly epilogue.
 }
 
 /// Print minimal panic for unhandled kernel interrupt (no frame available).
@@ -247,18 +254,21 @@ export fn handleUserTrap(frame: *TrapFrame) void {
 
     if (TrapCause.isInterrupt(frame.scause)) {
         const code = TrapCause.code(frame.scause);
+        trace.emit(.trap_enter, frame.scause, code, 1);
         switch (code) {
             5 => clock.handleTimerIrq(), // Supervisor timer
             1 => handleSoftwareInterrupt(),
             9 => {}, // TODO(plic): Supervisor external interrupt
             else => panicTrap(frame, cause.name()),
         }
-        // TODO(scheduler): Check need_resched flag and context switch if needed.
+        trace.emit(.trap_exit, frame.scause, code, 1);
+        // Preemption handled by check_preempt in assembly epilogue.
         return;
     }
 
     // TODO(syscall): Handle ECALL from U-mode.
     // TODO(vm): Handle user page faults.
+    trace.emit(.trap_enter, frame.pc(), @intFromEnum(cause), 1);
     panicTrap(frame, cause.name());
 }
 
@@ -325,16 +335,6 @@ pub fn init() void {
         : [stvec] "r" (stvec_val),
     );
     asm volatile ("fence.i"); // Ensure icache sees stvec code
-}
-
-/// Trigger breakpoint exception for testing (EBREAK -> scause=3).
-pub fn testTriggerBreakpoint() void {
-    asm volatile ("ebreak");
-}
-
-/// Trigger illegal instruction exception (all-zeros is illegal on RISC-V).
-pub fn testTriggerIllegalInstruction() void {
-    asm volatile (".word 0x00000000");
 }
 
 test "validates TrapFrame size and layout" {

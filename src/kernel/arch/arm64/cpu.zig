@@ -23,6 +23,22 @@ pub inline fn waitForInterrupt() void {
     asm volatile ("wfi");
 }
 
+/// Set kernel exception stack pointer (SP_EL1).
+pub inline fn setKernelStack(sp: usize) void {
+    asm volatile ("msr sp_el1, %[sp]"
+        :
+        : [sp] "r" (sp),
+    );
+}
+
+/// Return current CPU ID (MPIDR_EL1 affinity level 0).
+pub inline fn currentId() usize {
+    const mpidr = asm volatile ("mrs %[ret], mpidr_el1"
+        : [ret] "=r" (-> u64),
+    );
+    return @as(usize, @truncate(mpidr & 0xff));
+}
+
 /// Halt CPU forever (interrupts remain enabled).
 pub inline fn halt() noreturn {
     while (true) asm volatile ("wfi");

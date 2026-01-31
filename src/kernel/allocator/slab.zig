@@ -80,7 +80,6 @@ fn mix64(x: usize) usize {
     return z ^ (z >> 31);
 }
 
-
 /// 64 bytes - standard cache line on ARM64 and modern x86.
 /// Ensures two objects never share a cache line (prevents false sharing).
 const CACHE_LINE_SIZE = 64;

@@ -10,5 +10,7 @@
 pub const MAX_MEMORY_ARENAS = 4;
 
 /// Maximum reserved address ranges (kernel image, device tree, firmware).
-/// These are excluded from allocation during boot. Cost: ~16 bytes per slot.
 pub const MAX_RESERVED_REGIONS = 8;
+
+/// Maximum number of CPUs supported by static per-CPU structures.
+pub const MAX_CPUS = 32;

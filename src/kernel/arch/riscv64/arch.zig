@@ -9,6 +9,7 @@ comptime {
 }
 
 pub const boot = @import("boot.zig");
+pub const context = @import("context.zig");
 pub const mmu = @import("mmu.zig");
 pub const sbi = @import("sbi.zig");
 pub const timer = @import("timer.zig");

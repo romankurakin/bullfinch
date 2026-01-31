@@ -543,6 +543,16 @@ pub fn baseAddr() usize {
     return pmm.arenas[0].base_phys;
 }
 
+/// Get page at offset within a contiguous allocation.
+/// The base must be the head page returned by allocContiguous.
+/// Returns pointer to the page at base + offset.
+pub fn pageAdd(base: *Page, offset: usize) *Page {
+    // Pages in a contiguous allocation are stored consecutively in the arena's array.
+    const base_addr = @intFromPtr(base);
+    const offset_bytes = offset * @sizeOf(Page);
+    return @ptrFromInt(base_addr + offset_bytes);
+}
+
 /// Initialize a single arena. Returns true if successful.
 fn initArena(base: u64, size: u64, arena_idx: u8) bool {
     const aligned_base = alignUp64(base, PAGE_SIZE);
