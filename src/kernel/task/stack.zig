@@ -10,7 +10,6 @@
 //!
 //! TODO(smp): Add page table lock for concurrent create/destroy.
 //! TODO(smp): Use TLB shootdown (IPI) instead of flushLocal.
-//! TODO(security): Add shadow call stack for ROP protection once IPC exists.
 
 const hal = @import("../hal/hal.zig");
 const memory = @import("../memory/memory.zig");

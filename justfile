@@ -20,23 +20,23 @@ build-riscv64-release:
     @echo "build: riscv64 (release)"
     @zig build -Dtarget=riscv64-freestanding -Doptimize=ReleaseFast
 
-# Run in QEMU
+# Run in QEMU (uses boards.zig config)
 
-qemu-arm64: build-arm64
+qemu-arm64:
     @echo "qemu: arm64"
-    @qemu-system-aarch64 -machine virt -cpu cortex-a76 -smp 2 -m 2G -nographic -kernel zig-out/kernel/arm64-qemu_virt-debug.bin
+    @zig build run -Dtarget=aarch64-freestanding -Dcpu=cortex_a76
 
-qemu-riscv64: build-riscv64
+qemu-riscv64:
     @echo "qemu: riscv64"
-    @qemu-system-riscv64 -machine virt -smp 2 -m 2G -nographic -bios default -kernel zig-out/kernel/riscv64-qemu_virt-debug.elf
+    @zig build run -Dtarget=riscv64-freestanding
 
-qemu-arm64-release: build-arm64-release
+qemu-arm64-release:
     @echo "qemu: arm64 (release)"
-    @qemu-system-aarch64 -machine virt -cpu cortex-a76 -smp 2 -m 2G -nographic -kernel zig-out/kernel/arm64-qemu_virt-release.bin
+    @zig build run -Dtarget=aarch64-freestanding -Dcpu=cortex_a76 -Doptimize=ReleaseFast
 
-qemu-riscv64-release: build-riscv64-release
+qemu-riscv64-release:
     @echo "qemu: riscv64 (release)"
-    @qemu-system-riscv64 -machine virt -smp 2 -m 2G -nographic -bios default -kernel zig-out/kernel/riscv64-qemu_virt-release.elf
+    @zig build run -Dtarget=riscv64-freestanding -Doptimize=ReleaseFast
 
 test:
     @echo "test: unit"

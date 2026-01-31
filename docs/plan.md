@@ -552,7 +552,7 @@ end-to-end.
 ## Phase 6: Future
 
 Network stack, virtio drivers, real filesystems, hardware testing (Pi 5, Orange
-RV2), security hardening (shadow call stack).
+RV2).
 
 ---
 
