@@ -64,6 +64,15 @@ Single `build.zig` orchestrates:
 | `error`    | Caller mistake, they can recover          | Bad alignment, missing page table             |
 | `null`     | Absence of value, not an error            | OOM, lookup miss                              |
 
+## Target Hardware
+
+| Platform | Architecture |
+|----------|--------------|
+| QEMU virt | ARM64, RISC-V |
+| Raspberry Pi 5 | ARM64 (ARMv8.2-A) |
+| Orange Pi RV2 | RISC-V |
+| Arduino UNO Q | ARM64 (ARMv8.0-A) |
+
 ## Architecture Notes
 
 - **Memory barriers** — Different per arch; required before hardware ops and TLB operations
@@ -81,6 +90,7 @@ Single `build.zig` orchestrates:
 - Testing structure: `docs/testing.md`
 - Commit format: `docs/commits.md`
 - References: `docs/references.md`
+- Hardware specs: `docs/hardware.md`
 
 ## Workflow
 
