@@ -1,10 +1,11 @@
 //! Kernel trace ring buffer.
 //!
 //! Per-CPU fixed-size ring buffers for lightweight event tracing.
-//! Lock-free design using relaxed atomics for SMP scalability.
+//! Lock-free design using atomics for SMP scalability.
 //!
 //! Safe to call from scheduler with scheduler lock held.
 
+const builtin = @import("builtin");
 const std = @import("std");
 
 const clock = @import("../clock/clock.zig");
@@ -13,6 +14,8 @@ const fmt = @import("../trap/fmt.zig");
 const hal = @import("../hal/hal.zig");
 const hwinfo = @import("../hwinfo/hwinfo.zig");
 const limits = @import("../limits.zig");
+
+pub const debug_kernel: bool = builtin.mode == .Debug;
 
 const RING_SIZE: u32 = 256;
 const RING_MASK: u32 = RING_SIZE - 1;
@@ -38,7 +41,8 @@ pub const EventId = enum(u16) {
 };
 
 pub const Event = extern struct {
-    ts: u64,
+    /// Raw timer ticks. Converted on dump to keep emit() hot path cheap.
+    ticks: u64,
     cpu: u16,
     id: u16,
     a: usize,
@@ -48,7 +52,10 @@ pub const Event = extern struct {
 
 const Ring = struct {
     head: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
-    events: [RING_SIZE]Event = [_]Event{.{ .ts = 0, .cpu = 0, .id = 0, .a = 0, .b = 0, .c = 0 }} ** RING_SIZE,
+    seq: [RING_SIZE]std.atomic.Value(u32) = [_]std.atomic.Value(u32){
+        std.atomic.Value(u32).init(0),
+    } ** RING_SIZE,
+    events: [RING_SIZE]Event = [_]Event{.{ .ticks = 0, .cpu = 0, .id = 0, .a = 0, .b = 0, .c = 0 }} ** RING_SIZE,
 };
 
 var rings: [limits.MAX_CPUS]Ring = [_]Ring{.{}} ** limits.MAX_CPUS;
@@ -58,6 +65,7 @@ var enabled_mask: std.atomic.Value(u64) = std.atomic.Value(u64).init(0xffff_ffff
 
 /// Initialize trace subsystem. Safe to call before scheduler exists.
 pub fn init() void {
+    if (comptime !debug_kernel) return;
     const count = hwinfo.info.cpu_count;
     const capped: u32 = if (count == 0) 1 else if (count > limits.MAX_CPUS) limits.MAX_CPUS else count;
     @memset(rings[0..capped], .{});
@@ -84,6 +92,8 @@ inline fn currentCpu() u16 {
 /// Record event with timestamp. Called from scheduler and trap handlers.
 /// Caller must have IRQs disabled (scheduler lock or trap context).
 pub inline fn emit(id: EventId, a: usize, b: usize, c: usize) void {
+    // Compile-time guard: non-debug builds compile emit() to a no-op.
+    if (comptime !debug_kernel) return;
     if (!enabled.load(.monotonic)) return;
     const bit_val = @intFromEnum(id);
     if (bit_val >= 64) return;
@@ -93,18 +103,34 @@ pub inline fn emit(id: EventId, a: usize, b: usize, c: usize) void {
     const ring = &rings[cpu];
     // Relaxed RMW: per-CPU ring, no cross-CPU contention. Monotonic sufficient.
     const idx = ring.head.fetchAdd(1, .monotonic) & RING_MASK;
+    const seq = &ring.seq[idx];
+    const seq_start = seq.load(.monotonic);
+    seq.store(seq_start +% 1, .monotonic);
     ring.events[idx] = .{
-        .ts = clock.getMonotonicNs(),
+        .ticks = clock.getMonotonicTicks(),
         .cpu = cpu,
         .id = @intFromEnum(id),
         .a = a,
         .b = b,
         .c = c,
     };
+    seq.store(seq_start +% 2, .release);
+}
+
+fn readEvent(ring: *Ring, idx: usize) ?Event {
+    const seq = &ring.seq[idx];
+    const before = seq.load(.acquire);
+    if ((before & 1) == 1) return null;
+    const ev = ring.events[idx];
+    const after = seq.load(.acquire);
+    if (before != after) return null;
+    if ((after & 1) == 1) return null;
+    return ev;
 }
 
 /// Dump recent events from all CPUs to console. Use in panic handlers.
 pub fn dumpAllRecent(count: u32) void {
+    if (comptime !debug_kernel) return;
     if (!enabled.load(.monotonic)) return;
     const cpus = active_cpus.load(.monotonic);
     var cpu: u32 = 0;
@@ -115,10 +141,11 @@ pub fn dumpAllRecent(count: u32) void {
 
 /// Dump recent events from specified CPU to console.
 pub fn dumpRecent(cpu: u16, count: u32) void {
+    if (comptime !debug_kernel) return;
     if (!enabled.load(.monotonic)) return;
     if (cpu >= active_cpus.load(.monotonic)) return;
     const ring = &rings[cpu];
-    // Acquire ensures we see all events written before this head value.
+    // Head bounds the scan; per-slot seq provides consistency.
     const head = ring.head.load(.acquire);
     if (head == 0) {
         console.printUnsafe("\n[trace] cpu ");
@@ -144,24 +171,25 @@ pub fn dumpRecent(cpu: u16, count: u32) void {
     console.printUnsafe("detail\n");
 
     var i = start;
-    var prev_ts: u64 = 0;
+    var prev_ticks: u64 = 0;
     var have_prev = false;
     while (i < head) : (i += 1) {
-        const ev = ring.events[i & RING_MASK];
-        const delta_ns = if (have_prev) ev.ts - prev_ts else 0;
-        printEvent(ev, widths, delta_ns);
-        prev_ts = ev.ts;
+        const idx = @as(usize, i & RING_MASK);
+        const ev = readEvent(ring, idx) orelse continue;
+        const delta_ticks = if (have_prev) ev.ticks - prev_ticks else 0;
+        printEvent(ev, widths, delta_ticks);
+        prev_ticks = ev.ticks;
         have_prev = true;
     }
 }
 
-fn printEvent(ev: Event, widths: ColumnWidths, delta_ns: u64) void {
+fn printEvent(ev: Event, widths: ColumnWidths, delta_ticks: u64) void {
     console.printUnsafe("  ");
     const name = shortName(@enumFromInt(ev.id));
     printPadded(name, widths.event);
     console.printUnsafe("  ");
-    const time_us: u64 = ev.ts / 1000;
-    const delta_us: u64 = delta_ns / 1000;
+    const time_us: u64 = clock.ticksToUs(ev.ticks);
+    const delta_us: u64 = clock.ticksToUs(delta_ticks);
     printDecPadded(time_us, widths.time_us);
     console.printUnsafe("  ");
     printDecPadded(delta_us, widths.delta_us);
@@ -285,20 +313,21 @@ fn computeColumnWidths(ring: *Ring, start: usize, head: usize) ColumnWidths {
     var max_event: usize = "event".len;
     var max_time_us: u64 = 0;
     var max_delta_us: u64 = 0;
-    var prev_ts: u64 = 0;
+    var prev_ticks: u64 = 0;
     var have_prev = false;
     var i = start;
     while (i < head) : (i += 1) {
-        const ev = ring.events[i & RING_MASK];
+        const idx = @as(usize, i & RING_MASK);
+        const ev = readEvent(ring, idx) orelse continue;
         const name = shortName(@enumFromInt(ev.id));
         if (name.len > max_event) max_event = name.len;
-        const time_us: u64 = ev.ts / 1000;
+        const time_us: u64 = clock.ticksToUs(ev.ticks);
         if (time_us > max_time_us) max_time_us = time_us;
         if (have_prev) {
-            const delta_us: u64 = (ev.ts - prev_ts) / 1000;
+            const delta_us: u64 = clock.ticksToUs(ev.ticks - prev_ticks);
             if (delta_us > max_delta_us) max_delta_us = delta_us;
         }
-        prev_ts = ev.ts;
+        prev_ticks = ev.ticks;
         have_prev = true;
     }
 

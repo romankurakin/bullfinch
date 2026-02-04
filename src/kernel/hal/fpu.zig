@@ -109,7 +109,7 @@ pub fn handleTrap(thread: *Thread, cpu_id: u32) bool {
 
     // Trace: tid, prev_owner_tid, first_use (1 = newly allocated, 0 = restored)
     const prev_tid = if (prev_owner) |p| p.id else 0;
-    trace.emit(.fpu_trap, thread.id, prev_tid, if (first_use) 1 else 0);
+    if (comptime trace.debug_kernel) trace.emit(.fpu_trap, thread.id, prev_tid, if (first_use) 1 else 0);
 
     return true;
 }

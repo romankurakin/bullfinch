@@ -202,7 +202,7 @@ export fn userTrapEntry() linksection(".trap") callconv(.naked) noreturn {
 /// Kernel trap handler. Most kernel faults are bugs, but FPU traps are expected.
 export fn handleKernelTrap(frame: *TrapFrame) callconv(.c) void {
     const cause = @as(TrapCause, @enumFromInt(frame.scause));
-    trace.emit(.trap_enter, frame.pc(), @intFromEnum(cause), 0);
+    if (comptime trace.debug_kernel) trace.emit(.trap_enter, frame.pc(), @intFromEnum(cause), 0);
 
     switch (cause) {
         .illegal_instruction => if (tryHandleFpuTrap()) return,
@@ -220,7 +220,7 @@ export fn handleKernelInterrupt() void {
         : [ret] "=r" (-> u64),
     );
     const code = TrapCause.code(scause);
-    trace.emit(.trap_enter, scause, code, 0);
+    if (comptime trace.debug_kernel) trace.emit(.trap_enter, scause, code, 0);
 
     switch (code) {
         5 => clock.handleTimerIrq(), // Supervisor timer
@@ -228,7 +228,7 @@ export fn handleKernelInterrupt() void {
         9 => {}, // TODO(plic): Supervisor external interrupt
         else => panicKernelInterrupt(scause),
     }
-    trace.emit(.trap_exit, scause, code, 0);
+    if (comptime trace.debug_kernel) trace.emit(.trap_exit, scause, code, 0);
     // Preemption handled by check_preempt in assembly epilogue.
 }
 
@@ -259,19 +259,19 @@ export fn handleUserTrap(frame: *TrapFrame) void {
 
     if (TrapCause.isInterrupt(frame.scause)) {
         const code = TrapCause.code(frame.scause);
-        trace.emit(.trap_enter, frame.scause, code, 1);
+        if (comptime trace.debug_kernel) trace.emit(.trap_enter, frame.scause, code, 1);
         switch (code) {
             5 => clock.handleTimerIrq(), // Supervisor timer
             1 => handleSoftwareInterrupt(),
             9 => {}, // TODO(plic): Supervisor external interrupt
             else => panicTrap(frame, cause.name()),
         }
-        trace.emit(.trap_exit, frame.scause, code, 1);
+        if (comptime trace.debug_kernel) trace.emit(.trap_exit, frame.scause, code, 1);
         // Preemption handled by check_preempt in assembly epilogue.
         return;
     }
 
-    trace.emit(.trap_enter, frame.pc(), @intFromEnum(cause), 1);
+    if (comptime trace.debug_kernel) trace.emit(.trap_enter, frame.pc(), @intFromEnum(cause), 1);
 
     switch (cause) {
         .illegal_instruction => if (tryHandleFpuTrap()) return,

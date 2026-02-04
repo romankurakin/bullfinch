@@ -83,10 +83,21 @@ pub fn ticksToNs(ticks: u64) u64 {
     return @truncate(@as(u128, ticks) * ns_per_sec / hal.timer.frequency());
 }
 
+/// Convert timer ticks to microseconds.
+pub fn ticksToUs(ticks: u64) u64 {
+    const us_per_sec: u128 = 1_000_000;
+    return @truncate(@as(u128, ticks) * us_per_sec / hal.timer.frequency());
+}
+
 /// Convert nanoseconds to timer ticks.
 pub fn nsToTicks(ns: u64) u64 {
     const ns_per_sec: u128 = 1_000_000_000;
     return @truncate(@as(u128, ns) * hal.timer.frequency() / ns_per_sec);
+}
+
+/// Get raw monotonic timer ticks since boot.
+pub inline fn getMonotonicTicks() u64 {
+    return hal.timer.now();
 }
 
 /// Get monotonic time in nanoseconds since boot.
