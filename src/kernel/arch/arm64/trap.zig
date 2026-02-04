@@ -191,7 +191,7 @@ const TIMER_PPI = gic.TIMER_PPI;
 export fn handleKernelIrq() void {
     const intid = gic.acknowledge();
     if (intid == SPURIOUS_INTID) return;
-    trace.emit(.trap_enter, intid, 0, 0);
+    if (comptime trace.debug_kernel) trace.emit(.trap_enter, intid, 0, 0);
 
     switch (intid) {
         TIMER_PPI => clock.handleTimerIrq(),
@@ -199,7 +199,7 @@ export fn handleKernelIrq() void {
     }
 
     gic.endOfInterrupt(intid);
-    trace.emit(.trap_exit, intid, 0, 0);
+    if (comptime trace.debug_kernel) trace.emit(.trap_exit, intid, 0, 0);
     // Preemption handled by check_preempt in assembly epilogue.
 }
 
@@ -217,7 +217,7 @@ fn panicKernelIrq(intid: u32) noreturn {
 export fn handleKernelTrap(frame: *TrapFrame) callconv(.c) void {
     const ec_bits: u6 = @truncate(frame.esr >> 26);
     const ec: TrapClass = @enumFromInt(ec_bits);
-    trace.emit(.trap_enter, frame.pc(), @intFromEnum(ec), 0);
+    if (comptime trace.debug_kernel) trace.emit(.trap_enter, frame.pc(), @intFromEnum(ec), 0);
 
     switch (ec) {
         .simd_fp => if (tryHandleFpuTrap()) return,
@@ -235,20 +235,20 @@ export fn handleUserTrap(frame: *TrapFrame) void {
     // If a pending IRQ is latched, handle it; otherwise treat as sync exception.
     const intid = gic.acknowledge();
     if (intid != SPURIOUS_INTID) {
-        trace.emit(.trap_enter, intid, 0, 1);
+        if (comptime trace.debug_kernel) trace.emit(.trap_enter, intid, 0, 1);
         switch (intid) {
             TIMER_PPI => clock.handleTimerIrq(),
             else => panicIrq(frame, intid),
         }
         gic.endOfInterrupt(intid);
-        trace.emit(.trap_exit, intid, 0, 1);
+        if (comptime trace.debug_kernel) trace.emit(.trap_exit, intid, 0, 1);
         // Preemption handled by check_preempt in assembly epilogue.
         return;
     }
 
     const ec_bits: u6 = @truncate(frame.esr >> 26);
     const ec: TrapClass = @enumFromInt(ec_bits);
-    trace.emit(.trap_enter, frame.pc(), @intFromEnum(ec), 1);
+    if (comptime trace.debug_kernel) trace.emit(.trap_enter, frame.pc(), @intFromEnum(ec), 1);
 
     switch (ec) {
         .simd_fp => if (tryHandleFpuTrap()) return,

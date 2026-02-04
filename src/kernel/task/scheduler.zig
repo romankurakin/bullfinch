@@ -95,7 +95,7 @@ pub fn enqueue(t: *Thread) void {
     defer held.release();
 
     enqueueLocked(t);
-    trace.emit(.sched_enqueue, t.id, t.virtual_runtime, @intFromEnum(t.state));
+    if (comptime trace.debug_kernel) trace.emit(.sched_enqueue, t.id, t.virtual_runtime, @intFromEnum(t.state));
 }
 
 inline fn enqueueLocked(t: *Thread) void {
@@ -116,14 +116,14 @@ inline fn enqueueLocked(t: *Thread) void {
 inline fn dequeueLocked(t: *Thread) void {
     if (!t.rb_node.isLinked()) return;
     runqueue.remove(&t.rb_node);
-    trace.emit(.sched_dequeue, t.id, t.virtual_runtime, @intFromEnum(t.state));
+    if (comptime trace.debug_kernel) trace.emit(.sched_dequeue, t.id, t.virtual_runtime, @intFromEnum(t.state));
 }
 
 inline fn pickNextAndDequeue() *Thread {
     const idle = idle_thread.?;
     const min_node = runqueue.extractMin() orelse return idle;
     const best = RunQueue.entry(min_node);
-    trace.emit(.sched_dequeue, best.id, best.virtual_runtime, @intFromEnum(best.state));
+    if (comptime trace.debug_kernel) trace.emit(.sched_dequeue, best.id, best.virtual_runtime, @intFromEnum(best.state));
     return best;
 }
 
@@ -144,7 +144,7 @@ pub fn tick() void {
     const elapsed_ns = task.SCHED_TIME_SLICE_NS;
     const delta = elapsed_ns * @as(u64, task.SCHED_BASE_WEIGHT) / @as(u64, curr.weight);
     curr.virtual_runtime +|= delta;
-    trace.emit(.sched_tick, curr.id, curr.virtual_runtime, 0);
+    if (comptime trace.debug_kernel) trace.emit(.sched_tick, curr.id, curr.virtual_runtime, 0);
 
     // O(1) check: tree's cached min vs current thread.
     // Also update min_vruntime in same pass to avoid double tree access.
@@ -182,7 +182,7 @@ pub fn yield() void {
         held.release();
         return;
     }
-    trace.emit(.sched_yield, curr.id, next.id, 0);
+    if (comptime trace.debug_kernel) trace.emit(.sched_yield, curr.id, next.id, 0);
     switchTo(next, held);
 }
 
@@ -198,7 +198,7 @@ pub fn block(wait_obj: ?*anyopaque) void {
     curr.blocked_on = wait_obj;
     curr.state = .blocked;
     const wait_ptr = if (wait_obj) |p| @intFromPtr(p) else 0;
-    trace.emit(.sched_block, curr.id, wait_ptr, 0);
+    if (comptime trace.debug_kernel) trace.emit(.sched_block, curr.id, wait_ptr, 0);
 
     switchTo(pickNextAndDequeue(), held);
 }
@@ -212,7 +212,7 @@ pub fn wake(t: *Thread) void {
 
     t.blocked_on = null;
     enqueueLocked(t);
-    trace.emit(.sched_wake, t.id, 0, 0);
+    if (comptime trace.debug_kernel) trace.emit(.sched_wake, t.id, 0, 0);
 }
 
 /// Terminate current thread.
@@ -228,7 +228,7 @@ pub fn exit() noreturn {
     hal.fpu.onThreadExit(curr, @truncate(hal.cpu.currentId()));
 
     curr.state = .exited;
-    trace.emit(.sched_exit, curr.id, 0, 0);
+    if (comptime trace.debug_kernel) trace.emit(.sched_exit, curr.id, 0, 0);
 
     // Exited threads are never re-enqueued, so switchTo should never return.
     switchTo(pickNextAndDequeue(), held);
@@ -282,7 +282,7 @@ export fn preemptFromTrap() void {
         curr.state = .ready;
         enqueueLocked(curr);
     }
-    trace.emit(.sched_preempt, curr.id, next.id, 0);
+    if (comptime trace.debug_kernel) trace.emit(.sched_preempt, curr.id, next.id, 0);
     switchTo(next, held);
     // Returns here after being rescheduled back.
     // Assembly will then restore trap frame and eret/sret.
@@ -307,7 +307,7 @@ inline fn switchTo(target: *Thread, held: sync.SpinLock.Held) void {
 
     current_thread = target;
     target.state = .running;
-    trace.emit(.sched_switch, prev.id, target.id, 0);
+    if (comptime trace.debug_kernel) trace.emit(.sched_switch, prev.id, target.id, 0);
 
     // Lazy FPU: disable FPU so new thread traps on first use.
     hal.fpu.onContextSwitch(@truncate(hal.cpu.currentId()));
