@@ -92,7 +92,7 @@ pub fn dtb() void {
 pub fn pmm() void {
     const arenas = pmm_mod.arenaCount();
     const pages = pmm_mod.totalPages();
-    const pages_k = pages / 1000;
+    const pages_k = if (pages == 0) 0 else (pages + 999) / 1000;
 
     stagePrefix(6, "pmm");
     console.printDec(arenas);

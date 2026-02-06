@@ -4,6 +4,7 @@
 
 const builtin = @import("builtin");
 
+const c_compat = @import("c_compat.zig");
 const fdt = @import("fdt/fdt.zig");
 const rbtree = @import("task/rbtree.zig");
 const hwinfo = @import("hwinfo/hwinfo.zig");
@@ -32,6 +33,7 @@ const arch_uart = switch (builtin.cpu.arch) {
 };
 
 comptime {
+    _ = c_compat;
     _ = fdt;
     _ = rbtree;
     _ = hwinfo;

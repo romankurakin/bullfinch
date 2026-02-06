@@ -63,6 +63,7 @@ export fn kmain() noreturn {
 var panic_once: sync.Once = .{};
 
 /// Kernel panic handler. Prints message and halts. Guards against double panic.
+/// Ignore Zig StackTrace and use a frame-pointer backtrace for one implementation.
 pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, _: ?usize) noreturn {
     _ = hal.cpu.disableInterrupts();
     if (!panic_once.tryOnce()) hal.cpu.halt();
