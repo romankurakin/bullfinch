@@ -124,9 +124,18 @@ export fn strnlen(s: [*]const u8, maxlen: usize) usize {
 export fn strtoul(nptr: [*]const u8, endptr: ?*[*]const u8, base_arg: c_int) c_ulong {
     var p = nptr;
     var base: c_ulong = @intCast(base_arg);
+    var negative = false;
+    var any_digits = false;
+    const max = std.math.maxInt(c_ulong);
 
     // Skip whitespace
     while (p[0] == ' ' or p[0] == '\t' or p[0] == '\n') p += 1;
+
+    // Optional sign
+    if (p[0] == '+' or p[0] == '-') {
+        negative = p[0] == '-';
+        p += 1;
+    }
 
     // Handle base detection
     if (base == 0 or base == 16) {
@@ -140,6 +149,7 @@ export fn strtoul(nptr: [*]const u8, endptr: ?*[*]const u8, base_arg: c_int) c_u
 
     // Convert digits
     var result: c_ulong = 0;
+    var overflow = false;
     while (true) {
         const c = p[0];
         const digit: c_ulong = if (c >= '0' and c <= '9')
@@ -152,10 +162,83 @@ export fn strtoul(nptr: [*]const u8, endptr: ?*[*]const u8, base_arg: c_int) c_u
             break;
 
         if (digit >= base) break;
-        result = result * base + digit;
+        any_digits = true;
+        if (!overflow) {
+            if (result > (max - digit) / base) {
+                overflow = true;
+                result = max;
+            } else {
+                result = result * base + digit;
+            }
+        }
         p += 1;
     }
 
-    if (endptr) |e| e.* = p;
-    return result;
+    if (endptr) |e| {
+        e.* = if (any_digits) p else nptr;
+    }
+    if (overflow) return max;
+    return if (negative) 0 -% result else result;
+}
+
+test "strtoul accepts optional sign prefix" {
+    const plus = " +42";
+    var end_plus: [*]const u8 = undefined;
+    const plus_val = strtoul(plus.ptr, &end_plus, 10);
+    try std.testing.expectEqual(@as(c_ulong, 42), plus_val);
+    try std.testing.expectEqual(
+        @as(usize, plus.len),
+        @intFromPtr(end_plus) - @intFromPtr(plus.ptr),
+    );
+
+    const minus = "-1";
+    var end_minus: [*]const u8 = undefined;
+    const minus_val = strtoul(minus.ptr, &end_minus, 10);
+    try std.testing.expectEqual(@as(c_ulong, 0) -% 1, minus_val);
+    try std.testing.expectEqual(
+        @as(usize, minus.len),
+        @intFromPtr(end_minus) - @intFromPtr(minus.ptr),
+    );
+}
+
+test "strtoul saturates on overflow" {
+    const huge = "999999999999999999999999999999999999999999";
+    var end: [*]const u8 = undefined;
+    const value = strtoul(huge.ptr, &end, 10);
+    try std.testing.expectEqual(std.math.maxInt(c_ulong), value);
+    try std.testing.expectEqual(@as(usize, huge.len), @intFromPtr(end) - @intFromPtr(huge.ptr));
+}
+
+test "strtoul auto-detects base and stops at invalid digit" {
+    const hex = "0x1fZ";
+    var hex_end: [*]const u8 = undefined;
+    const hex_val = strtoul(hex.ptr, &hex_end, 0);
+    try std.testing.expectEqual(@as(c_ulong, 31), hex_val);
+    try std.testing.expectEqual(@as(usize, 4), @intFromPtr(hex_end) - @intFromPtr(hex.ptr));
+
+    const oct = "0779";
+    var oct_end: [*]const u8 = undefined;
+    const oct_val = strtoul(oct.ptr, &oct_end, 0);
+    try std.testing.expectEqual(@as(c_ulong, 63), oct_val);
+    try std.testing.expectEqual(@as(usize, 3), @intFromPtr(oct_end) - @intFromPtr(oct.ptr));
+}
+
+test "strtoul sets endptr to input when no conversion" {
+    const no_digits = "   +x";
+    var end1: [*]const u8 = undefined;
+    const v1 = strtoul(no_digits.ptr, &end1, 10);
+    try std.testing.expectEqual(@as(c_ulong, 0), v1);
+    try std.testing.expectEqual(@intFromPtr(no_digits.ptr), @intFromPtr(end1));
+
+    const no_hex_digits = "0x";
+    var end2: [*]const u8 = undefined;
+    const v2 = strtoul(no_hex_digits.ptr, &end2, 0);
+    try std.testing.expectEqual(@as(c_ulong, 0), v2);
+    try std.testing.expectEqual(@intFromPtr(no_hex_digits.ptr), @intFromPtr(end2));
+}
+
+test "memmove handles overlapping regions" {
+    var buf = [_]u8{ 'a', 'b', 'c', 'd', 'e', 0 };
+    _ = memmove_impl(buf[1..].ptr, buf[0..].ptr, 4);
+    try std.testing.expectEqualSlices(u8, "aabcd", buf[0..5]);
 }
