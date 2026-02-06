@@ -62,9 +62,8 @@ pub const Thread = struct {
     /// enumeration per process without separate allocation.
     process_next: ?*Thread,
 
-    /// FPU/SIMD register state. Allocated lazily on first FPU instruction
-    /// trap to save memory for threads that never use floating point.
-    fpu_state: ?*hal.fpu.FpuState,
+    /// FPU/SIMD register state owned by this thread.
+    fpu_state: hal.fpu.FpuState,
 
     pub const State = enum { ready, running, blocked, exited };
 
@@ -109,7 +108,7 @@ fn initThreadStruct(
         .weight = task.SCHED_BASE_WEIGHT,
         .virtual_runtime = 0,
         .process_next = null,
-        .fpu_state = null, // Allocated lazily on first FPU use
+        .fpu_state = .{},
     };
     t.context.setEntryData(@intFromPtr(entry), optionalPtrToInt(arg));
 }
@@ -177,7 +176,7 @@ test "returns true for ready and running states" {
         .weight = 1024,
         .virtual_runtime = 0,
         .process_next = null,
-        .fpu_state = null,
+        .fpu_state = .{},
     };
 
     thread.state = .ready;

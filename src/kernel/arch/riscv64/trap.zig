@@ -205,7 +205,11 @@ export fn handleKernelTrap(frame: *TrapFrame) callconv(.c) void {
     if (comptime trace.debug_kernel) trace.emit(.trap_enter, frame.pc(), @intFromEnum(cause), 0);
 
     switch (cause) {
-        .illegal_instruction => if (tryHandleFpuTrap()) return,
+        .illegal_instruction => switch (tryHandleFpuTrap()) {
+            .handled => return,
+            .oom => panicTrap(frame, "fpu state unavailable"),
+            .not_fpu => {},
+        },
         else => {},
     }
     // TODO(syscall): Handle ECALL from S-mode.
@@ -252,7 +256,7 @@ fn handleSoftwareInterrupt() void {
 }
 
 /// User trap handler. Unified entry for all user-mode traps and interrupts.
-/// TODO(process): Terminate process on fault instead of panic.
+/// TODO(pm-userspace): Forward user faults to userspace PM/exception handler.
 /// TODO(signals): Deliver signal to userspace exception handler.
 export fn handleUserTrap(frame: *TrapFrame) void {
     const cause = @as(TrapCause, @enumFromInt(frame.scause));
@@ -274,7 +278,11 @@ export fn handleUserTrap(frame: *TrapFrame) void {
     if (comptime trace.debug_kernel) trace.emit(.trap_enter, frame.pc(), @intFromEnum(cause), 1);
 
     switch (cause) {
-        .illegal_instruction => if (tryHandleFpuTrap()) return,
+        .illegal_instruction => switch (tryHandleFpuTrap()) {
+            .handled => return,
+            .oom => task.scheduler.exit(),
+            .not_fpu => {},
+        },
         else => {},
     }
     // TODO(syscall): Handle ECALL from U-mode.
@@ -282,13 +290,13 @@ export fn handleUserTrap(frame: *TrapFrame) void {
     panicTrap(frame, cause.name());
 }
 
-/// Try to handle as lazy FPU trap. Returns true if handled.
+/// Try to handle this trap as FPU access and return policy result.
 /// Heuristic: illegal_instruction with sstatus.FS=Off is assumed to be FPU access.
 /// This may incorrectly handle non-FPU illegal instructions when FPU is disabled,
 /// but in practice kernel code doesn't execute unknown instructions.
-fn tryHandleFpuTrap() bool {
-    if (fpu.isEnabled()) return false;
-    const thread = task.scheduler.current() orelse return false;
+fn tryHandleFpuTrap() hal_fpu.TrapResult {
+    if (fpu.isEnabled()) return .not_fpu;
+    const thread = task.scheduler.current() orelse return .not_fpu;
     return hal_fpu.handleTrap(thread, @truncate(cpu.currentId()));
 }
 

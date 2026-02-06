@@ -93,7 +93,10 @@ fn genQRegsAsm(comptime op: []const u8) []const u8 {
         var i: usize = 0;
         while (i < 32) : (i += 2) {
             const offset = OFF_V + i * 16;
-            asm_str = asm_str ++ std.fmt.comptimePrint("{s} q{d}, q{d}, [%[state], #{d}]\n", .{ op, i, i + 1, offset });
+            asm_str = asm_str ++ std.fmt.comptimePrint(
+                "{s} q{d}, q{d}, [%[state], #{d}]\n",
+                .{ op, i, i + 1, offset },
+            );
         }
         return asm_str;
     }
@@ -149,4 +152,13 @@ pub fn detect() bool {
     );
     const fp_field: u4 = @truncate((id_aa64pfr0 >> 16) & 0xF);
     return fp_field != 0b1111;
+}
+
+/// ARM64 lazy path: disable FPU so next thread traps on first use.
+/// Returns false because FPU owner does not change until a trap occurs.
+pub fn onContextSwitch(prev_state: *FpuState, next_state: *FpuState) bool {
+    _ = prev_state;
+    _ = next_state;
+    disable();
+    return false;
 }

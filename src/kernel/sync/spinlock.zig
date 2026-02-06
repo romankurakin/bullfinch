@@ -20,6 +20,7 @@
 //! Debug builds detect double-release and recursive acquire attempts.
 //!
 //! TODO(smp): Add per-CPU magazine cache for lock-free fast path.
+//! TODO(smp): Track lock owner CPU in debug mode (not just a boolean held flag).
 //! See Bonwick, "Magazines and Vmem" (USENIX 2001).
 
 const std = @import("std");

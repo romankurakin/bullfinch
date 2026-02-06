@@ -1,11 +1,7 @@
 //! Floating Point Unit HAL.
 //!
-//! Provides architecture-independent lazy FPU context switching.
-//! Threads don't get FPU access by default; on first FPU instruction,
-//! we trap, save previous owner's state, and grant access to new owner.
-//!
-//! This saves ~500 bytes of register save/restore per context switch
-//! for threads that don't use floating point.
+//! Provides architecture-independent FPU context switching.
+//! Architecture-specific save/restore policy lives in arch fpu backends.
 
 const builtin = @import("builtin");
 
@@ -29,6 +25,12 @@ pub const isDirty = arch.isDirty;
 pub const initRegs = arch.init;
 pub const bootInit = arch.bootInit;
 pub const detect = arch.detect;
+/// Trap classification for architecture trap handlers.
+/// `oom` is reserved for future fallible state provisioning policies.
+/// Current embedded per-thread state keeps this path unreachable.
+/// TODO(pm-userspace): Route `oom` through userspace PM fault policy instead
+/// of direct in-kernel termination once exception channels are implemented.
+pub const TrapResult = enum { handled, not_fpu, oom };
 
 const Thread = @import("../task/thread.zig").Thread;
 
@@ -48,70 +50,49 @@ inline fn setOwner(cpu_id: u32, owner: ?*Thread) void {
 }
 
 /// Called on context switch.
-/// ARM64: Disable FPU so new thread traps on first use (lazy save).
-/// RISC-V: Save current thread's state if dirty (eager save with dirty tracking).
-pub fn onContextSwitch(cpu_id: u32) void {
+/// Architecture backend decides save/restore policy and whether `next`
+/// becomes the current hardware owner.
+pub fn onContextSwitch(cpu_id: u32, prev: *Thread, next: *Thread) void {
     if (!hwinfo.hasFpu()) return; // No FPU, nothing to do
 
-    // On RISC-V, disable() is a no-op. We use dirty tracking instead.
-    // Save current owner's state if dirty before switching.
-    if (builtin.cpu.arch == .riscv64) {
-        if (getOwner(cpu_id)) |owner| {
-            if (owner.fpu_state) |state| {
-                if (isDirty()) {
-                    save(state);
-                    // save() sets FS=Clean, resetting dirty tracking
-                }
-            }
-        }
+    const next_owns = arch.onContextSwitch(&prev.fpu_state, &next.fpu_state);
+    if (next_owns) {
+        setOwner(cpu_id, next);
     }
-    disable();
 }
 
-/// Handle FPU trap: save previous owner's state, restore/init new owner's state.
-/// Returns true if handled, false if not an FPU trap.
-pub fn handleTrap(thread: *Thread, cpu_id: u32) bool {
-    if (!hwinfo.hasFpu()) return false; // No FPU hardware
+/// Handle an FPU trap for `thread` on `cpu_id`.
+/// Saves previous owner state when needed, restores current thread state, and
+/// updates per-CPU owner tracking. Returns trap classification for caller policy.
+pub fn handleTrap(thread: *Thread, cpu_id: u32) TrapResult {
+    if (!hwinfo.hasFpu()) return .not_fpu; // No FPU hardware
 
     const prev_owner = getOwner(cpu_id);
-    const first_use = thread.fpu_state == null;
+    const switching_owner = prev_owner != thread;
 
     // Enable FPU first - needed to access FP registers for save/restore.
     enable();
 
-    // Save previous owner's state if different thread.
-    if (prev_owner) |prev| {
-        if (prev != thread) {
-            if (prev.fpu_state) |state| {
-                save(state);
-            }
-        }
-    }
+    // Save previous owner's state before ownership transfer.
+    const prev_state: ?*FpuState = if (prev_owner) |prev|
+        if (switching_owner) &prev.fpu_state else null
+    else
+        null;
+    if (prev_state) |state| save(state);
 
-    // Restore or initialize new owner's state.
-    if (thread.fpu_state) |state| {
-        if (prev_owner != thread) {
-            restore(state);
-        }
-        // Else: same thread, state already in registers.
-    } else {
-        // First FPU use: allocate state and initialize registers.
-        thread.fpu_state = allocFpuState() orelse {
-            // OOM: can't use FPU. Caller should terminate thread.
-            // Returning false will cause panic, which is better than silent loop.
-            disable();
-            return false;
-        };
-        initRegs();
+    // Thread owns embedded FPU state for its full lifetime.
+    const thread_state = &thread.fpu_state;
+    if (switching_owner) {
+        restore(thread_state);
     }
 
     setOwner(cpu_id, thread);
 
-    // Trace: tid, prev_owner_tid, first_use (1 = newly allocated, 0 = restored)
+    // third field kept for first-use tracing compatibility; preallocation keeps it zero.
     const prev_tid = if (prev_owner) |p| p.id else 0;
-    if (comptime trace.debug_kernel) trace.emit(.fpu_trap, thread.id, prev_tid, if (first_use) 1 else 0);
+    if (comptime trace.debug_kernel) trace.emit(.fpu_trap, thread.id, prev_tid, 0);
 
-    return true;
+    return .handled;
 }
 
 /// Called when thread exits: release FPU ownership if this thread owns it.
@@ -120,31 +101,11 @@ pub fn onThreadExit(thread: *Thread, cpu_id: u32) void {
 
     if (getOwner(cpu_id) == thread) {
         setOwner(cpu_id, null);
-        // State will be freed with thread, no need to save.
-    }
-    // Free FPU state if allocated.
-    if (thread.fpu_state) |state| {
-        freeFpuState(state);
-        thread.fpu_state = null;
+        // State is embedded in Thread and dies with thread allocation.
     }
 }
 
-// Simple FPU state allocator using kernel allocator.
-const allocator = @import("../allocator/allocator.zig");
-
-fn allocFpuState() ?*FpuState {
-    const bytes = allocator.alloc(FpuState.SIZE, @alignOf(FpuState)) catch return null;
-    const state: *FpuState = @ptrCast(@alignCast(bytes));
-    state.* = .{};
-    return state;
-}
-
-fn freeFpuState(state: *FpuState) void {
-    const bytes: *u8 = @ptrCast(state);
-    allocator.free(bytes) catch {};
-}
-
-/// Execute a single FPU instruction. Used for testing lazy FPU.
+/// Execute a single FPU instruction. Used for FPU path tests.
 /// Kernel is compiled with soft-float, so we use inline asm.
 pub fn useFpuInstruction() void {
     switch (builtin.cpu.arch) {
@@ -168,4 +129,7 @@ comptime {
     if (!@hasDecl(arch, "disable")) @compileError("arch must have disable function");
     if (!@hasDecl(arch, "isDirty")) @compileError("arch must have isDirty function");
     if (!@hasDecl(arch, "detect")) @compileError("arch must have detect function");
+    if (!@hasDecl(arch, "onContextSwitch")) {
+        @compileError("arch must have onContextSwitch function");
+    }
 }

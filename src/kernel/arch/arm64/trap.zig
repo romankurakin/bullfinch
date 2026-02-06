@@ -220,7 +220,11 @@ export fn handleKernelTrap(frame: *TrapFrame) callconv(.c) void {
     if (comptime trace.debug_kernel) trace.emit(.trap_enter, frame.pc(), @intFromEnum(ec), 0);
 
     switch (ec) {
-        .simd_fp => if (tryHandleFpuTrap()) return,
+        .simd_fp => switch (tryHandleFpuTrap()) {
+            .handled => return,
+            .oom => panicTrap(frame, "fpu state unavailable"),
+            .not_fpu => {},
+        },
         else => {},
     }
     // TODO(syscall): Handle SVC exceptions.
@@ -229,7 +233,7 @@ export fn handleKernelTrap(frame: *TrapFrame) callconv(.c) void {
 }
 
 /// User trap handler. Unified entry for all user-mode traps and interrupts.
-/// TODO(process): Terminate process on fault instead of panic.
+/// TODO(pm-userspace): Forward user faults to userspace PM/exception handler.
 /// TODO(signals): Deliver signal to userspace exception handler.
 export fn handleUserTrap(frame: *TrapFrame) void {
     // If a pending IRQ is latched, handle it; otherwise treat as sync exception.
@@ -251,7 +255,11 @@ export fn handleUserTrap(frame: *TrapFrame) void {
     if (comptime trace.debug_kernel) trace.emit(.trap_enter, frame.pc(), @intFromEnum(ec), 1);
 
     switch (ec) {
-        .simd_fp => if (tryHandleFpuTrap()) return,
+        .simd_fp => switch (tryHandleFpuTrap()) {
+            .handled => return,
+            .oom => task.scheduler.exit(),
+            .not_fpu => {},
+        },
         else => {},
     }
     // TODO(syscall): Handle SVC from userspace.
@@ -259,10 +267,10 @@ export fn handleUserTrap(frame: *TrapFrame) void {
     panicTrap(frame, ec.name());
 }
 
-/// Try to handle as lazy FPU trap. Returns true if handled.
+/// Try to handle this trap as FPU access and return policy result.
 /// ARM64: simd_fp (EC=0x07) means FPU/SIMD access when FPEN traps.
-fn tryHandleFpuTrap() bool {
-    const thread = task.scheduler.current() orelse return false;
+fn tryHandleFpuTrap() hal_fpu.TrapResult {
+    const thread = task.scheduler.current() orelse return .not_fpu;
     return hal_fpu.handleTrap(thread, @truncate(cpu.currentId()));
 }
 
