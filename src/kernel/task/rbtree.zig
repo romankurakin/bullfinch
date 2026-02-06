@@ -39,13 +39,11 @@ pub const Node = struct {
     left: ?*Node = null,
     right: ?*Node = null,
     color: Color = .red,
+    linked: bool = false,
 
-    /// True unless explicitly removed (parent points to self).
+    /// True when node is currently linked into a tree.
     pub fn isLinked(self: *const Node) bool {
-        if (self.parent) |p| {
-            return @intFromPtr(p) != @intFromPtr(self);
-        }
-        return true;
+        return self.linked;
     }
 };
 
@@ -78,12 +76,7 @@ pub fn RedBlackTree(
         /// Insert node into tree. Node must not already be in a tree.
         pub fn insert(self: *Self, node: *Node) void {
             if (debug_kernel) {
-                // Allow if parent is null (fresh) or self (removed)
-                if (node.parent) |p| {
-                    if (@intFromPtr(p) != @intFromPtr(node)) {
-                        @panic(panic_msg.DOUBLE_INSERT);
-                    }
-                }
+                if (node.isLinked()) @panic(panic_msg.DOUBLE_INSERT);
             }
 
             node.left = null;
@@ -118,6 +111,7 @@ pub fn RedBlackTree(
             } else {
                 self.root = node;
             }
+            node.linked = true;
 
             self.count += 1;
 
@@ -138,10 +132,8 @@ pub fn RedBlackTree(
 
         /// Remove node from tree.
         pub fn remove(self: *Self, node: *Node) void {
-            if (debug_kernel) {
-                if (!node.isLinked()) {
-                    @panic(panic_msg.NOT_IN_TREE);
-                }
+            if (!node.isLinked()) {
+                @panic(panic_msg.NOT_IN_TREE);
             }
 
             // Update min cache before removal
@@ -219,6 +211,7 @@ pub fn RedBlackTree(
             node.left = null;
             node.right = null;
             node.color = .red;
+            node.linked = false;
             self.count -= 1;
 
             // Fixup if we removed a black node
@@ -546,6 +539,7 @@ test "initializes empty tree" {
 test "inserts single node" {
     var tree = TestTree{};
     var item = TestItem{ .key = 42 };
+    try std.testing.expect(!item.rb_node.isLinked());
 
     tree.insert(&item.rb_node);
 
@@ -553,6 +547,7 @@ test "inserts single node" {
     try std.testing.expectEqual(@as(usize, 1), tree.len());
     try std.testing.expectEqual(&item.rb_node, tree.min().?);
     try std.testing.expectEqual(@as(u64, 42), TestTree.entry(tree.min().?).key);
+    try std.testing.expect(item.rb_node.isLinked());
 }
 
 test "maintains min on ascending insert" {
@@ -611,6 +606,7 @@ test "removes arbitrary node" {
     // Remove middle node
     tree.remove(&items[2].rb_node);
     try std.testing.expectEqual(@as(usize, 4), tree.len());
+    try std.testing.expect(!items[2].rb_node.isLinked());
 
     // Verify remaining nodes
     var count: usize = 0;
