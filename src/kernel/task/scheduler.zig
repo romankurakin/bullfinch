@@ -309,14 +309,11 @@ inline fn switchTo(target: *Thread, held: sync.SpinLock.Held) void {
     target.state = .running;
     if (comptime trace.debug_kernel) trace.emit(.sched_switch, prev.id, target.id, 0);
 
-    // Lazy FPU: disable FPU so new thread traps on first use.
-    hal.fpu.onContextSwitch(@truncate(hal.cpu.currentId()));
+    // Must run before switchContext while prev FP registers are still live.
+    hal.fpu.onContextSwitch(@truncate(hal.cpu.currentId()), prev, target);
 
     held.releaseNoIrqRestore();
 
-    // setKernelStack not called:
-    // - ARM64 SP_EL1 is live (would corrupt stack),
-    // - RISC-V sscratch safe but unneeded for kernel-to-kernel switches.
     hal.context.switchContext(&prev.context, &target.context);
 
     // TODO(smp): Memory barrier needed - other CPU's writes must be visible.

@@ -9,6 +9,9 @@
 //!
 //! Debug builds verify release is only called when lock is held.
 //!
+//! TODO(smp): Revisit acquire ordering for ticket fast path when SMP is enabled.
+//! TODO(smp): Formalize SpinWaitFn memory-order contract (acquire on success).
+//!
 //! ```
 //! var lock = DefaultTicketLock{};
 //! lock.acquire();

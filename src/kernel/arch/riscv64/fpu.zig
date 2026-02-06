@@ -96,7 +96,10 @@ fn genFpRegsAsm(comptime op: []const u8) []const u8 {
         var asm_str: []const u8 = "";
         for (0..32) |i| {
             const offset = OFF_F + i * 8;
-            asm_str = asm_str ++ std.fmt.comptimePrint("{s} f{d}, {d}(%[state])\n", .{ op, i, offset });
+            asm_str = asm_str ++ std.fmt.comptimePrint(
+                "{s} f{d}, {d}(%[state])\n",
+                .{ op, i, offset },
+            );
         }
         return asm_str;
     }
@@ -173,5 +176,16 @@ pub fn detect() bool {
         :
         : [mask] "r" (FS_MASK),
     );
+    return true;
+}
+
+/// RISC-V eager path: save outgoing dirty state and restore incoming state.
+/// Returns true because incoming thread owns FPU after switch.
+pub fn onContextSwitch(prev_state: *FpuState, next_state: *FpuState) bool {
+    if (isDirty()) {
+        save(prev_state); // save() sets FS=Clean
+    }
+
+    restore(next_state);
     return true;
 }

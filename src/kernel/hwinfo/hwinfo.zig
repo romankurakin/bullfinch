@@ -151,6 +151,7 @@ fn sortRegionsBySize(regions: []Region) void {
 
 /// Get timer frequency from /cpus/timebase-frequency (RISC-V).
 /// ARM64 ignores this and reads CNTFRQ_EL0 register directly.
+/// TODO(dtb): Support 8-byte timebase-frequency values when present.
 fn getTimerFrequency(dtb: fdt.Fdt) ?u64 {
     const cpus = fdt.pathOffset(dtb, "/cpus") orelse return null;
     const prop = fdt.getprop(dtb, cpus, "timebase-frequency") orelse return null;
@@ -285,6 +286,7 @@ fn getUartBase(dtb: fdt.Fdt) ?u64 {
 }
 
 /// Parse first reg entry to get device base address.
+/// TODO(dtb): Read #address-cells/#size-cells from parent bus node.
 fn parseDeviceBase(dtb: fdt.Fdt, node: i32) ?u64 {
     const reg = fdt.getprop(dtb, node, "reg") orelse return null;
     // Most devices use 2 address cells, 2 size cells

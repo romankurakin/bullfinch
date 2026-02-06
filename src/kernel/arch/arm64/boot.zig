@@ -43,6 +43,7 @@ export fn _start() linksection(".text.boot") callconv(.naked) noreturn {
         // Enable PAN (Privileged Access Never). Kernel faults if it
         // accidentally accesses user memory without explicit override.
         // Catches bugs where kernel dereferences user pointers directly.
+        // TODO(arm64): Gate PAN write on FEAT_PAN/ID_AA64MMFR1_EL1.PAN.
         \\ msr pan, #1
 
         // Clear BSS section (PC-relative addressing)

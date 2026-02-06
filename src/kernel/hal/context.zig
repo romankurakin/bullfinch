@@ -24,6 +24,7 @@ pub const EntryFn = *const fn (?*anyopaque) void;
 pub const ExitFn = *const fn () noreturn;
 
 var exit_fn: ?ExitFn = null;
+// TODO(smp): Publish exit_fn with release/acquire semantics for secondary CPUs.
 
 /// Set the thread exit function. Called once during scheduler init.
 pub fn setExitFn(f: ExitFn) void {
