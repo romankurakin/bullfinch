@@ -16,12 +16,14 @@
 //! TODO(smp): tick_count needs atomic access or per-CPU counters
 //! TODO(smp): next_tick/scheduler_tick need protection if modified from multiple cores
 
+const std = @import("std");
 const console = @import("../console/console.zig");
 const hal = @import("../hal/hal.zig");
 const trap = @import("../trap/trap.zig");
 
 const panic_msg = struct {
     const ZERO_FREQ = "clock: timer frequency is zero";
+    const LOW_FREQ = "clock: timer frequency below tick rate";
 };
 
 /// Tick rate for scheduler and periodic work (100 Hz = 10ms ticks).
@@ -43,7 +45,8 @@ var scheduler_tick: ?*const fn () void = null;
 pub fn init() void {
     const freq = hal.timer.frequency();
     if (freq == 0) @panic(panic_msg.ZERO_FREQ);
-    ticks_per_interval = freq / TICK_RATE_HZ;
+    if (freq < TICK_RATE_HZ) @panic(panic_msg.LOW_FREQ);
+    ticks_per_interval = computeTicksPerInterval(freq);
 
     const now = hal.timer.now();
     next_tick = now + ticks_per_interval;
@@ -51,6 +54,12 @@ pub fn init() void {
 
     // Deadline must be set before enabling interrupts
     hal.timer.init();
+}
+
+/// Compute timer ticks per scheduler interval.
+/// Frequency must be >= TICK_RATE_HZ. Caller validates this precondition.
+fn computeTicksPerInterval(freq: u64) u64 {
+    return freq / TICK_RATE_HZ;
 }
 
 /// Register scheduler tick callback. Called once per tick for preemption.
@@ -117,4 +126,10 @@ pub fn printStatus() void {
     console.print("Clock: ");
     console.print(dec.buf[0..dec.len]);
     console.print(" ticks\n");
+}
+
+test "compute ticks per interval with valid frequencies" {
+    try std.testing.expectEqual(@as(u64, 1), computeTicksPerInterval(100));
+    try std.testing.expectEqual(@as(u64, 2), computeTicksPerInterval(200));
+    try std.testing.expectEqual(@as(u64, 123), computeTicksPerInterval(12_300));
 }
