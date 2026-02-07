@@ -9,7 +9,6 @@
 //!
 //! Debug builds verify release is only called when lock is held.
 //!
-//! TODO(smp): Revisit acquire ordering for ticket fast path when SMP is enabled.
 //! TODO(smp): Formalize SpinWaitFn memory-order contract (acquire on success).
 //!
 //! ```
@@ -34,7 +33,7 @@ pub const SpinWaitFn = *const fn (ptr: *u32, expected: u16) void;
 /// Default spin wait: simple busy-loop polling.
 fn defaultSpinWait(ptr: *u32, expected: u16) void {
     while (true) {
-        const current: u16 = @truncate(@atomicLoad(u32, ptr, .monotonic));
+        const current: u16 = @truncate(@atomicLoad(u32, ptr, .acquire));
         if (current == expected) return;
         std.atomic.spinLoopHint();
     }
@@ -54,7 +53,7 @@ pub fn TicketLock(comptime spin_wait: SpinWaitFn) type {
 
         /// Acquire lock, spinning until obtained.
         pub fn acquire(self: *Self) void {
-            const old = self.state.fetchAdd(1 << TICKET_SHIFT, .monotonic);
+            const old = self.state.fetchAdd(1 << TICKET_SHIFT, .acquire);
             const my_ticket: u16 = @truncate(old >> TICKET_SHIFT);
             const owner: u16 = @truncate(old);
 

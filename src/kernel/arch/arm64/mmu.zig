@@ -18,6 +18,7 @@
 //! TODO(smp): Use ASID for per-process TLB management (currently ASID=0).
 
 const std = @import("std");
+const cpu = @import("cpu.zig");
 
 const memory = @import("../../memory/memory.zig");
 const mmu_types = @import("../../mmu/mmu.zig");
@@ -292,16 +293,16 @@ const SystemControlRegister = struct {
 
 /// Data barrier ensures stores complete before TLB invalidation.
 inline fn storeBarrier() void {
-    asm volatile ("dsb ishst");
+    cpu.dataSyncBarrierIshst();
 }
 
 inline fn fullBarrier() void {
-    asm volatile ("dsb ish");
+    cpu.dataSyncBarrierIsh();
 }
 
 /// Flushes pipeline after MMU configuration changes.
 inline fn instructionBarrier() void {
-    asm volatile ("isb");
+    cpu.instructionBarrier();
 }
 
 inline fn tlbFlushAll() void {

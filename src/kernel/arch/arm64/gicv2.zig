@@ -9,6 +9,7 @@
 //!
 //! See ARM GIC-400 Technical Reference Manual.
 
+const cpu = @import("cpu.zig");
 const gic = @import("gic.zig");
 const mmio = @import("mmio.zig");
 const mmu = @import("mmu.zig");
@@ -52,4 +53,5 @@ pub inline fn acknowledge() u32 {
 /// End of interrupt - signal completion to GIC.
 pub inline fn endOfInterrupt(intid: u32) void {
     mmio.write32(gicc_base + GICC_EOIR, intid);
+    cpu.instructionBarrier();
 }

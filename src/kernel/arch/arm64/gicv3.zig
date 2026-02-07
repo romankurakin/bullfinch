@@ -9,6 +9,8 @@
 //!
 //! See ARM GIC Architecture Specification, Chapter 12 (GIC Programmer's Model).
 
+const std = @import("std");
+const cpu = @import("cpu.zig");
 const gic = @import("gic.zig");
 const mmio = @import("mmio.zig");
 const mmu = @import("mmu.zig");
@@ -26,6 +28,11 @@ const GICR_IPRIORITYR: usize = 0x0400;
 const GICR_ISENABLER0: usize = 0x0100;
 const GICR_WAKER_CHILDREN_ASLEEP: u32 = 1 << 2;
 const GICR_WAKER_PROCESSOR_SLEEP: u32 = 1 << 1;
+const GICR_WAKE_RETRIES: usize = 1000;
+
+const panic_msg = struct {
+    const REDISTRIBUTOR_WAKE_TIMEOUT = "gicv3: redistributor wake timeout";
+};
 
 var gicd_base: usize = 0;
 var gicr_base: usize = 0;
@@ -37,13 +44,21 @@ pub fn init(gicd_phys: u64, gicr_phys: u64) void {
 
     const ctlr = mmio.read32(gicd_base + GICD_CTLR);
     mmio.write32(gicd_base + GICD_CTLR, ctlr | GICD_CTLR_ARE_NS | GICD_CTLR_ENABLE_G1NS);
+    // Ensure Distributor enable is globally visible before CPU-interface sysreg programming.
+    cpu.dataSyncBarrierSy();
+    cpu.instructionBarrier();
 
     // Wake redistributor - clear PROCESSOR_SLEEP and wait for CHILDREN_ASLEEP to clear.
     // Per GIC spec, this completes within a few cycles once sleep is cleared.
     // On real hardware this is near-instant; QEMU completes it synchronously.
     const waker = mmio.read32(gicr_base + GICR_WAKER);
     mmio.write32(gicr_base + GICR_WAKER, waker & ~GICR_WAKER_PROCESSOR_SLEEP);
-    while (mmio.read32(gicr_base + GICR_WAKER) & GICR_WAKER_CHILDREN_ASLEEP != 0) {}
+    var retries = GICR_WAKE_RETRIES;
+    while (mmio.read32(gicr_base + GICR_WAKER) & GICR_WAKER_CHILDREN_ASLEEP != 0) {
+        if (retries == 0) @panic(panic_msg.REDISTRIBUTOR_WAKE_TIMEOUT);
+        retries -= 1;
+        std.atomic.spinLoopHint();
+    }
 
     asm volatile ("msr icc_pmr_el1, %[pmr]"
         :
@@ -53,7 +68,9 @@ pub fn init(gicd_phys: u64, gicr_phys: u64) void {
         :
         : [en] "r" (@as(u64, 1)),
     );
-    asm volatile ("isb");
+    cpu.instructionBarrier();
+    // Ensure CPU-interface system register writes are visible to the redistributor.
+    cpu.dataSyncBarrierSy();
 }
 
 /// Enable the timer PPI (INTID 30).
@@ -65,7 +82,7 @@ pub fn enableTimerInterrupt() void {
     mmio.write8(sgi_base + GICR_IPRIORITYR + TIMER_PPI, 0x80);
     mmio.write32(sgi_base + GICR_ISENABLER0, @as(u32, 1) << TIMER_PPI);
 
-    asm volatile ("isb");
+    cpu.instructionBarrier();
 }
 
 /// Acknowledge interrupt - read IAR to get INTID.
@@ -83,4 +100,5 @@ pub inline fn endOfInterrupt(intid: u32) void {
         :
         : [eoir] "r" (@as(u64, intid)),
     );
+    cpu.instructionBarrier();
 }

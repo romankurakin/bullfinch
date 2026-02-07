@@ -16,6 +16,7 @@
 //!
 //! See ARM Architecture Reference Manual, Chapter D12 (The Generic Timer).
 
+const cpu = @import("cpu.zig");
 const gic = @import("gic.zig");
 
 const panic_msg = struct {
@@ -59,7 +60,7 @@ inline fn enableTimer() void {
         :
         : [val] "r" (CNTP_CTL_ENABLE),
     );
-    asm volatile ("isb");
+    cpu.instructionBarrier();
 }
 
 /// Unmask IRQ bit in DAIF to enable IRQ delivery.

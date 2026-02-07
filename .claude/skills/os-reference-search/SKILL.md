@@ -1,7 +1,6 @@
 ---
 name: os-reference-search
 description: Search OS reference materials — architecture specs (ARM, RISC-V), books (OSTEP, OSDI3), and papers. Use when implementing OS features (scheduler, IPC, VMM, drivers), looking up register layouts, finding algorithm details, or verifying chapter/section references in comments.
-allowed-tools: AskUserQuestion, Bash, Read
 ---
 
 # OS Reference Search Skill
@@ -22,11 +21,11 @@ bullfinch root).
 cd ../sova
 
 # Semantic search
-uv run sova.py -s "how to handle page faults"
-uv run sova.py -s "interrupt controller" -n 10
+uv run python -m sova -s "how to handle page faults"
+uv run python -m sova -s "interrupt controller" -n 10
 
 # Text search in extracted markdown
-rg -i "TLB" *.md
+rg -i "TLB" data/*.md
 ```
 
 Returns `file.md:start-end` with preview. Use Read tool for full context (add
@@ -34,26 +33,26 @@ Returns `file.md:start-end` with preview. Use Read tool for full context (add
 
 ## Available Documents
 
-- `riscv-plic` — RISC-V PLIC Specification
-- `riscv-sbi` — RISC-V SBI Specification
-- `riscv-privileged` — RISC-V Privileged Specification
-- `riscv-unprivileged` — RISC-V Unprivileged Specification
-- `riscv-abi` — RISC-V ABIs Specification
 - `arm_aapcs64` — Procedure Call Standard for the Arm 64-bit Architecture (AArch64)
-- `gic_architecture_specification` — ARM GIC Specification
-- `operating_systems_three_easy_pieces` — Operating Systems: Three Easy Pieces (OSTEP book)
-- `operating_systems_design_and_implementation` — Operating Systems: Design & Implementation (MINIX book)
 - `arm_profile_architecture_reference_manual` — ARM Architecture Reference Manual
+- `gic_architecture_specification` — ARM GIC Specification
+- `macintosh_HIG_1992` — Macintosh Human Interface Guidelines (1992)
+- `operating_systems_design_and_implementation` — Operating Systems: Design & Implementation (MINIX book)
+- `operating_systems_three_easy_pieces` — Operating Systems: Three Easy Pieces (OSTEP book)
+- `riscv-abi` — RISC-V ABIs Specification
+- `riscv-plic` — RISC-V PLIC Specification
+- `riscv-privileged` — RISC-V Privileged Specification
+- `riscv-sbi` — RISC-V SBI Specification
+- `riscv-unprivileged` — RISC-V Unprivileged Specification
 
 ## Setup
 
-If `../sova/refs.db` is missing:
+If `../sova/data/indexed.db` is missing:
 
 ```bash
 cd ../sova
-uv run sova.py --list              # Check status
-uv run sova.py --skip-topics       # Index (faster, no topics)
-uv run sova.py                     # Index with topics
+uv run python -m sova --list       # Check status
+uv run python -m sova              # Index all documents
 ```
 
 ## Reference Style

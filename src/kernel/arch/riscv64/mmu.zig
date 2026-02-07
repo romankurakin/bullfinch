@@ -18,6 +18,7 @@
 //! TODO(smp): Use ASID for per-process TLB management (currently ASID=0).
 
 const std = @import("std");
+const cpu = @import("cpu.zig");
 
 const memory = @import("../../memory/memory.zig");
 const mmu_types = @import("../../mmu/mmu.zig");
@@ -235,7 +236,7 @@ comptime {
 /// Memory barrier for page table updates.
 /// Required after PTE writes to ensure visibility before sfence.vma.
 inline fn fence() void {
-    asm volatile ("fence rw, rw");
+    cpu.fenceRwRw();
 }
 
 // Note: sfence.vma is local-only on RISC-V.
