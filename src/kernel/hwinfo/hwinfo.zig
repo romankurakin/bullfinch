@@ -111,7 +111,7 @@ pub fn init(dtb_phys: usize, dtb_handle: fdt.Fdt) void {
             .size = region.size,
         };
         info.memory_region_count += 1;
-        info.total_memory += region.size;
+        info.total_memory +|= region.size;
     }
 
     sortRegionsBySize(info.memory_regions[0..info.memory_region_count]);
@@ -151,12 +151,17 @@ fn sortRegionsBySize(regions: []Region) void {
 
 /// Get timer frequency from /cpus/timebase-frequency (RISC-V).
 /// ARM64 ignores this and reads CNTFRQ_EL0 register directly.
-/// TODO(dtb): Support 8-byte timebase-frequency values when present.
+/// Handles both 4-byte (common) and 8-byte (spec-allowed) encodings.
 fn getTimerFrequency(dtb: fdt.Fdt) ?u64 {
     const cpus = fdt.pathOffset(dtb, "/cpus") orelse return null;
     const prop = fdt.getprop(dtb, cpus, "timebase-frequency") orelse return null;
-    if (prop.len < 4) return null;
-    return std.mem.readInt(u32, prop[0..4], .big);
+    return parseTimerFrequency(prop);
+}
+
+fn parseTimerFrequency(prop: []const u8) ?u64 {
+    if (prop.len >= 8) return std.mem.readInt(u64, prop[0..8], .big);
+    if (prop.len >= 4) return std.mem.readInt(u32, prop[0..4], .big);
+    return null;
 }
 
 /// Count CPU nodes under /cpus (nodes starting with "cpu@").
@@ -234,26 +239,32 @@ fn getRiscvHasZkr(dtb: fdt.Fdt) bool {
     return false;
 }
 
+/// Read cell sizes from /soc node, falling back to {2, 2} if absent.
+/// GIC, UART, and other peripherals sit under /soc on all supported boards.
+fn getSocCellSizes(dtb: fdt.Fdt) fdt.CellSizes {
+    const soc = fdt.pathOffset(dtb, "/soc") orelse return .{ .addr_cells = 2, .size_cells = 2 };
+    return fdt.getCellSizes(dtb, soc);
+}
+
 /// Parse GIC info from DTB (ARM64 only).
 fn getGicInfo(dtb: fdt.Fdt) GicInfo {
+    const cells = getSocCellSizes(dtb);
     if (fdt.findByCompatible(dtb, "arm,gic-v3")) |node| {
-        if (parseGicRegs(dtb, node, 3)) |gic| return gic;
+        if (parseGicRegs(dtb, node, 3, cells)) |gic| return gic;
     }
     // QEMU uses cortex-a15-gic, real hardware often uses gic-400
     if (fdt.findByCompatible(dtb, "arm,cortex-a15-gic")) |node| {
-        if (parseGicRegs(dtb, node, 2)) |gic| return gic;
+        if (parseGicRegs(dtb, node, 2, cells)) |gic| return gic;
     }
     if (fdt.findByCompatible(dtb, "arm,gic-400")) |node| {
-        if (parseGicRegs(dtb, node, 2)) |gic| return gic;
+        if (parseGicRegs(dtb, node, 2, cells)) |gic| return gic;
     }
     return .{}; // Not found (RISC-V or no GIC)
 }
 
 /// Parse GIC reg property into base addresses.
-fn parseGicRegs(dtb: fdt.Fdt, node: i32, version: u8) ?GicInfo {
+fn parseGicRegs(dtb: fdt.Fdt, node: i32, version: u8, cells: fdt.CellSizes) ?GicInfo {
     const reg = fdt.getprop(dtb, node, "reg") orelse return null;
-    // GIC typically uses 2 address cells, 2 size cells
-    const cells = fdt.CellSizes{ .addr_cells = 2, .size_cells = 2 };
 
     const region0 = fdt.parseRegEntry(reg, 0, cells) orelse return null;
     const region1 = fdt.parseRegEntry(reg, cells.entrySize(), cells);
@@ -276,21 +287,19 @@ fn parseGicRegs(dtb: fdt.Fdt, node: i32, version: u8) ?GicInfo {
 /// Find UART base address from DTB.
 /// Searches for arm,pl011 (ARM) or ns16550a (RISC-V QEMU).
 fn getUartBase(dtb: fdt.Fdt) ?u64 {
+    const cells = getSocCellSizes(dtb);
     if (fdt.findByCompatible(dtb, "arm,pl011")) |node| {
-        if (parseDeviceBase(dtb, node)) |base| return base;
+        if (parseDeviceBase(dtb, node, cells)) |base| return base;
     }
     if (fdt.findByCompatible(dtb, "ns16550a")) |node| {
-        if (parseDeviceBase(dtb, node)) |base| return base;
+        if (parseDeviceBase(dtb, node, cells)) |base| return base;
     }
     return null;
 }
 
 /// Parse first reg entry to get device base address.
-/// TODO(dtb): Read #address-cells/#size-cells from parent bus node.
-fn parseDeviceBase(dtb: fdt.Fdt, node: i32) ?u64 {
+fn parseDeviceBase(dtb: fdt.Fdt, node: i32, cells: fdt.CellSizes) ?u64 {
     const reg = fdt.getprop(dtb, node, "reg") orelse return null;
-    // Most devices use 2 address cells, 2 size cells
-    const cells = fdt.CellSizes{ .addr_cells = 2, .size_cells = 2 };
     const region = fdt.parseRegEntry(reg, 0, cells) orelse return null;
     return region.base;
 }
@@ -362,4 +371,22 @@ test "handles empty and single region in sortRegionsBySize" {
     var single = [_]Region{.{ .base = 0x1000, .size = 100 }};
     sortRegionsBySize(&single);
     try testing.expectEqual(@as(u64, 100), single[0].size);
+}
+
+test "parses 4-byte timebase-frequency" {
+    // 10 MHz = 0x00989680
+    const prop = [_]u8{ 0x00, 0x98, 0x96, 0x80 };
+    try testing.expectEqual(@as(u64, 10_000_000), parseTimerFrequency(&prop).?);
+}
+
+test "parses 8-byte timebase-frequency" {
+    // 0x0000_0002_540B_E400 = 10_000_000_000
+    const prop = [_]u8{ 0x00, 0x00, 0x00, 0x02, 0x54, 0x0B, 0xE4, 0x00 };
+    try testing.expectEqual(@as(u64, 10_000_000_000), parseTimerFrequency(&prop).?);
+}
+
+test "rejects short timebase-frequency property" {
+    const prop = [_]u8{ 0x01, 0x02 };
+    try testing.expect(parseTimerFrequency(&prop) == null);
+    try testing.expect(parseTimerFrequency(&[_]u8{}) == null);
 }
