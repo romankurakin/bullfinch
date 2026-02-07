@@ -36,11 +36,13 @@ pub fn pathOffset(fdt: Fdt, path: [:0]const u8) ?i32 {
     return if (result < 0) null else result;
 }
 
-/// Get raw property bytes.
+/// Get raw property bytes. Returns null for absent properties, empty slice
+/// for present-but-empty properties (e.g. boolean flags like "dma-coherent").
 pub fn getprop(fdt: Fdt, offset: i32, name: [:0]const u8) ?[]const u8 {
     var len: c_int = 0;
     const ptr = fdt_getprop(fdt, offset, name.ptr, &len) orelse return null;
-    return if (len <= 0) null else @as([*]const u8, @ptrCast(ptr))[0..@intCast(len)];
+    if (len < 0) return null;
+    return @as([*]const u8, @ptrCast(ptr))[0..@intCast(len)];
 }
 
 /// Get node name (e.g., "uart@10000000").
