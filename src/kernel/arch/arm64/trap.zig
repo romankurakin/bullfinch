@@ -327,7 +327,7 @@ pub fn init() void {
         :
         : [vbar] "r" (vbar),
     );
-    asm volatile ("isb");
+    cpu.instructionBarrier();
 }
 
 test "validates TrapFrame size and layout" {

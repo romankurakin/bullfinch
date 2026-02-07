@@ -23,6 +23,26 @@ pub inline fn waitForInterrupt() void {
     asm volatile ("wfi");
 }
 
+/// Instruction synchronization barrier.
+pub inline fn instructionBarrier() void {
+    asm volatile ("isb");
+}
+
+/// Full-system data synchronization barrier.
+pub inline fn dataSyncBarrierSy() void {
+    asm volatile ("dsb sy");
+}
+
+/// Inner-shareable data synchronization barrier.
+pub inline fn dataSyncBarrierIsh() void {
+    asm volatile ("dsb ish");
+}
+
+/// Inner-shareable store-only data synchronization barrier.
+pub inline fn dataSyncBarrierIshst() void {
+    asm volatile ("dsb ishst");
+}
+
 /// Set kernel exception stack pointer (SP_EL1).
 pub inline fn setKernelStack(sp: usize) void {
     asm volatile ("msr sp_el1, %[sp]"

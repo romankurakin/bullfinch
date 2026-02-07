@@ -8,6 +8,7 @@
 //! userspace. The kernel would just provide MMIO VMOs and IRQ capabilities.
 
 const board = @import("board");
+const cpu = @import("cpu.zig");
 const mmu = @import("mmu.zig");
 const mmio = @import("mmio.zig");
 
@@ -85,7 +86,7 @@ fn initWithConfig(base: usize, config: InitConfig) void {
     mmio.write32(base + LCRH, LCRH_WLEN_8 | LCRH_FEN); // 8N1, FIFOs enabled
 
     mmio.write32(base + CR, CR_ENABLED);
-    asm volatile ("dsb ish"); // Ensure write reaches hardware
+    cpu.dataSyncBarrierIsh(); // Ensure write reaches hardware
 }
 
 /// Initialize UART with default config at physical address.

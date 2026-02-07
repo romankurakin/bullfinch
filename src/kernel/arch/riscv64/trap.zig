@@ -362,7 +362,7 @@ pub fn init() void {
         :
         : [stvec] "r" (stvec_val),
     );
-    asm volatile ("fence.i"); // Ensure icache sees stvec code
+    cpu.instructionBarrier(); // Ensure icache sees stvec code
 }
 
 test "validates TrapFrame size and layout" {

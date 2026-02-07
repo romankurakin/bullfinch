@@ -11,6 +11,7 @@ const arch = switch (builtin.cpu.arch) {
 pub const disableInterrupts = arch.disableInterrupts;
 pub const enableInterrupts = arch.enableInterrupts;
 pub const waitForInterrupt = arch.waitForInterrupt;
+pub const instructionBarrier = arch.instructionBarrier;
 pub const halt = arch.halt;
 pub const spinWaitEq16 = arch.spinWaitEq16;
 pub const speculationBarrier = arch.speculationBarrier;

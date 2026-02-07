@@ -278,20 +278,26 @@ pub fn init(kernel_phys_start: usize, kernel_phys_end: usize) void {
     // If we don't reserve it first, our metadata array may overwrite it.
 
     // Reserve kernel image
-    const kernel_safe_end = @max(kernel_phys_end, kernel_phys_start + KERNEL_RESERVE_PAD);
+    const kernel_padded_end = std.math.add(usize, kernel_phys_start, KERNEL_RESERVE_PAD) catch
+        @panic(panic_msg.ARITHMETIC_OVERFLOW);
+    const kernel_safe_end = @max(kernel_phys_end, kernel_padded_end);
     recordReserved(kernel_phys_start, kernel_safe_end);
 
     // Reserve DTB blob (must be done before iterating reserved regions!)
     if (hw.dtb_phys != 0 and hw.dtb_size > 0) {
         // Pad DTB reservation to page boundary
-        const dtb_end = alignUp64(hw.dtb_phys + hw.dtb_size, PAGE_SIZE);
+        const dtb_blob_end = std.math.add(u64, hw.dtb_phys, @as(u64, hw.dtb_size)) catch
+            @panic(panic_msg.ARITHMETIC_OVERFLOW);
+        const dtb_end = alignUp64(dtb_blob_end, PAGE_SIZE);
         recordReserved(hw.dtb_phys, dtb_end);
     }
 
     // Reserve DTB-specified reserved regions (e.g., OpenSBI on RISC-V)
     for (hw.reservedRegions()) |region| {
         if (region.size > 0) {
-            recordReserved(region.base, region.base + region.size);
+            const region_end = std.math.add(u64, region.base, region.size) catch
+                @panic(panic_msg.ARITHMETIC_OVERFLOW);
+            recordReserved(region.base, region_end);
         }
     }
 
@@ -482,10 +488,11 @@ pub fn freeContiguous(head: *Page, count: usize) FreeContiguousError!void {
     // Find arena containing this page
     const arena = findArenaForPage(head) orelse return error.AddressNotInArena;
     const start_idx = (@intFromPtr(head) - @intFromPtr(arena.pages.ptr)) / @sizeOf(Page);
+    const end_idx = std.math.add(usize, start_idx, count) catch return error.AddressNotInArena;
 
     // Validate all pages in range are allocated (not free/reserved) before freeing any.
     // This catches caller errors like wrong count or double-free of contiguous range.
-    for (start_idx..start_idx + count) |i| {
+    for (start_idx..end_idx) |i| {
         if (i >= arena.usable_pages) {
             return error.AddressNotInArena;
         }
@@ -504,7 +511,7 @@ pub fn freeContiguous(head: *Page, count: usize) FreeContiguousError!void {
     head.flags.contiguous_head = false;
 
     // Now free all pages
-    for (start_idx..start_idx + count) |i| {
+    for (start_idx..end_idx) |i| {
         freePageLocked(&arena.pages[i]);
     }
 }

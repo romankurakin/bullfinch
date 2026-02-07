@@ -25,6 +25,16 @@ pub inline fn waitForInterrupt() void {
     asm volatile ("wfi");
 }
 
+/// Instruction synchronization barrier.
+pub inline fn instructionBarrier() void {
+    asm volatile ("fence.i");
+}
+
+/// Full read/write memory barrier for page table and shared-memory ordering.
+pub inline fn fenceRwRw() void {
+    asm volatile ("fence rw, rw");
+}
+
 /// Set kernel trap stack pointer in sscratch (used on user-mode traps).
 pub inline fn setKernelStack(sp: usize) void {
     asm volatile ("csrw sscratch, %[sp]"

@@ -25,6 +25,9 @@ const console = @import("../console/console.zig");
 const fdt = @import("../fdt/fdt.zig");
 const hal = @import("../hal/hal.zig");
 const hwinfo = @import("../hwinfo/hwinfo.zig");
+const memory = @import("../memory/memory.zig");
+
+const DTB_MAX_SIZE = memory.DTB_MAX_SIZE;
 
 const panic_msg = struct {
     const DTB_REQUIRED = "boot: DTB required for hardware discovery";
@@ -84,5 +87,6 @@ fn getDtb() ?fdt.Fdt {
     if (hal.boot.dtb_ptr == 0) return null;
     const dtb: fdt.Fdt = @ptrFromInt(hal.mmu.physToVirt(hal.boot.dtb_ptr));
     fdt.checkHeader(dtb) catch return null;
+    if (@as(usize, fdt.getTotalSize(dtb)) > DTB_MAX_SIZE) return null;
     return dtb;
 }
