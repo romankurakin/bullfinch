@@ -13,6 +13,14 @@ See [Zig Language Reference](https://ziglang.org/documentation/master/) and
 - Re-export only in module root files
 - Arch selection is target-driven. `build.zig` picks `src/kernel/arch/{arm64,riscv64}` and injects the board module. Use `hal` or the arch root to reach arch-specific code.
 
+## Slices over raw pointer arithmetic
+
+Prefer returning and passing slices (`[]T`) instead of base pointers (`*T`)
+for multi-element allocations. Zig's built-in bounds checking on slice indexing
+provides free safety in debug builds with zero cost in release. Avoid helper
+functions that manually offset pointers when a slice would carry the length
+intrinsically.
+
 ## Comment Tags
 
 `// TODO(scope):` — mark incomplete functionality or planned improvements

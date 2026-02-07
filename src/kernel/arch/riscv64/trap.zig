@@ -229,7 +229,7 @@ export fn handleKernelInterrupt() void {
     switch (code) {
         5 => clock.handleTimerIrq(), // Supervisor timer
         1 => handleSoftwareInterrupt(),
-        9 => {}, // TODO(plic): Supervisor external interrupt
+        9 => @panic(panic_msg.SEI_NOT_IMPLEMENTED),
         else => panicKernelInterrupt(scause),
     }
     if (comptime trace.debug_kernel) trace.emit(.trap_exit, scause, code, 0);
@@ -267,7 +267,7 @@ export fn handleUserTrap(frame: *TrapFrame) void {
         switch (code) {
             5 => clock.handleTimerIrq(), // Supervisor timer
             1 => handleSoftwareInterrupt(),
-            9 => {}, // TODO(plic): Supervisor external interrupt
+            9 => @panic(panic_msg.SEI_NOT_IMPLEMENTED),
             else => panicTrap(frame, cause.name()),
         }
         if (comptime trace.debug_kernel) trace.emit(.trap_exit, frame.scause, code, 1);
@@ -299,6 +299,10 @@ fn tryHandleFpuTrap() hal_fpu.TrapResult {
     const thread = task.scheduler.current() orelse return .not_fpu;
     return hal_fpu.handleTrap(thread, @truncate(cpu.currentId()));
 }
+
+const panic_msg = struct {
+    const SEI_NOT_IMPLEMENTED = "trap: supervisor external interrupt without PLIC";
+};
 
 /// Print minimal panic information and backtrace, then halt.
 fn panicTrap(frame: *const TrapFrame, cause_name: []const u8) noreturn {

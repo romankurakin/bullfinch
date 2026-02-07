@@ -35,7 +35,7 @@ pub fn init() void {
 pub const Stack = struct {
     base: [*]u8,
     size: usize,
-    phys: *pmm.Page,
+    phys: []pmm.Page,
 
     pub fn create() ?Stack {
         const slot = @atomicRmw(usize, &next_slot, .Add, 1, .monotonic);
@@ -47,7 +47,7 @@ pub const Stack = struct {
         var i: usize = 0;
         while (i < STACK_PAGES) : (i += 1) {
             const vaddr = stack_base + i * PAGE_SIZE;
-            const paddr = pmm.pageToPhys(pmm.pageAdd(phys, i));
+            const paddr = pmm.pageToPhys(&phys[i]);
             hal.mmu.mapPageWithAlloc(
                 hal.mmu.getKernelPageTable(),
                 vaddr,
@@ -62,7 +62,7 @@ pub const Stack = struct {
                     _ = hal.mmu.unmapPage(hal.mmu.getKernelPageTable(), stack_base + i * PAGE_SIZE) catch {};
                 }
                 hal.mmu.TranslationLookasideBuffer.flushLocal();
-                pmm.freeContiguous(phys, STACK_PAGES) catch {};
+                pmm.freeContiguous(phys) catch {};
                 return null;
             };
         }
@@ -80,7 +80,7 @@ pub const Stack = struct {
         }
 
         hal.mmu.TranslationLookasideBuffer.flushLocal();
-        pmm.freeContiguous(self.phys, STACK_PAGES) catch {};
+        pmm.freeContiguous(self.phys) catch {};
     }
 
     pub fn top(self: Stack) usize {

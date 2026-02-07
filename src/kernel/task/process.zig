@@ -23,7 +23,7 @@ pub const ProcessId = u32;
 /// Process control block. Resource container for threads sharing address space.
 pub const Process = struct {
     id: ProcessId,
-    threads: ?*Thread, // Head of thread list
+    threads: ?*Thread, // TODO(smp): protect with per-process lock
     thread_count: u32,
     state: State,
 

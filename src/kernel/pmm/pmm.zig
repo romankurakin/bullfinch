@@ -21,7 +21,7 @@
 //!
 //! // Contiguous (e.g., 16KB stack):
 //! const pages = pmm.allocContiguous(4, 0) orelse return error.OutOfMemory;
-//! defer pmm.freeContiguous(pages, 4);
+//! defer pmm.freeContiguous(pages);
 //! ```
 
 const builtin = @import("builtin");
@@ -369,14 +369,14 @@ pub fn freePage(page: *Page) void {
 }
 
 /// Allocate N contiguous physical pages with specified alignment.
-/// Returns head Page pointer or null if unable to satisfy request.
+/// Returns a slice of Page metadata or null if unable to satisfy request.
 /// O(n) scan across all arenas; prefer allocPage() for single pages.
 ///
 /// alignment_log2: log2 of physical address alignment for the first page.
 ///                 Values <= 12 are effectively page-aligned (4KB minimum).
 ///                 Use 21 for 2MB large-page alignment, 30 for 1GB.
 ///                 Must be < @bitSizeOf(usize).
-pub fn allocContiguous(count: usize, alignment_log2: u8) ?*Page {
+pub fn allocContiguous(count: usize, alignment_log2: u8) ?[]Page {
     if (pmm.arena_count == 0) {
         @panic(panic_msg.NOT_INITIALIZED);
     }
@@ -448,7 +448,7 @@ pub fn allocContiguous(count: usize, alignment_log2: u8) ?*Page {
                 arena.pages[start_idx].flags.contiguous_head = true;
                 pmm.free_count -= count;
 
-                return &arena.pages[start_idx];
+                return arena.pages[start_idx .. start_idx + count];
             }
         }
     }
@@ -468,15 +468,15 @@ pub const FreeContiguousError = error{
     InvalidPageState,
 };
 
-/// Free a contiguous allocation.
-/// The page must be the head of a contiguous allocation.
-/// Caller must pass the exact count used during allocation.
-pub fn freeContiguous(head: *Page, count: usize) FreeContiguousError!void {
+/// Free a contiguous allocation returned by allocContiguous.
+pub fn freeContiguous(pages: []Page) FreeContiguousError!void {
     if (pmm.arena_count == 0) {
         @panic(panic_msg.NOT_INITIALIZED);
     }
 
-    if (count == 0) return;
+    if (pages.len == 0) return;
+
+    const head = &pages[0];
 
     const held = pmm.lock.guard();
     defer held.release();
@@ -488,7 +488,7 @@ pub fn freeContiguous(head: *Page, count: usize) FreeContiguousError!void {
     // Find arena containing this page
     const arena = findArenaForPage(head) orelse return error.AddressNotInArena;
     const start_idx = (@intFromPtr(head) - @intFromPtr(arena.pages.ptr)) / @sizeOf(Page);
-    const end_idx = std.math.add(usize, start_idx, count) catch return error.AddressNotInArena;
+    const end_idx = std.math.add(usize, start_idx, pages.len) catch return error.AddressNotInArena;
 
     // Validate all pages in range are allocated (not free/reserved) before freeing any.
     // This catches caller errors like wrong count or double-free of contiguous range.
@@ -548,16 +548,6 @@ pub fn arenaCount() usize {
 pub fn baseAddr() usize {
     if (pmm.arena_count == 0) return 0;
     return pmm.arenas[0].base_phys;
-}
-
-/// Get page at offset within a contiguous allocation.
-/// The base must be the head page returned by allocContiguous.
-/// Returns pointer to the page at base + offset.
-pub fn pageAdd(base: *Page, offset: usize) *Page {
-    // Pages in a contiguous allocation are stored consecutively in the arena's array.
-    const base_addr = @intFromPtr(base);
-    const offset_bytes = offset * @sizeOf(Page);
-    return @ptrFromInt(base_addr + offset_bytes);
 }
 
 /// Initialize a single arena. Returns true if successful.
