@@ -5,8 +5,8 @@ description: Search OS reference materials — architecture specs (ARM, RISC-V),
 
 # OS Reference Search Skill
 
-Search architecture specs and OS books using sova at `../sova/` (relative to
-bullfinch root).
+Search architecture specs and OS books using globally installed `sova`.
+Assumes `sova` is available in `PATH`.
 
 ## When to Use
 
@@ -18,18 +18,16 @@ bullfinch root).
 ## Search
 
 ```bash
-cd ../sova
-
 # Semantic search
-uv run python -m sova -s "how to handle page faults"
-uv run python -m sova -s "interrupt controller" -n 10
+sova -s "how to handle page faults"
+sova -s "interrupt controller" -n 10
 
 # Text search in extracted markdown
-rg -i "TLB" data/*.md
+rg -i "TLB" ~/.sova/data/*.md
 ```
 
-Returns `file.md:start-end` with preview. Use Read tool for full context (add
-~50 lines buffer for surrounding context).
+Returns `~/.../file.md:start-end` plus full chunk text. Use Read tool for extra
+surrounding context (~50 lines buffer).
 
 ## Available Documents
 
@@ -47,12 +45,11 @@ Returns `file.md:start-end` with preview. Use Read tool for full context (add
 
 ## Setup
 
-If `../sova/data/indexed.db` is missing:
+If `~/.sova/data/indexed.db` is missing:
 
 ```bash
-cd ../sova
-uv run python -m sova --list       # Check status
-uv run python -m sova              # Index all documents
+sova --list       # Check status
+sova              # Index all documents
 ```
 
 ## Reference Style
