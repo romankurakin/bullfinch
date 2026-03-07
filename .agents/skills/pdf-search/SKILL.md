@@ -1,7 +1,6 @@
 ---
 name: pdf-search
 description: Search indexed PDF documents with sova. Use when looking up information in a local reference library.
-allowed-tools: AskUserQuestion, Bash, Read
 ---
 
 # PDF Search Skill (sova)
