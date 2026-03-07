@@ -85,7 +85,7 @@ pub fn RedBlackTree(
 
             const node_entry = entry(node);
 
-            // BST insert - find parent
+            // BST insertion to find correct spot.
             var parent: ?*Node = null;
             var current = self.root;
 
@@ -115,7 +115,7 @@ pub fn RedBlackTree(
 
             self.count += 1;
 
-            // Update min cache
+            // Update min cache.
             if (self.min_cached) |min_node| {
                 if (compareFn(node_entry, entry(min_node)) == .lt) {
                     self.min_cached = node;
@@ -136,7 +136,7 @@ pub fn RedBlackTree(
                 @panic(panic_msg.NOT_IN_TREE);
             }
 
-            // Update min cache before removal
+            // Update min cache before removal.
             if (self.min_cached == node) {
                 self.min_cached = self.nextNode(node);
             }
@@ -145,11 +145,11 @@ pub fn RedBlackTree(
             var x: ?*Node = undefined;
             var x_parent: ?*Node = undefined;
 
-            // Find node to splice out
+            // Find node to splice out.
             if (node.left == null or node.right == null) {
                 y = node;
             } else {
-                // Find successor
+                // Find successor.
                 y = node.right.?;
                 while (y.left) |left| {
                     y = left;
@@ -160,7 +160,7 @@ pub fn RedBlackTree(
             x = if (y.left != null) y.left else y.right;
             x_parent = y.parent;
 
-            // Splice out y
+            // Splice out y.
             if (x) |x_node| {
                 x_node.parent = y.parent;
             }
@@ -177,7 +177,7 @@ pub fn RedBlackTree(
 
             const need_fixup = y.color == .black;
 
-            // If y != node, replace node with y
+            // If y != node, replace node with y.
             if (y != node) {
                 y.parent = node.parent;
                 y.left = node.left;
@@ -206,7 +206,7 @@ pub fn RedBlackTree(
                 }
             }
 
-            // Mark unlinked
+            // Mark unlinked.
             node.parent = node;
             node.left = null;
             node.right = null;
@@ -251,7 +251,10 @@ pub fn RedBlackTree(
         /// Get next node in order (successor).
         pub fn nextNode(self: *const Self, node: *Node) ?*Node {
             _ = self;
-            // If right subtree exists, min of right subtree
+            // Removed/unlinked nodes are not in-order elements.
+            if (!node.isLinked()) return null;
+
+            // If right subtree exists, min of right subtree.
             if (node.right) |right| {
                 var n = right;
                 while (n.left) |left| {
@@ -260,9 +263,11 @@ pub fn RedBlackTree(
                 return n;
             }
 
-            // Walk up until we're a left child
+            // Walk up until we're a left child.
             var n = node;
             while (n.parent) |parent| {
+                // Removed nodes are marked with parent=self sentinel.
+                if (parent == n) return null;
                 if (n == parent.left) {
                     return parent;
                 }
@@ -292,24 +297,24 @@ pub fn RedBlackTree(
                 if (parent == grandparent.left) {
                     const uncle = grandparent.right;
                     if (uncle != null and uncle.?.color == .red) {
-                        // Case 1: uncle is red
+                        // Case 1: uncle is red.
                         parent.color = .black;
                         uncle.?.color = .black;
                         grandparent.color = .red;
                         node = grandparent;
                     } else {
                         if (node == parent.right) {
-                            // Case 2: uncle is black, node is right child
+                            // Case 2: uncle is black, node is right child.
                             node = parent;
                             self.leftRotate(node);
                         }
-                        // Case 3: uncle is black, node is left child
+                        // Case 3: uncle is black, node is left child.
                         node.parent.?.color = .black;
                         node.parent.?.parent.?.color = .red;
                         self.rightRotate(node.parent.?.parent.?);
                     }
                 } else {
-                    // Mirror cases
+                    // Mirror cases.
                     const uncle = grandparent.left;
                     if (uncle != null and uncle.?.color == .red) {
                         parent.color = .black;
@@ -372,7 +377,7 @@ pub fn RedBlackTree(
                         x_parent = null;
                     }
                 } else {
-                    // Mirror case
+                    // Mirror case.
                     var w = parent.left orelse break;
 
                     if (w.color == .red) {
@@ -462,13 +467,13 @@ pub fn RedBlackTree(
         fn verify(self: *const Self) void {
             const root = self.root orelse return;
 
-            // Root must be black
+            // Root must be black.
             if (root.color != .black) @panic(panic_msg.INVARIANT_VIOLATED);
 
-            // Verify properties recursively
+            // Verify properties recursively.
             _ = self.verifyNode(root) catch @panic(panic_msg.INVARIANT_VIOLATED);
 
-            // Verify min cache
+            // Verify min cache.
             if (self.count > 0) {
                 var min_node = root;
                 while (min_node.left) |left| {
@@ -479,13 +484,13 @@ pub fn RedBlackTree(
         }
 
         fn verifyNode(self: *const Self, node: *Node) error{Invalid}!usize {
-            // Red node cannot have red child
+            // Red node cannot have red child.
             if (node.color == .red) {
                 if (node.left != null and node.left.?.color == .red) return error.Invalid;
                 if (node.right != null and node.right.?.color == .red) return error.Invalid;
             }
 
-            // Check parent pointers
+            // Check parent pointers.
             if (node.left) |left| {
                 if (left.parent != node) return error.Invalid;
             }
@@ -493,7 +498,7 @@ pub fn RedBlackTree(
                 if (right.parent != node) return error.Invalid;
             }
 
-            // Check BST property
+            // Check BST property.
             if (node.left) |left| {
                 if (compareFn(entry(left), entry(node)) == .gt) return error.Invalid;
             }
@@ -501,7 +506,7 @@ pub fn RedBlackTree(
                 if (compareFn(entry(right), entry(node)) == .lt) return error.Invalid;
             }
 
-            // Verify black height
+            // Verify black height.
             const left_black = if (node.left) |left|
                 try self.verifyNode(left)
             else
@@ -576,14 +581,14 @@ test "extracts min in sorted order" {
     var tree = TestTree{};
     var items: [10]TestItem = undefined;
 
-    // Insert in scrambled order
+    // Insert in scrambled order.
     const order = [_]u64{ 5, 2, 8, 1, 9, 3, 7, 4, 6, 10 };
     for (order, 0..) |key, i| {
         items[i] = .{ .key = key };
         tree.insert(&items[i].rb_node);
     }
 
-    // Extract should yield sorted order
+    // Extract should yield sorted order.
     var expected: u64 = 1;
     while (tree.extractMin()) |node| {
         const item = TestTree.entry(node);
@@ -603,12 +608,12 @@ test "removes arbitrary node" {
         tree.insert(&item.rb_node);
     }
 
-    // Remove middle node
+    // Remove middle node.
     tree.remove(&items[2].rb_node);
     try std.testing.expectEqual(@as(usize, 4), tree.len());
     try std.testing.expect(!items[2].rb_node.isLinked());
 
-    // Verify remaining nodes
+    // Verify remaining nodes.
     var count: usize = 0;
     var current = tree.min();
     while (current) |node| {
@@ -642,21 +647,21 @@ test "handles many insertions and deletions" {
     var tree = TestTree{};
     var items: [100]TestItem = undefined;
 
-    // Insert all
+    // Insert all.
     for (&items, 0..) |*item, i| {
         item.* = .{ .key = @intCast(i) };
         tree.insert(&item.rb_node);
     }
     try std.testing.expectEqual(@as(usize, 100), tree.len());
 
-    // Remove half (even indices)
+    // Remove half (even indices).
     var i: usize = 0;
     while (i < 50) : (i += 1) {
         tree.remove(&items[i * 2].rb_node);
     }
     try std.testing.expectEqual(@as(usize, 50), tree.len());
 
-    // Verify remaining are odd indices
+    // Verify remaining are odd indices.
     var count: usize = 0;
     var current = tree.min();
     while (current) |node| {
@@ -679,10 +684,26 @@ test "handles duplicate keys" {
 
     try std.testing.expectEqual(@as(usize, 5), tree.len());
 
-    // All should be extractable
+    // All should be extractable.
     var count: usize = 0;
     while (tree.extractMin()) |_| {
         count += 1;
     }
     try std.testing.expectEqual(@as(usize, 5), count);
+}
+
+test "returns null from nextNode for removed node" {
+    var tree = TestTree{};
+    var items = [_]TestItem{
+        .{ .key = 1 },
+        .{ .key = 2 },
+        .{ .key = 3 },
+    };
+
+    for (&items) |*item| {
+        tree.insert(&item.rb_node);
+    }
+
+    tree.remove(&items[1].rb_node);
+    try std.testing.expectEqual(@as(?*Node, null), tree.nextNode(&items[1].rb_node));
 }

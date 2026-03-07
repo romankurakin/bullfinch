@@ -55,6 +55,6 @@ comptime {
             @compileError("KERNEL_PHYS_LOAD must be page-aligned");
     }
 
-    // TrapFrame checks are in hal/trap_frame.zig
+    // TrapFrame checks are in hal/trap_frame.zig.
     _ = trap_frame;
 }

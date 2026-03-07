@@ -34,12 +34,12 @@ fn memmove_impl(dest: [*]u8, src: [*]const u8, n: usize) callconv(.c) [*]u8 {
     const d = @intFromPtr(dest);
     const s = @intFromPtr(src);
     if (d < s or d >= s + n) {
-        // No overlap or dest is after src+n, forward copy
+        // No overlap or dest is after src+n, forward copy.
         for (0..n) |i| {
             dest[i] = src[i];
         }
     } else {
-        // Overlap with dest > src, backward copy
+        // Overlap with dest > src, backward copy.
         var i = n;
         while (i > 0) {
             i -= 1;
@@ -123,21 +123,26 @@ export fn strnlen(s: [*]const u8, maxlen: usize) usize {
 /// Parse unsigned integer from string with auto base detection.
 export fn strtoul(nptr: [*]const u8, endptr: ?*[*]const u8, base_arg: c_int) c_ulong {
     var p = nptr;
-    var base: c_ulong = @intCast(base_arg);
+    // libc-compatible invalid base handling: accept 0 or [2, 36].
+    if (base_arg != 0 and (base_arg < 2 or base_arg > 36)) {
+        if (endptr) |e| e.* = nptr;
+        return 0;
+    }
+    var base: c_ulong = if (base_arg == 0) 0 else @intCast(base_arg);
     var negative = false;
     var any_digits = false;
     const max = std.math.maxInt(c_ulong);
 
-    // Skip whitespace
+    // Skip whitespace.
     while (p[0] == ' ' or p[0] == '\t' or p[0] == '\n') p += 1;
 
-    // Optional sign
+    // Optional sign.
     if (p[0] == '+' or p[0] == '-') {
         negative = p[0] == '-';
         p += 1;
     }
 
-    // Handle base detection
+    // Handle base detection.
     if (base == 0 or base == 16) {
         if (p[0] == '0' and (p[1] == 'x' or p[1] == 'X')) {
             base = 16;
@@ -147,7 +152,7 @@ export fn strtoul(nptr: [*]const u8, endptr: ?*[*]const u8, base_arg: c_int) c_u
         }
     }
 
-    // Convert digits
+    // Convert digits.
     var result: c_ulong = 0;
     var overflow = false;
     while (true) {
@@ -235,6 +240,19 @@ test "strtoul sets endptr to input when no conversion" {
     const v2 = strtoul(no_hex_digits.ptr, &end2, 0);
     try std.testing.expectEqual(@as(c_ulong, 0), v2);
     try std.testing.expectEqual(@intFromPtr(no_hex_digits.ptr), @intFromPtr(end2));
+}
+
+test "strtoul rejects invalid base values" {
+    const input = "123";
+    var end1: [*]const u8 = undefined;
+    const value1 = strtoul(input.ptr, &end1, 1);
+    try std.testing.expectEqual(@as(c_ulong, 0), value1);
+    try std.testing.expectEqual(@intFromPtr(input.ptr), @intFromPtr(end1));
+
+    var end2: [*]const u8 = undefined;
+    const value2 = strtoul(input.ptr, &end2, 37);
+    try std.testing.expectEqual(@as(c_ulong, 0), value2);
+    try std.testing.expectEqual(@intFromPtr(input.ptr), @intFromPtr(end2));
 }
 
 test "memmove handles overlapping regions" {

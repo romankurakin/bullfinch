@@ -100,5 +100,6 @@ architectures boot correctly.
 ## Skills
 
 Use `/os-reference-search` to search architecture specs (ARM, RISC-V) and OS
-books (OSTEP, OSDI3). Use `/os-source-search` to look up implementation patterns
-in Linux, xv6, seL4, MINIX3, Fuchsia/Zircon, or FreeBSD.
+books (OSTEP, OSDI3). Use `/pdf-search` for the general local PDF library via
+Sova. Use `/os-source-search` to look up implementation patterns in Linux, xv6,
+seL4, MINIX3, Fuchsia/Zircon, or FreeBSD.

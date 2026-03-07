@@ -132,7 +132,7 @@ pub fn init(dtb_phys: usize, dtb_handle: fdt.Fdt) void {
     info.features.arm64.gic = getGicInfo(dtb_handle);
     info.uart_base = getUartBase(dtb_handle) orelse 0;
 
-    // Detect FPU from CPU registers (via HAL, arch-independent)
+    // Detect FPU from CPU registers (via HAL, arch-independent).
     info.has_fpu = hal_fpu.detect();
 }
 
@@ -252,7 +252,7 @@ fn getGicInfo(dtb: fdt.Fdt) GicInfo {
     if (fdt.findByCompatible(dtb, "arm,gic-v3")) |node| {
         if (parseGicRegs(dtb, node, 3, cells)) |gic| return gic;
     }
-    // QEMU uses cortex-a15-gic, real hardware often uses gic-400
+    // QEMU uses cortex-a15-gic, real hardware often uses gic-400.
     if (fdt.findByCompatible(dtb, "arm,cortex-a15-gic")) |node| {
         if (parseGicRegs(dtb, node, 2, cells)) |gic| return gic;
     }

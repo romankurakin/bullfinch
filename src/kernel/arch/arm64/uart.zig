@@ -29,7 +29,7 @@ pub const DivisorError = error{
     FbrdOutOfRange,
 };
 
-// PL011 register offsets
+// PL011 register offsets.
 const CR = 0x30; // Control Register
 const DR = 0x00; // Data Register
 const FBRD = 0x28; // Fractional Baud Rate Divisor

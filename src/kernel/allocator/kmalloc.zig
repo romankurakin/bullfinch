@@ -115,7 +115,9 @@ pub fn free(ptr: *u8) slab.FreeError!void {
 
 fn tryFree(pool_inst: anytype, ptr: *u8) bool {
     const PoolType = @TypeOf(pool_inst.*);
-    const obj: *Obj(PoolType.aligned_size) = @ptrCast(@alignCast(ptr));
+    // Cast without runtime alignment enforcement; Pool.free validates ownership
+    // and slot alignment and returns structured errors for malformed pointers.
+    const obj: *Obj(PoolType.aligned_size) = @ptrCast(ptr);
     pool_inst.free(obj) catch |err| switch (err) {
         error.InvalidSlab => return false,
         error.DoubleFree => @panic(panic_msg.DOUBLE_FREE),

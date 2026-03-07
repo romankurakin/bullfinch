@@ -27,7 +27,7 @@ const fmt = @import("../../trap/fmt.zig");
 const trap_entry = @import("trap_entry.zig");
 const trap_frame = @import("trap_frame.zig");
 
-// Use printUnsafe in trap context: we can't safely acquire locks here
+// Use printUnsafe in trap context: we can't safely acquire locks here.
 const print = console.printUnsafe;
 
 /// Saved register context during trap. Layout must match assembly save/restore order.
@@ -116,23 +116,23 @@ pub const TrapCause = enum(u64) {
 /// All entries dispatch based on sstatus.SPP (user vs kernel origin).
 export fn trapVector() align(256) linksection(".trap") callconv(.naked) void {
     asm volatile (
-    // Base + 0: Exceptions (synchronous)
+    // Base + 0: Exceptions (synchronous).
         \\ j trapDispatch
-        // Base + 4: Supervisor Software Interrupt (Cause 1)
+        // Base + 4: Supervisor Software Interrupt (Cause 1).
         \\ j interruptDispatch
-        // Base + 8-16: Reserved (Cause 2-4)
+        // Base + 8-16: Reserved (Cause 2-4).
         \\ j trapDispatch
         \\ j trapDispatch
         \\ j trapDispatch
-        // Base + 20: Supervisor Timer Interrupt (Cause 5)
+        // Base + 20: Supervisor Timer Interrupt (Cause 5).
         \\ j interruptDispatch
-        // Base + 24-32: Reserved (Cause 6-8)
+        // Base + 24-32: Reserved (Cause 6-8).
         \\ j trapDispatch
         \\ j trapDispatch
         \\ j trapDispatch
-        // Base + 36: Supervisor External Interrupt (Cause 9)
+        // Base + 36: Supervisor External Interrupt (Cause 9).
         \\ j interruptDispatch
-        // Fill to 16 entries (Cause 10-15)
+        // Fill to 16 entries (Cause 10-15).
         \\ j trapDispatch
         \\ j trapDispatch
         \\ j trapDispatch
@@ -324,7 +324,7 @@ fn panicTrap(frame: *const TrapFrame, cause_name: []const u8) noreturn {
 /// Print a field in "name   0x<value>" format.
 fn printField(name: []const u8, value: usize) void {
     print(name);
-    // Pad to 7 characters
+    // Pad to 7 characters.
     var padding: usize = 7 - @min(name.len, 7);
     while (padding > 0) : (padding -= 1) {
         print(" ");
@@ -351,7 +351,7 @@ pub fn init() void {
     );
 
     // stvec format: [63:2] address, [1:0] mode (00=Direct, 01=Vectored)
-    // Vectored mode: Exceptions -> Base, Interrupts -> Base + 4*Cause
+    // Vectored mode: Exceptions -> Base, Interrupts -> Base + 4*Cause.
     // Alignment guaranteed by align(256) on trapVector declaration.
     //
     // Use inline assembly to get the PC-relative address of trapVector.
@@ -384,7 +384,7 @@ test "detects interrupt bit in TrapCause.isInterrupt" {
 
 test "defines TrapCause names for known exceptions" {
     const std = @import("std");
-    // Test specific known causes have meaningful names
+    // Test specific known causes have meaningful names.
     try std.testing.expect(TrapCause.breakpoint.name().len > 0);
     try std.testing.expect(TrapCause.ecall_from_u.name().len > 0);
     try std.testing.expect(TrapCause.load_page_fault.name().len > 0);
@@ -392,7 +392,7 @@ test "defines TrapCause names for known exceptions" {
     try std.testing.expect(TrapCause.illegal_instruction.name().len > 0);
     try std.testing.expect(TrapCause.supervisor_timer_interrupt.name().len > 0);
 
-    // Test unknown cause returns fallback
+    // Test unknown cause returns fallback.
     const unknown: TrapCause = @enumFromInt(0x1234); // Not a defined cause
     try std.testing.expectEqualStrings("unknown trap", unknown.name());
 }
@@ -401,7 +401,7 @@ test "handles special cases in TrapFrame.getReg" {
     const std = @import("std");
     var frame: TrapFrame = undefined;
 
-    // Set up test values
+    // Set up test values.
     for (0..31) |i| {
         frame.regs[i] = @as(u64, i) + 100;
     }

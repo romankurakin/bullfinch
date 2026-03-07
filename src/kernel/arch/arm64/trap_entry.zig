@@ -237,19 +237,19 @@ test "keeps save/restore register coverage consistent" {
     try std.testing.expectEqual(fast_stp, fast_ldp);
 }
 
-// Compile-time verification
+// Compile-time verification.
 comptime {
-    // Verify frame sizes are 16-byte aligned (AAPCS64 requirement)
+    // Verify frame sizes are 16-byte aligned (AAPCS64 requirement).
     if (FULL_FRAME_SIZE & 0xF != 0)
         @compileError("FULL_FRAME_SIZE must be 16-byte aligned");
     if (FAST_FRAME_SIZE & 0xF != 0)
         @compileError("FAST_FRAME_SIZE must be 16-byte aligned");
 
-    // Verify frame size matches TrapFrame struct
+    // Verify frame size matches TrapFrame struct.
     if (FULL_FRAME_SIZE != TrapFrame.FRAME_SIZE)
         @compileError("FULL_FRAME_SIZE must match TrapFrame.FRAME_SIZE");
 
-    // Verify assembly offsets match TrapFrame layout
+    // Verify assembly offsets match TrapFrame layout.
     if (OFF_REGS != 0)
         @compileError("regs must be at offset 0");
     if (OFF_X30 != 240)
@@ -265,7 +265,7 @@ comptime {
     if (OFF_FAR != 280)
         @compileError("far offset mismatch - assembly uses 280(sp)");
 
-    // Fast path offsets (caller-saved only)
+    // Fast path offsets (caller-saved only).
     if (FAST_OFF_X18_X30 != 144)
         @compileError("FAST_OFF_X18_X30 offset mismatch");
     if (FAST_OFF_ELR != 160)

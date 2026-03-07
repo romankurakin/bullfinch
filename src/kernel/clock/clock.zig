@@ -52,7 +52,7 @@ pub fn init() void {
     next_tick = now + ticks_per_interval;
     hal.timer.setDeadline(next_tick);
 
-    // Deadline must be set before enabling interrupts
+    // Deadline must be set before enabling interrupts.
     hal.timer.init();
 }
 

@@ -30,7 +30,7 @@ pub fn build(b: *std.Build) void {
         else => @panic("Unsupported architecture"),
     };
 
-    // Parse config.json
+    // Parse config.json.
     const config = parseConfig(b.allocator) orelse @panic("Failed to parse config.json");
     const board = config_mod.findBoard(config.boards, board_name, archTag(arch)) orelse @panic("Unknown board for target arch");
 
@@ -129,7 +129,7 @@ pub fn build(b: *std.Build) void {
     });
     test_step.dependOn(&b.addRunArtifact(kernel_tests).step);
 
-    // Smoke test runner (runs on host, spawns QEMU)
+    // Smoke test runner (runs on host, spawns QEMU).
     const smoke_step = b.step("smoke", "Run smoke tests");
     const smoke_config_module = b.createModule(.{
         .root_source_file = b.path("infra/config.zig"),

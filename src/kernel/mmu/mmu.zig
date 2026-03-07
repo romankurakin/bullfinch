@@ -13,26 +13,26 @@ pub const PageFlags = struct {
 
 /// Errors that can occur during page mapping operations.
 pub const MapError = error{
-    /// Virtual or physical address not page-aligned
+    /// Virtual or physical address not page-aligned.
     NotAligned,
-    /// Address is not in valid canonical range
+    /// Address is not in valid canonical range.
     NotCanonical,
-    /// Intermediate page table not present (caller must allocate)
+    /// Intermediate page table not present (caller must allocate).
     TableNotPresent,
-    /// Entry already contains a valid mapping
+    /// Entry already contains a valid mapping.
     AlreadyMapped,
-    /// Attempted to map over a superpage (1GB/2MB block)
+    /// Attempted to map over a superpage (1GB/2MB block).
     SuperpageConflict,
-    /// Page allocator returned null (out of memory)
+    /// Page allocator returned null (out of memory).
     OutOfMemory,
 };
 
 /// Errors that can occur during page unmapping operations.
 pub const UnmapError = error{
-    /// Address is not in valid canonical range
+    /// Address is not in valid canonical range.
     NotCanonical,
-    /// Page is not mapped
+    /// Page is not mapped.
     NotMapped,
-    /// Cannot unmap individual page from superpage
+    /// Cannot unmap individual page from superpage.
     SuperpageConflict,
 };

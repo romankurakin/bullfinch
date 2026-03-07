@@ -5,8 +5,8 @@ description: Search OS reference materials — architecture specs (ARM, RISC-V),
 
 # OS Reference Search Skill
 
-Search architecture specs and OS books using globally installed `sova`.
-Assumes `sova` is available in `PATH`.
+Search architecture specs and OS books using the `operating-system-documents`
+Sova project. Assumes `sova` is available in `PATH`.
 
 ## When to Use
 
@@ -18,16 +18,20 @@ Assumes `sova` is available in `PATH`.
 ## Search
 
 ```bash
-# Semantic search
-sova -s "how to handle page faults"
-sova -s "interrupt controller" -n 10
+# Search the indexed OS reference library
+sova operating-system-documents "how to handle page faults"
+sova operating-system-documents "interrupt controller" -n 10
 
-# Text search in extracted markdown
-rg -i "TLB" ~/.sova/data/*.md
+# Inspect what is indexed
+sova list operating-system-documents
+
+# Re-index the project if needed
+sova index operating-system-documents
 ```
 
-Returns `~/.../file.md:start-end` plus full chunk text. Use Read tool for extra
-surrounding context (~50 lines buffer).
+Search output includes `path:start-end` plus the matching chunk text. Use the
+Read tool with a small line buffer around the returned range when extra context
+is needed.
 
 ## Available Documents
 
@@ -45,11 +49,17 @@ surrounding context (~50 lines buffer).
 
 ## Setup
 
-If `~/.sova/data/indexed.db` is missing:
+Confirm the project exists and is indexed:
 
 ```bash
-sova --list       # Check status
-sova              # Index all documents
+sova projects
+sova list operating-system-documents
+```
+
+If the project is missing, register or re-index the documents folder:
+
+```bash
+sova index ~/Developer/operating-system-documents
 ```
 
 ## Reference Style

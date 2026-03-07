@@ -154,7 +154,7 @@ pub fn bootInit() void {
 /// If FS is read-only zero, no FPU is implemented.
 /// See RISC-V Privileged Specification, Section 3.1.6.7.
 pub fn detect() bool {
-    // Try to set FS=Initial (non-zero value)
+    // Try to set FS=Initial (non-zero value).
     const test_val: u64 = @as(u64, @intFromEnum(FsStatus.initial)) << FS_SHIFT;
     asm volatile ("csrs sstatus, %[val]"
         :

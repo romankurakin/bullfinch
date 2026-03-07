@@ -112,7 +112,7 @@ const VBAR_ALIGNMENT = 2048;
 /// Trap vector table. 16 entries × 128 bytes, 2KB aligned.
 export fn trap_vectors() align(VBAR_ALIGNMENT) linksection(".vectors") callconv(.naked) void {
     asm volatile (
-    // Current EL with SP_EL0 (0x000-0x1FF)
+    // Current EL with SP_EL0 (0x000-0x1FF).
         \\ b kernelTrapEntry
         \\ .balign 128
         \\ b kernelIrqEntry
@@ -121,7 +121,7 @@ export fn trap_vectors() align(VBAR_ALIGNMENT) linksection(".vectors") callconv(
         \\ .balign 128
         \\ b kernelTrapEntry
         \\ .balign 128
-        // Current EL with SP_ELx (0x200-0x3FF)
+        // Current EL with SP_ELx (0x200-0x3FF).
         \\ b kernelTrapEntry
         \\ .balign 128
         \\ b kernelIrqEntry
@@ -130,7 +130,7 @@ export fn trap_vectors() align(VBAR_ALIGNMENT) linksection(".vectors") callconv(
         \\ .balign 128
         \\ b kernelTrapEntry
         \\ .balign 128
-        // Lower EL AArch64 (0x400-0x5FF)
+        // Lower EL AArch64 (0x400-0x5FF).
         \\ b userTrapEntry
         \\ .balign 128
         \\ b userTrapEntry
@@ -139,7 +139,7 @@ export fn trap_vectors() align(VBAR_ALIGNMENT) linksection(".vectors") callconv(
         \\ .balign 128
         \\ b userTrapEntry
         \\ .balign 128
-        // Lower EL AArch32 (0x600-0x7FF)
+        // Lower EL AArch32 (0x600-0x7FF).
         \\ b userTrapEntry
         \\ .balign 128
         \\ b userTrapEntry
@@ -309,7 +309,7 @@ fn panicIrq(frame: *const TrapFrame, intid: u32) noreturn {
 /// Print a field in "name   0x<value>" format.
 fn printField(name: []const u8, value: usize) void {
     print(name);
-    // Pad to 7 characters
+    // Pad to 7 characters.
     var padding: usize = 7 - @min(name.len, 7);
     while (padding > 0) : (padding -= 1) {
         print(" ");
@@ -337,7 +337,7 @@ test "validates TrapFrame size and layout" {
 
 test "defines TrapClass names for known exceptions" {
     const std = @import("std");
-    // Test specific known classes have meaningful names
+    // Test specific known classes have meaningful names.
     try std.testing.expect(TrapClass.brk_aarch64.name().len > 0);
     try std.testing.expect(TrapClass.svc_aarch64.name().len > 0);
     try std.testing.expect(TrapClass.data_abort_same.name().len > 0);
@@ -346,7 +346,7 @@ test "defines TrapClass names for known exceptions" {
     try std.testing.expect(TrapClass.sp_align.name().len > 0);
     try std.testing.expect(TrapClass.serror.name().len > 0);
 
-    // Test unknown class returns fallback
+    // Test unknown class returns fallback.
     const unknown: TrapClass = @enumFromInt(0x3F); // Not a defined class
     try std.testing.expectEqualStrings("other exception", unknown.name());
 }
@@ -355,17 +355,17 @@ test "returns correct values from TrapFrame.getReg" {
     const std = @import("std");
     var frame: TrapFrame = undefined;
 
-    // Set up test values
+    // Set up test values.
     for (0..31) |i| {
         frame.regs[i] = @as(u64, i) + 100;
     }
 
-    // Verify getReg returns correct values
+    // Verify getReg returns correct values.
     try std.testing.expectEqual(@as(u64, 100), frame.getReg(0));
     try std.testing.expectEqual(@as(u64, 101), frame.getReg(1));
     try std.testing.expectEqual(@as(u64, 130), frame.getReg(30));
 
-    // Out of bounds returns 0
+    // Out of bounds returns 0.
     try std.testing.expectEqual(@as(u64, 0), frame.getReg(31));
     try std.testing.expectEqual(@as(u64, 0), frame.getReg(100));
 }

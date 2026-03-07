@@ -29,6 +29,11 @@ intrinsically.
 
 Use plain English and light punctuation. Avoid decorative separators.
 
+- `///` and `//!` comments: write complete sentences and end summary sentences with
+  terminal punctuation (`.`, `:`, `?`, or `!`).
+- `//` comments: sentence fragments are fine for local notes; use terminal
+  punctuation when writing full sentences.
+
 ## Documentation Style
 
 **Always document:** safety reasoning, architecture quirks, spec refs,

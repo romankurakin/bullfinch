@@ -51,7 +51,7 @@ pub export fn physInit() void {
     hal.trap.init();
     boot_log.trap();
 
-    // Pass DTB pointer so MMU can map enough to cover it
+    // Pass DTB pointer so MMU can map enough to cover it.
     hal.mmu.init(board.KERNEL_PHYS_LOAD, hal.boot.dtb_ptr);
     boot_log.mmu();
 }
@@ -60,13 +60,13 @@ pub export fn physInit() void {
 /// Reinitializes trap vectors and console for higher-half, parses DTB, grows
 /// physmap, removes identity mapping, and initializes timer frequency.
 pub fn virtInit() void {
-    // Reinit trap vector to virtual address, must happen before removing identity mapping
+    // Reinit trap vector to virtual address, must happen before removing identity mapping.
     hal.trap.init();
 
-    // Arch-specific post-MMU fixups (RISC-V reloads GP register)
+    // Arch-specific post-MMU fixups (RISC-V reloads GP register).
     hal.mmu.postMmuInit();
 
-    // Switch console to virtual UART address (ARM64 only, RISC-V uses SBI)
+    // Switch console to virtual UART address (ARM64 only, RISC-V uses SBI).
     console.postMmuInit();
 
     const dtb = getDtb() orelse @panic(panic_msg.DTB_REQUIRED);
@@ -77,7 +77,7 @@ pub fn virtInit() void {
     hal.mmu.removeIdentityMapping();
     boot_log.virt();
 
-    // Initialize timer frequency (ARM64 reads register, RISC-V uses hwinfo value)
+    // Initialize timer frequency (ARM64 reads register, RISC-V uses hwinfo value).
     hal.timer.initFrequency(hwinfo.info.timer_frequency);
 }
 

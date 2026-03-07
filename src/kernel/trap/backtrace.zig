@@ -9,7 +9,7 @@ const console = @import("../console/console.zig");
 const fmt = @import("fmt.zig");
 const hal = @import("../hal/hal.zig");
 
-// Use printUnsafe in trap context: we can't safely acquire locks here
+// Use printUnsafe in trap context: we can't safely acquire locks here.
 const print = console.printUnsafe;
 
 /// Maximum stack depth to prevent infinite loops on corrupted stacks.
@@ -23,18 +23,18 @@ const MAX_STRIDE: usize = 64 * 1024;
 pub fn printBacktrace(fp: usize, pc: usize) void {
     print("\n");
 
-    // Frame #0: current instruction
+    // Frame #0: current instruction.
     printFrame(0, pc);
 
-    // Walk frame pointer chain
+    // Walk frame pointer chain.
     var current_fp = fp;
     var depth: usize = 1;
 
     while (depth < MAX_DEPTH) {
-        // Stop at null frame pointer (stack bottom)
+        // Stop at null frame pointer (stack bottom).
         if (current_fp == 0) break;
 
-        // Validate frame pointer is in kernel space and aligned
+        // Validate frame pointer is in kernel space and aligned.
         if (!isValidFramePointer(current_fp)) break;
 
         // Read previous frame pointer and return address (arch-specific layout)
@@ -64,10 +64,10 @@ const readFrame = hal.trap_frame.readStackFrame;
 
 /// Check if a frame pointer value could be valid.
 fn isValidFramePointer(fp: usize) bool {
-    // Must be in kernel address space
+    // Must be in kernel address space.
     if (!hal.mmu.VirtualAddress.isKernel(fp)) return false;
 
-    // Must be 16-byte aligned (ARM64 AAPCS64 / RISC-V ABI requirement)
+    // Must be 16-byte aligned (ARM64 AAPCS64 / RISC-V ABI requirement).
     if (fp & 0xF != 0) return false;
 
     return true;

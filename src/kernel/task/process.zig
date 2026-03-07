@@ -138,12 +138,12 @@ test "tracks thread count and returns true on last removal" {
     try std.testing.expectEqual(@as(u32, 2), proc.thread_count);
     try std.testing.expectEqual(&t2, proc.threads.?);
 
-    // Remove t2 (head)
+    // Remove t2 (head).
     const last1 = proc.removeThread(&t2);
     try std.testing.expect(!last1);
     try std.testing.expectEqual(@as(u32, 1), proc.thread_count);
 
-    // Remove t1 (last thread)
+    // Remove t1 (last thread).
     const last2 = proc.removeThread(&t1);
     try std.testing.expect(last2);
     try std.testing.expectEqual(@as(u32, 0), proc.thread_count);

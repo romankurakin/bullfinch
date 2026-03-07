@@ -46,7 +46,7 @@ export fn _start() linksection(".text.boot") callconv(.naked) noreturn {
         // TODO(arm64): Gate PAN write on FEAT_PAN/ID_AA64MMFR1_EL1.PAN.
         \\ msr pan, #1
 
-        // Clear BSS section (PC-relative addressing)
+        // Clear BSS section (PC-relative addressing).
         \\ adrp x0, __bss_start
         \\ add x0, x0, :lo12:__bss_start
         \\ adrp x1, __bss_end
@@ -57,15 +57,15 @@ export fn _start() linksection(".text.boot") callconv(.naked) noreturn {
         \\   cmp x0, x1
         \\   b.lt clear_bss
 
-        // Save DTB pointer to global before physInit (which may use console)
+        // Save DTB pointer to global before physInit (which may use console).
         \\ adrp x0, dtb_ptr
         \\ add x0, x0, :lo12:dtb_ptr
         \\ str x19, [x0]
 
-        // Initialize hardware, MMU, traps (all at physical addresses)
+        // Initialize hardware, MMU, traps (all at physical addresses).
         \\ bl physInit
 
-        // Switch to higher-half: add KERNEL_VIRT_BASE to SP, jump to kmain
+        // Switch to higher-half: add KERNEL_VIRT_BASE to SP, jump to kmain.
         \\ adrp x0, KERNEL_VIRT_BASE
         \\ add x0, x0, :lo12:KERNEL_VIRT_BASE
         \\ ldr x0, [x0]

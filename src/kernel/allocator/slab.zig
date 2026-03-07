@@ -227,7 +227,7 @@ pub fn Pool(comptime T: type) type {
             const held = self.lock.guard();
             defer held.release();
 
-            // Try current slab first
+            // Try current slab first.
             if (self.current) |slab| {
                 if (slab.free_count > 0) {
                     if (self.allocFromSlab(slab)) |obj| {
@@ -238,7 +238,7 @@ pub fn Pool(comptime T: type) type {
                 self.current = self.partial_head;
             }
 
-            // Try partial list
+            // Try partial list.
             while (self.current) |slab| {
                 if (slab.free_count > 0) {
                     if (self.allocFromSlab(slab)) |obj| {
@@ -248,7 +248,7 @@ pub fn Pool(comptime T: type) type {
                 self.current = slab.next;
             }
 
-            // Need new slab
+            // Need new slab.
             const new_slab = self.allocNewSlab() orelse return null;
             self.current = new_slab;
             const obj = self.allocFromSlab(new_slab) orelse {
@@ -270,7 +270,7 @@ pub fn Pool(comptime T: type) type {
             // Debug-only since we trust internal callers per error philosophy.
             if (debug_kernel and slab.free_count == 0) @panic(panic_msg.SLAB_NO_FREE_SLOTS);
 
-            // Find first free slot via @ctz (bit=1 means free)
+            // Find first free slot via @ctz (bit=1 means free).
             for (&slab.bitmap, 0..) |*word, word_idx| {
                 if (word.* == 0) continue;
 
@@ -278,17 +278,17 @@ pub fn Pool(comptime T: type) type {
                 const slot_idx = word_idx * 64 + bit_idx;
                 if (slot_idx >= objects_per_slab) break;
 
-                // Mark allocated
+                // Mark allocated.
                 word.* &= ~(@as(u64, 1) << @intCast(bit_idx));
                 slab.free_count -= 1;
                 self.total_allocated += 1;
 
-                // Slab became full - remove from partial list
+                // Slab became full - remove from partial list.
                 if (slab.free_count == 0) {
                     self.unlinkSlab(slab);
                 }
 
-                // Get object pointer
+                // Get object pointer.
                 const storage_base = slab.page_addr + usable_start;
                 const obj_addr = storage_base + slot_idx * object_size;
                 const obj: *T = @ptrFromInt(obj_addr);
@@ -328,7 +328,7 @@ pub fn Pool(comptime T: type) type {
             slab.next = null;
             slab.in_partial_list = false;
 
-            // If current pointed to this slab, advance it
+            // If current pointed to this slab, advance it.
             if (self.current == slab) {
                 self.current = self.partial_head;
             }
@@ -337,11 +337,11 @@ pub fn Pool(comptime T: type) type {
         fn allocNewSlab(self: *Self) ?*SlabData {
             const page_addr = self.alloc_page() orelse return null;
 
-            // SlabData lives in slot 0, avoiding external allocator dependency
+            // SlabData lives in slot 0, avoiding external allocator dependency.
             const slab_storage = page_addr + usable_start;
             const slab: *SlabData = @ptrFromInt(slab_storage);
 
-            // Initialize bitmap: all 1s = all free, then mask unused bits
+            // Initialize bitmap: all 1s = all free, then mask unused bits.
             var bitmap: [bitmap_words]u64 = undefined;
             for (&bitmap) |*word| {
                 word.* = std.math.maxInt(u64);
@@ -350,7 +350,7 @@ pub fn Pool(comptime T: type) type {
             if (used_bits != 0 and bitmap_words > 0) {
                 bitmap[bitmap_words - 1] = (@as(u64, 1) << @intCast(used_bits)) - 1;
             }
-            // Mark slot 0 as used (holds SlabData)
+            // Mark slot 0 as used (holds SlabData).
             bitmap[0] &= ~@as(u64, 1);
 
             slab.* = .{
@@ -381,7 +381,7 @@ pub fn Pool(comptime T: type) type {
             const obj_addr = @intFromPtr(obj);
             const page_base = obj_addr & ~@as(usize, PAGE_SIZE - 1);
 
-            // Read back-pointer to find slab
+            // Read back-pointer to find slab.
             const backptr: *usize = @ptrFromInt(page_base);
             const slab = self.decodeBackptr(page_base, backptr.*) orelse {
                 return error.InvalidSlab;
@@ -394,7 +394,7 @@ pub fn Pool(comptime T: type) type {
                 return error.InvalidSlab;
             }
 
-            // Calculate slot index
+            // Calculate slot index.
             const storage_base = page_base + usable_start;
             const offset = obj_addr - storage_base;
 
@@ -527,7 +527,7 @@ test "grows Pool across multiple slabs" {
 
     var pool = TestPool.init(testAllocPage, testFreePage, null);
 
-    // Allocate more than one slab can hold
+    // Allocate more than one slab can hold.
     var objs: [10]*TestObj = undefined;
     var count: usize = 0;
 
@@ -539,7 +539,7 @@ test "grows Pool across multiple slabs" {
     try testing.expect(count > 0);
     try testing.expect(pool.slabCount() >= 1);
 
-    // Free all
+    // Free all.
     for (objs[0..count]) |obj| {
         try pool.free(obj);
     }
@@ -555,14 +555,14 @@ test "finds correct slab via back-pointer on Pool.free" {
 
     var pool = TestPool.init(testAllocPage, testFreePage, null);
 
-    // Allocate objects that span multiple slabs
+    // Allocate objects that span multiple slabs.
     const obj1 = pool.alloc() orelse return error.AllocFailed;
     const obj2 = pool.alloc() orelse return error.AllocFailed;
 
     obj1.value = 0xDEADBEEF;
     obj2.value = 0xCAFEBABE;
 
-    // Free in reverse order - tests that back-pointer lookup works
+    // Free in reverse order - tests that back-pointer lookup works.
     try pool.free(obj2);
     try pool.free(obj1);
 
@@ -577,7 +577,7 @@ test "reuses freed slot from full slab" {
 
     var pool = TestPool.init(testAllocPage, testFreePage, null);
 
-    // Allocate until slab is full
+    // Allocate until slab is full.
     var objs: [TestPool.capacity_per_slab]*TestObj = undefined;
     for (objs[0 .. TestPool.capacity_per_slab - 1], 1..) |*slot, i| {
         slot.* = pool.alloc() orelse return error.AllocFailed;
@@ -586,11 +586,11 @@ test "reuses freed slot from full slab" {
 
     try testing.expectEqual(@as(usize, 1), pool.slabCount());
 
-    // Free one object
+    // Free one object.
     const freed_addr = @intFromPtr(objs[0]);
     try pool.free(objs[0]);
 
-    // Next alloc should reuse the freed slot (slab became current on free)
+    // Next alloc should reuse the freed slot (slab became current on free).
     const reused = pool.alloc() orelse return error.AllocFailed;
     try testing.expectEqual(freed_addr, @intFromPtr(reused));
     try testing.expectEqual(@as(usize, 1), pool.slabCount());
@@ -604,27 +604,27 @@ test "reclaims empty slab above MIN_SLABS" {
 
     var pool = TestPool.init(testAllocPage, testFreePage, null);
 
-    // Fill first slab completely to force second slab allocation
+    // Fill first slab completely to force second slab allocation.
     const cap = TestPool.capacity_per_slab - 1; // -1 for SlabData in slot 0
     var slab1_objs: [63]*TestObj = undefined; // max possible capacity
     for (slab1_objs[0..cap]) |*slot| {
         slot.* = pool.alloc() orelse return error.AllocFailed;
     }
 
-    // Allocate one more to create second slab
+    // Allocate one more to create second slab.
     const slab2_obj = pool.alloc() orelse return error.AllocFailed;
     try testing.expectEqual(@as(usize, 2), pool.slabCount());
 
     const second_slab_page = @intFromPtr(&test_pages[1]);
 
-    // Free the object in second slab - slab should be reclaimed (above MIN_SLABS)
+    // Free the object in second slab - slab should be reclaimed (above MIN_SLABS).
     try pool.free(slab2_obj);
 
     try testing.expectEqual(@as(usize, 1), pool.slabCount());
     try testing.expectEqual(@as(usize, 1), test_freed_count);
     try testing.expectEqual(second_slab_page, test_freed_pages[0]);
 
-    // Clean up first slab
+    // Clean up first slab.
     for (slab1_objs[0..cap]) |obj| {
         try pool.free(obj);
     }

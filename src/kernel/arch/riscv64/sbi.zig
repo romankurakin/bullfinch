@@ -58,12 +58,12 @@ pub fn setTimer(stime_value: u64) void {
 test "detects negative return values in isError" {
     const std = @import("std");
 
-    // Positive values are success
+    // Positive values are success.
     try std.testing.expect(!isError(0));
     try std.testing.expect(!isError(1));
     try std.testing.expect(!isError(0x7FFFFFFFFFFFFFFF));
 
-    // Negative values (high bit set) are errors
+    // Negative values (high bit set) are errors.
     try std.testing.expect(isError(@as(usize, @bitCast(@as(isize, -1)))));
     try std.testing.expect(isError(@as(usize, @bitCast(@as(isize, -2)))));
     try std.testing.expect(isError(0x8000000000000000)); // Most negative

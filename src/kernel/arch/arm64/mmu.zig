@@ -384,18 +384,18 @@ pub fn walk(root: *PageTable, vaddr: usize) ?*PageTableEntry {
 
     const va = VirtualAddress.parse(vaddr);
 
-    // Level 1
+    // Level 1.
     const l1_entry = &root.entries[va.l1];
     if (!l1_entry.isValid()) return null;
     if (l1_entry.isBlock()) return null; // 1GB block, not page-level
 
-    // Level 2
+    // Level 2.
     const l2_table: *PageTable = @ptrFromInt(physToVirt(l1_entry.physAddr()));
     const l2_entry = &l2_table.entries[va.l2];
     if (!l2_entry.isValid()) return null;
     if (l2_entry.isBlock()) return null; // 2MB block, not page-level
 
-    // Level 3
+    // Level 3.
     const l3_table: *PageTable = @ptrFromInt(physToVirt(l2_entry.physAddr()));
     return &l3_table.entries[va.l3];
 }
@@ -408,14 +408,14 @@ pub fn translate(root: *PageTable, vaddr: usize) ?usize {
 
     const va = VirtualAddress.parse(vaddr);
 
-    // Level 1
+    // Level 1.
     const l1_entry = root.entries[va.l1];
     if (!l1_entry.isValid()) return null;
     if (l1_entry.isBlock()) {
         return l1_entry.physAddr() | (vaddr & BLOCK_1GB_MASK);
     }
 
-    // Level 2
+    // Level 2.
     const l2_table: *const PageTable = @ptrFromInt(physToVirt(l1_entry.physAddr()));
     const l2_entry = l2_table.entries[va.l2];
     if (!l2_entry.isValid()) return null;
@@ -423,7 +423,7 @@ pub fn translate(root: *PageTable, vaddr: usize) ?usize {
         return l2_entry.physAddr() | (vaddr & BLOCK_2MB_MASK);
     }
 
-    // Level 3
+    // Level 3.
     const l3_table: *const PageTable = @ptrFromInt(physToVirt(l2_entry.physAddr()));
     const l3_entry = l3_table.entries[va.l3];
     if (!l3_entry.isValid()) return null;
@@ -442,18 +442,18 @@ pub fn mapPage(root: *PageTable, vaddr: usize, paddr: usize, flags: PageFlags) M
 
     const va = VirtualAddress.parse(vaddr);
 
-    // Level 1 - must be a table entry
+    // Level 1 - must be a table entry.
     const l1_entry = root.entries[va.l1];
     if (!l1_entry.isValid()) return MapError.TableNotPresent;
     if (!l1_entry.isTable()) return MapError.SuperpageConflict;
 
-    // Level 2 - must be a table entry
+    // Level 2 - must be a table entry.
     const l2_table: *PageTable = @ptrFromInt(physToVirt(l1_entry.physAddr()));
     const l2_entry = l2_table.entries[va.l2];
     if (!l2_entry.isValid()) return MapError.TableNotPresent;
     if (!l2_entry.isTable()) return MapError.SuperpageConflict;
 
-    // Level 3 - the actual page entry
+    // Level 3 - the actual page entry.
     const l3_table: *PageTable = @ptrFromInt(physToVirt(l2_entry.physAddr()));
     const l3_entry = &l3_table.entries[va.l3];
     if (l3_entry.isValid()) return MapError.AlreadyMapped;
@@ -502,7 +502,7 @@ pub fn mapPageWithAlloc(root: *PageTable, vaddr: usize, paddr: usize, flags: Pag
         return MapError.SuperpageConflict;
     }
 
-    // Level 3 - the actual page entry
+    // Level 3 - the actual page entry.
     const l3_table: *PageTable = @ptrFromInt(physToVirt(l2_entry.physAddr()));
     const l3_entry = &l3_table.entries[va.l3];
     if (l3_entry.isValid()) return MapError.AlreadyMapped;
@@ -565,7 +565,7 @@ pub fn init(kernel_phys_load: usize, dtb_ptr: usize) void {
     TranslationControlRegister.write(TranslationControlRegister.DEFAULT);
     instructionBarrier();
 
-    // Calculate mapping to cover both kernel and DTB
+    // Calculate mapping to cover both kernel and DTB.
     const map_start = if (dtb_ptr > 0) @min(kernel_phys_load, dtb_ptr) else kernel_phys_load;
     const dtb_end = if (dtb_ptr > 0) dtb_ptr + DTB_MAX_SIZE else kernel_phys_load;
     const map_end = @max(kernel_phys_load + MIN_PHYSMAP_SIZE, dtb_end);
@@ -573,7 +573,7 @@ pub fn init(kernel_phys_load: usize, dtb_ptr: usize) void {
     const end_gb = (map_end + (1 << 30) - 1) >> 30;
     physmap_end_gb = end_gb;
 
-    // TTBR0: Identity mapping (for boot continuation after MMU enable)
+    // TTBR0: Identity mapping (for boot continuation after MMU enable).
     l1_table_low.entries[0] = PageTableEntry.deviceBlock(0); // MMIO (first GB)
 
     var gb: usize = start_gb;
@@ -582,7 +582,7 @@ pub fn init(kernel_phys_load: usize, dtb_ptr: usize) void {
         l1_table_low.entries[gb] = PageTableEntry.kernelBlock(gb << 30, true, true);
     }
 
-    // TTBR1: Higher-half kernel mapping
+    // TTBR1: Higher-half kernel mapping.
     l1_table_high.entries[0] = PageTableEntry.deviceBlock(0); // MMIO in higher-half
 
     gb = start_gb;
@@ -591,7 +591,7 @@ pub fn init(kernel_phys_load: usize, dtb_ptr: usize) void {
         l1_table_high.entries[gb] = PageTableEntry.kernelBlock(gb << 30, true, true);
     }
 
-    // Set both translation table base registers
+    // Set both translation table base registers.
     asm volatile ("msr ttbr0_el1, %[ttbr]"
         :
         : [ttbr] "r" (@intFromPtr(&l1_table_low)),
@@ -602,7 +602,7 @@ pub fn init(kernel_phys_load: usize, dtb_ptr: usize) void {
     );
     instructionBarrier();
 
-    // Use local TLBI before MMU enable (broadcast can fault when MMU is off)
+    // Use local TLBI before MMU enable (broadcast can fault when MMU is off).
     TranslationLookasideBuffer.flushLocal();
 
     SystemControlRegister.enableMmu();

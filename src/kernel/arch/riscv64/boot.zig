@@ -29,11 +29,11 @@ export fn _start() linksection(".text.boot") callconv(.naked) noreturn {
         \\ la gp, __global_pointer$
         \\ .option pop
 
-        // Save hart ID (a0) and DTB pointer (a1) to callee-saved registers
+        // Save hart ID (a0) and DTB pointer (a1) to callee-saved registers.
         \\ mv s1, a0
         \\ mv s0, a1
 
-        // Set up stack
+        // Set up stack.
         \\ la sp, __stack_top
 
         // Disable FPU for kernel (sstatus.FS = Off, bits 14:13 = 00).
@@ -43,7 +43,7 @@ export fn _start() linksection(".text.boot") callconv(.naked) noreturn {
         \\ li t0, (3 << 13)
         \\ csrc sstatus, t0
 
-        // Clear BSS section
+        // Clear BSS section.
         \\ la t0, __bss_start
         \\ la t1, __bss_end
         \\ clear_bss:
@@ -51,16 +51,16 @@ export fn _start() linksection(".text.boot") callconv(.naked) noreturn {
         \\   addi t0, t0, 8
         \\   blt t0, t1, clear_bss
 
-        // Save hart ID and DTB pointer to globals before physInit
+        // Save hart ID and DTB pointer to globals before physInit.
         \\ la t0, hart_id
         \\ sd s1, 0(t0)
         \\ la t0, dtb_ptr
         \\ sd s0, 0(t0)
 
-        // Initialize hardware, MMU, traps (all at physical addresses)
+        // Initialize hardware, MMU, traps (all at physical addresses).
         \\ call physInit
 
-        // Switch to higher-half: add KERNEL_VIRT_BASE to SP, jump to kmain
+        // Switch to higher-half: add KERNEL_VIRT_BASE to SP, jump to kmain.
         \\ la t0, KERNEL_VIRT_BASE
         \\ ld t0, 0(t0)
         \\ add sp, sp, t0

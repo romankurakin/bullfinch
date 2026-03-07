@@ -2,7 +2,7 @@
 
 const board = @import("board");
 
-// Validate required board config
+// Validate required board config.
 comptime {
     if (!@hasDecl(board, "UART_PHYS"))
         @compileError("ARM64 board must define UART_PHYS");

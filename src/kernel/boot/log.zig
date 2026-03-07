@@ -2,7 +2,7 @@
 //!
 //! Centralized boot progress messages with consistent formatting.
 //!
-//! Format: "[N/T] name message"
+//! Format: "[N/T] name message":
 //! - N/T: stage progress
 //! - name: subsystem, padded to a consistent column
 //! - message: description
@@ -57,7 +57,7 @@ fn stagePrefix(n: u8, name: []const u8) void {
     console.print(" ");
 }
 
-/// Print a boot stage message: "[N/T] name message\n"
+/// Print a boot stage message: "[N/T] name message\n".
 fn stage(n: u8, name: []const u8, message: []const u8) void {
     stagePrefix(n, name);
     console.print(message);

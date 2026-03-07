@@ -312,19 +312,19 @@ test "keeps save/restore instruction counts matching" {
     try std.testing.expectEqual(fast_sd, fast_ld);
 }
 
-// Compile-time verification
+// Compile-time verification.
 comptime {
-    // Verify frame sizes are 16-byte aligned (RISC-V ABI requirement)
+    // Verify frame sizes are 16-byte aligned (RISC-V ABI requirement).
     if (FULL_FRAME_SIZE & 0xF != 0)
         @compileError("FULL_FRAME_SIZE must be 16-byte aligned");
     if (FAST_FRAME_SIZE & 0xF != 0)
         @compileError("FAST_FRAME_SIZE must be 16-byte aligned");
 
-    // Verify frame size matches TrapFrame struct
+    // Verify frame size matches TrapFrame struct.
     if (FULL_FRAME_SIZE != TrapFrame.FRAME_SIZE)
         @compileError("FULL_FRAME_SIZE must match TrapFrame.FRAME_SIZE");
 
-    // Verify assembly offsets match TrapFrame layout
+    // Verify assembly offsets match TrapFrame layout.
     // These catch if struct fields are reordered or resized
     if (OFF_REGS != 0)
         @compileError("regs must be at offset 0");
@@ -341,7 +341,7 @@ comptime {
     if (OFF_STVAL != 280)
         @compileError("stval offset mismatch - assembly uses 280(sp)");
 
-    // Fast path offsets (caller-saved only)
+    // Fast path offsets (caller-saved only).
     if (FAST_OFF_SEPC != 128)
         @compileError("FAST_OFF_SEPC offset mismatch");
     if (FAST_OFF_SSTATUS != 136)

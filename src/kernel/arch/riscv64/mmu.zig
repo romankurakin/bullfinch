@@ -297,24 +297,24 @@ pub fn walk(root: *PageTable, vaddr: usize) ?*PageTableEntry {
 
     const va = VirtualAddress.parse(vaddr);
 
-    // Level 3 (root)
+    // Level 3 (root).
     const l3_entry = &root.entries[va.vpn3];
     if (!l3_entry.isValid()) return null;
     if (l3_entry.isLeaf()) return null; // terapage, not page-level
 
-    // Level 2
+    // Level 2.
     const l2_table: *PageTable = @ptrFromInt(physToVirt(l3_entry.physAddr()));
     const l2_entry = &l2_table.entries[va.vpn2];
     if (!l2_entry.isValid()) return null;
     if (l2_entry.isLeaf()) return null; // gigapage, not page-level
 
-    // Level 1
+    // Level 1.
     const l1_table: *PageTable = @ptrFromInt(physToVirt(l2_entry.physAddr()));
     const l1_entry = &l1_table.entries[va.vpn1];
     if (!l1_entry.isValid()) return null;
     if (l1_entry.isLeaf()) return null; // megapage, not page-level
 
-    // Level 0
+    // Level 0.
     const l0_table: *PageTable = @ptrFromInt(physToVirt(l1_entry.physAddr()));
     return &l0_table.entries[va.vpn0];
 }
@@ -328,14 +328,14 @@ pub fn translate(root: *PageTable, vaddr: usize) ?usize {
     const va = VirtualAddress.parse(vaddr);
     const TERAPAGE_MASK: usize = (1 << 39) - 1;
 
-    // Level 3 (root)
+    // Level 3 (root).
     const l3_entry = root.entries[va.vpn3];
     if (!l3_entry.isValid()) return null;
     if (l3_entry.isLeaf()) {
         return l3_entry.physAddr() | (vaddr & TERAPAGE_MASK);
     }
 
-    // Level 2
+    // Level 2.
     const l2_table: *const PageTable = @ptrFromInt(physToVirt(l3_entry.physAddr()));
     const l2_entry = l2_table.entries[va.vpn2];
     if (!l2_entry.isValid()) return null;
@@ -343,7 +343,7 @@ pub fn translate(root: *PageTable, vaddr: usize) ?usize {
         return l2_entry.physAddr() | (vaddr & GIGAPAGE_MASK);
     }
 
-    // Level 1
+    // Level 1.
     const l1_table: *const PageTable = @ptrFromInt(physToVirt(l2_entry.physAddr()));
     const l1_entry = l1_table.entries[va.vpn1];
     if (!l1_entry.isValid()) return null;
@@ -351,7 +351,7 @@ pub fn translate(root: *PageTable, vaddr: usize) ?usize {
         return l1_entry.physAddr() | (vaddr & MEGAPAGE_MASK);
     }
 
-    // Level 0
+    // Level 0.
     const l0_table: *const PageTable = @ptrFromInt(physToVirt(l1_entry.physAddr()));
     const l0_entry = l0_table.entries[va.vpn0];
     if (!l0_entry.isValid()) return null;
@@ -371,24 +371,24 @@ pub fn mapPage(root: *PageTable, vaddr: usize, paddr: usize, flags: PageFlags) M
 
     const va = VirtualAddress.parse(vaddr);
 
-    // Level 3 (root) - must be a branch entry
+    // Level 3 (root) - must be a branch entry.
     const l3_entry = root.entries[va.vpn3];
     if (!l3_entry.isValid()) return MapError.TableNotPresent;
     if (l3_entry.isLeaf()) return MapError.SuperpageConflict;
 
-    // Level 2 - must be a branch entry
+    // Level 2 - must be a branch entry.
     const l2_table: *PageTable = @ptrFromInt(physToVirt(l3_entry.physAddr()));
     const l2_entry = l2_table.entries[va.vpn2];
     if (!l2_entry.isValid()) return MapError.TableNotPresent;
     if (l2_entry.isLeaf()) return MapError.SuperpageConflict;
 
-    // Level 1 - must be a branch entry
+    // Level 1 - must be a branch entry.
     const l1_table: *PageTable = @ptrFromInt(physToVirt(l2_entry.physAddr()));
     const l1_entry = l1_table.entries[va.vpn1];
     if (!l1_entry.isValid()) return MapError.TableNotPresent;
     if (l1_entry.isLeaf()) return MapError.SuperpageConflict;
 
-    // Level 0 - the actual page entry
+    // Level 0 - the actual page entry.
     const l0_table: *PageTable = @ptrFromInt(physToVirt(l1_entry.physAddr()));
     const l0_entry = &l0_table.entries[va.vpn0];
     if (l0_entry.isValid()) return MapError.AlreadyMapped;
@@ -449,7 +449,7 @@ pub fn mapPageWithAlloc(root: *PageTable, vaddr: usize, paddr: usize, flags: Pag
         return MapError.SuperpageConflict;
     }
 
-    // Level 0 - the actual page entry
+    // Level 0 - the actual page entry.
     const l0_table: *PageTable = @ptrFromInt(physToVirt(l1_entry.physAddr()));
     const l0_entry = &l0_table.entries[va.vpn0];
     if (l0_entry.isValid()) return MapError.AlreadyMapped;
@@ -512,7 +512,7 @@ var physmap_end_gb: usize = 0;
 pub fn init(kernel_phys_load: usize, dtb_ptr: usize) void {
     stored_kernel_phys_load = kernel_phys_load;
 
-    // Calculate mapping to cover both kernel and DTB
+    // Calculate mapping to cover both kernel and DTB.
     const map_start = if (dtb_ptr > 0) @min(kernel_phys_load, dtb_ptr) else kernel_phys_load;
     const dtb_end = if (dtb_ptr > 0) dtb_ptr + DTB_MAX_SIZE else kernel_phys_load;
     const map_end = @max(kernel_phys_load + MIN_PHYSMAP_SIZE, dtb_end);
@@ -538,7 +538,7 @@ pub fn init(kernel_phys_load: usize, dtb_ptr: usize) void {
         l2_physmap_table.entries[gb] = PageTableEntry.kernelLeaf(gb << 30, true, true);
     }
 
-    // L3 root table: branches to L2 tables
+    // L3 root table: branches to L2 tables.
     root_table.entries[0] = PageTableEntry.branch(@intFromPtr(&l2_identity_table)); // Identity
     root_table.entries[KERNEL_VPN3] = PageTableEntry.branch(@intFromPtr(&l2_physmap_table)); // Kernel
 
@@ -640,7 +640,7 @@ test "creates valid PageTableEntry.userLeaf entry" {
 }
 
 test "extracts correct indices in VirtualAddress.parse" {
-    // Low address: 0x80200000 = 2GB + 2MB
+    // Low address: 0x80200000 = 2GB + 2MB.
     const va = VirtualAddress.parse(0x80200000);
     try std.testing.expectEqual(@as(u9, 0), va.vpn3);
     try std.testing.expectEqual(@as(u9, 2), va.vpn2);
@@ -648,7 +648,7 @@ test "extracts correct indices in VirtualAddress.parse" {
     try std.testing.expectEqual(@as(u9, 0), va.vpn0);
     try std.testing.expectEqual(@as(u12, 0), va.offset);
 
-    // Kernel address
+    // Kernel address.
     const kva = VirtualAddress.parse(KERNEL_VIRT_BASE + 0x80200000);
     try std.testing.expectEqual(@as(u9, 256), kva.vpn3); // KERNEL_VPN3
     try std.testing.expectEqual(@as(u9, 2), kva.vpn2);
@@ -658,15 +658,15 @@ test "extracts correct indices in VirtualAddress.parse" {
 
 test "validates addresses in VirtualAddress.isCanonical" {
     // Sv48: canonical if bits 63:47 are all same as bit 47
-    // Lower canonical: 0 to 0x7FFF_FFFF_FFFF (128TB - 1)
+    // Lower canonical: 0 to 0x7FFF_FFFF_FFFF (128TB - 1).
     try std.testing.expect(VirtualAddress.isCanonical(0x0));
     try std.testing.expect(VirtualAddress.isCanonical(0x7FFF_FFFF_FFFF)); // Max lower canonical
 
-    // Upper canonical: 0xFFFF_8000_0000_0000 to max
+    // Upper canonical: 0xFFFF_8000_0000_0000 to max.
     try std.testing.expect(VirtualAddress.isCanonical(KERNEL_VIRT_BASE));
     try std.testing.expect(VirtualAddress.isCanonical(0xFFFF_FFFF_FFFF_FFFF));
 
-    // Non-canonical (hole)
+    // Non-canonical (hole).
     try std.testing.expect(!VirtualAddress.isCanonical(0x8000_0000_0000)); // Just above lower
     try std.testing.expect(!VirtualAddress.isCanonical(0xFFFF_7FFF_FFFF_FFFF)); // Just below upper
 }
@@ -683,21 +683,21 @@ test "matches PageTable size to page size" {
 }
 
 test "translates terapage mappings" {
-    // Sv48: terapage at L3 (512GB)
+    // Sv48: terapage at L3 (512GB).
     var root = PageTable.EMPTY;
     root.entries[1] = PageTableEntry.kernelLeaf(0x8000000000, true, true); // 512GB terapage at vpn3=1
 
-    // Address with vpn3=1 maps through terapage
+    // Address with vpn3=1 maps through terapage.
     const pa = translate(&root, 0x8000123456);
     try std.testing.expectEqual(@as(?usize, 0x8000123456), pa);
 
-    // Unmapped L3 entry
+    // Unmapped L3 entry.
     try std.testing.expectEqual(@as(?usize, null), translate(&root, 0x10000000000)); // vpn3=2
 }
 
 test "returns null for non-canonical addresses in translate" {
     var root = PageTable.EMPTY;
-    // Non-canonical address (in Sv48 hole)
+    // Non-canonical address (in Sv48 hole).
     try std.testing.expectEqual(@as(?usize, null), translate(&root, 0x8000_0000_0000));
 }
 
@@ -709,16 +709,16 @@ test "returns NotAligned for misaligned addresses in mapPage" {
 
 test "returns NotCanonical for non-canonical addresses in mapPage" {
     var root = PageTable.EMPTY;
-    // Sv48 non-canonical (in hole)
+    // Sv48 non-canonical (in hole).
     try std.testing.expectError(MapError.NotCanonical, mapPage(&root, 0x8000_0000_0000, 0x1000, .{}));
 }
 
 test "mapPage returns SuperpageConflict for terapage mappings" {
-    // Sv48: terapage at L3 (512GB)
+    // Sv48: terapage at L3 (512GB).
     var root = PageTable.EMPTY;
     root.entries[1] = PageTableEntry.kernelLeaf(0x8000000000, true, true); // 512GB terapage at vpn3=1
 
-    // Try to map 4KB page within the terapage
+    // Try to map 4KB page within the terapage.
     try std.testing.expectError(MapError.SuperpageConflict, mapPage(&root, 0x8000001000, 0x9000001000, .{}));
 }
 
@@ -733,11 +733,11 @@ test "returns null for unmapped address in walk" {
 }
 
 test "returns null for terapage mapping in walk" {
-    // Sv48: terapage at L3 (not walkable to L0)
+    // Sv48: terapage at L3 (not walkable to L0).
     var root = PageTable.EMPTY;
     root.entries[1] = PageTableEntry.kernelLeaf(0x8000000000, true, true); // 512GB terapage at vpn3=1
 
-    // Walk stops at terapage, returns null (no L0 entry)
+    // Walk stops at terapage, returns null (no L0 entry).
     try std.testing.expectEqual(@as(?*PageTableEntry, null), walk(&root, 0x8000001000));
 }
 

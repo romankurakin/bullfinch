@@ -118,7 +118,7 @@ test "handles special cases in TrapFrame.getReg" {
     try std.testing.expectEqual(@as(u64, 0xDEADBEEF), frame.getReg(2));
     // x3+ come from regs array
     try std.testing.expectEqual(@as(u64, 102), frame.getReg(3));
-    // Out of bounds
+    // Out of bounds.
     try std.testing.expectEqual(@as(u64, 0), frame.getReg(32));
 }
 

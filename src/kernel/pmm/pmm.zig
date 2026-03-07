@@ -126,9 +126,9 @@ comptime {
     if (@sizeOf(Page) > 24) @compileError("Page struct too large (max 24 bytes)");
     // Page must fit evenly for pointer arithmetic in pageToPhys
     if (@sizeOf(Page) % @alignOf(Page) != 0) @compileError("Page size must be multiple of alignment");
-    // Poison patterns must be distinct
+    // Poison patterns must be distinct.
     if (poison.ALLOC == poison.FREE) @compileError("Poison patterns must differ");
-    // MAX constants must be reasonable
+    // MAX constants must be reasonable.
     if (MAX_ARENAS == 0) @compileError("MAX_ARENAS must be > 0");
     if (MAX_RESERVED == 0) @compileError("MAX_RESERVED must be > 0");
 }
@@ -277,22 +277,22 @@ pub fn init(kernel_phys_start: usize, kernel_phys_end: usize) void {
     // DTB is typically placed near end of RAM by bootloader.
     // If we don't reserve it first, our metadata array may overwrite it.
 
-    // Reserve kernel image
+    // Reserve kernel image.
     const kernel_padded_end = std.math.add(usize, kernel_phys_start, KERNEL_RESERVE_PAD) catch
         @panic(panic_msg.ARITHMETIC_OVERFLOW);
     const kernel_safe_end = @max(kernel_phys_end, kernel_padded_end);
     recordReserved(kernel_phys_start, kernel_safe_end);
 
-    // Reserve DTB blob (must be done before iterating reserved regions!)
+    // Reserve DTB blob (must be done before iterating reserved regions!).
     if (hw.dtb_phys != 0 and hw.dtb_size > 0) {
-        // Pad DTB reservation to page boundary
+        // Pad DTB reservation to page boundary.
         const dtb_blob_end = std.math.add(u64, hw.dtb_phys, @as(u64, hw.dtb_size)) catch
             @panic(panic_msg.ARITHMETIC_OVERFLOW);
         const dtb_end = alignUp64(dtb_blob_end, PAGE_SIZE);
         recordReserved(hw.dtb_phys, dtb_end);
     }
 
-    // Reserve DTB-specified reserved regions (e.g., OpenSBI on RISC-V)
+    // Reserve DTB-specified reserved regions (e.g., OpenSBI on RISC-V).
     for (hw.reservedRegions()) |region| {
         if (region.size > 0) {
             const region_end = std.math.add(u64, region.base, region.size) catch
@@ -301,13 +301,13 @@ pub fn init(kernel_phys_start: usize, kernel_phys_end: usize) void {
         }
     }
 
-    // Memory regions are already sorted by size descending in hwinfo
+    // Memory regions are already sorted by size descending in hwinfo.
     const regions = hw.memoryRegions();
     if (regions.len == 0) {
         @panic(panic_msg.NO_MEMORY_REGIONS);
     }
 
-    // Initialize each arena
+    // Initialize each arena.
     for (regions) |region| {
         if (pmm.arena_count >= MAX_ARENAS) break;
         if (initArena(region.base, region.size, @intCast(pmm.arena_count))) {
@@ -327,7 +327,7 @@ pub fn init(kernel_phys_start: usize, kernel_phys_end: usize) void {
         }
     }
 
-    // Build free list from non-reserved pages
+    // Build free list from non-reserved pages.
     buildFreeList();
 }
 
@@ -426,7 +426,7 @@ pub fn allocContiguous(count: usize, alignment_log2: u8) ?[]Page {
             if (run_length >= count) {
                 const start_idx = run_start.?;
 
-                // Remove all pages from free list and mark allocated
+                // Remove all pages from free list and mark allocated.
                 for (start_idx..start_idx + count) |j| {
                     const p = &arena.pages[j];
 
@@ -444,7 +444,7 @@ pub fn allocContiguous(count: usize, alignment_log2: u8) ?[]Page {
                     }
                 }
 
-                // Mark head page
+                // Mark head page.
                 arena.pages[start_idx].flags.contiguous_head = true;
                 pmm.free_count -= count;
 
@@ -485,7 +485,7 @@ pub fn freeContiguous(pages: []Page) FreeContiguousError!void {
         return error.NotContiguousHead;
     }
 
-    // Find arena containing this page
+    // Find arena containing this page.
     const arena = findArenaForPage(head) orelse return error.AddressNotInArena;
     const start_idx = (@intFromPtr(head) - @intFromPtr(arena.pages.ptr)) / @sizeOf(Page);
     const end_idx = std.math.add(usize, start_idx, pages.len) catch return error.AddressNotInArena;
@@ -500,7 +500,7 @@ pub fn freeContiguous(pages: []Page) FreeContiguousError!void {
         if (page.state != .allocated) {
             return error.NotAllocated;
         }
-        // Ensure no nested contiguous_head (except the first page)
+        // Ensure no nested contiguous_head (except the first page).
         if (i != start_idx and page.flags.contiguous_head) {
             return error.InvalidPageState;
         }
@@ -510,7 +510,7 @@ pub fn freeContiguous(pages: []Page) FreeContiguousError!void {
     // but we clear it explicitly first for clarity)
     head.flags.contiguous_head = false;
 
-    // Now free all pages
+    // Now free all pages.
     for (start_idx..end_idx) |i| {
         freePageLocked(&arena.pages[i]);
     }
@@ -559,7 +559,7 @@ fn initArena(base: u64, size: u64, arena_idx: u8) bool {
     const total_pages: usize = @intCast(aligned_size / PAGE_SIZE);
     if (total_pages == 0) return false;
 
-    // Calculate metadata size (checked - overflow means DTB claims impossible memory)
+    // Calculate metadata size (checked - overflow means DTB claims impossible memory).
     const metadata_bytes = std.math.mul(usize, total_pages, @sizeOf(Page)) catch
         @panic(panic_msg.ARITHMETIC_OVERFLOW);
     const metadata_pages = (metadata_bytes + PAGE_SIZE - 1) / PAGE_SIZE;
@@ -572,13 +572,13 @@ fn initArena(base: u64, size: u64, arena_idx: u8) bool {
     const usable_pages = total_pages - metadata_pages;
     const base_usize: usize = @intCast(aligned_base);
 
-    // Place metadata at end of region (checked arithmetic)
+    // Place metadata at end of region (checked arithmetic).
     const usable_bytes = std.math.mul(usize, usable_pages, PAGE_SIZE) catch
         @panic(panic_msg.ARITHMETIC_OVERFLOW);
     const metadata_phys = base_usize + usable_bytes;
     const metadata_virt = hal.mmu.physToVirt(metadata_phys);
 
-    // Initialize arena
+    // Initialize arena.
     var arena = &pmm.arenas[pmm.arena_count];
     arena.base_phys = base_usize;
     arena.page_count = total_pages;
@@ -588,7 +588,7 @@ fn initArena(base: u64, size: u64, arena_idx: u8) bool {
     const pages_ptr: [*]Page = @ptrFromInt(metadata_virt);
     arena.pages = pages_ptr[0..total_pages];
 
-    // Initialize all Page structs
+    // Initialize all Page structs.
     for (arena.pages, 0..) |*page, i| {
         page.* = Page{
             .arena_idx = arena_idx,
@@ -596,7 +596,7 @@ fn initArena(base: u64, size: u64, arena_idx: u8) bool {
         };
     }
 
-    // Mark metadata pages as reserved
+    // Mark metadata pages as reserved.
     recordReserved(metadata_phys, metadata_phys + metadata_pages * PAGE_SIZE);
 
     pmm.total_pages += usable_pages;
@@ -635,20 +635,20 @@ fn markRangeReserved(base: u64, size: u64) void {
             @panic(panic_msg.ARITHMETIC_OVERFLOW);
         const arena_end: u64 = arena_base +% arena_size;
 
-        // Check overlap
+        // Check overlap.
         if (range_end <= arena_base or base >= arena_end) continue;
 
-        // Clamp to arena
+        // Clamp to arena.
         const start: u64 = @max(base, arena_base);
         const end: u64 = @min(range_end, arena_end);
         if (end <= start) continue;
 
-        // Calculate page range
+        // Calculate page range.
         const start_pfn: usize = @intCast((start - arena_base) / PAGE_SIZE);
         const end_pfn: usize = @intCast((end - arena_base + PAGE_SIZE - 1) / PAGE_SIZE);
         const clamped_end = @min(end_pfn, arena.usable_pages);
 
-        // Mark pages as reserved
+        // Mark pages as reserved.
         for (start_pfn..clamped_end) |pfn| {
             arena.pages[pfn].state = .reserved;
         }
@@ -667,14 +667,14 @@ fn buildFreeList() void {
             // Skip if reserved or already marked
             if (page.state == .reserved) continue;
 
-            // Double-check against reserved ranges
+            // Double-check against reserved ranges.
             const phys = arena.base_phys + i * PAGE_SIZE;
             if (isReserved(phys)) {
                 page.state = .reserved;
                 continue;
             }
 
-            // Add to free list
+            // Add to free list.
             page.state = .free;
             pmm.free_list.pushBack(page);
             pmm.free_count += 1;
@@ -763,14 +763,14 @@ test "maps arena pages to physical addresses and back" {
         .pages = &pages,
     };
 
-    // Test each page
+    // Test each page.
     for (0..4) |i| {
         const phys = 0x1000 + i * PAGE_SIZE;
         const page = arena.physToPage(phys).?;
         try std.testing.expectEqual(phys, arena.pageToPhys(page));
     }
 
-    // Out of range
+    // Out of range.
     try std.testing.expectEqual(@as(?*Page, null), arena.physToPage(0x0000));
     try std.testing.expectEqual(@as(?*Page, null), arena.physToPage(0x5000));
 }

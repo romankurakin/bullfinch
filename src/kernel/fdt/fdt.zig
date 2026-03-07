@@ -221,11 +221,11 @@ test "parses readCells big-endian values" {
     const data64 = [_]u8{ 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00 };
     try std.testing.expectEqual(@as(u64, 0x80000000), readCells(&data64, 2).?);
 
-    // Full 64-bit value
+    // Full 64-bit value.
     const data64_full = [_]u8{ 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0 };
     try std.testing.expectEqual(@as(u64, 0x123456789ABCDEF0), readCells(&data64_full, 2).?);
 
-    // Invalid cell count returns null
+    // Invalid cell count returns null.
     try std.testing.expect(readCells(&data32, 0) == null);
     try std.testing.expect(readCells(&data32, 3) == null);
 }
@@ -270,7 +270,7 @@ test "parses memory regions in parseRegEntry" {
 test "handles multiple entries in parseRegEntry" {
     const cells = CellSizes{ .addr_cells = 2, .size_cells = 1 };
 
-    // GIC reg: GICD at 0x8000000 + GICR at 0x80A0000
+    // GIC reg: GICD at 0x8000000 + GICR at 0x80A0000.
     const reg = [_]u8{
         0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x08, 0x0A, 0x00, 0x00, 0x00, 0xF6, 0x00, 0x00,
