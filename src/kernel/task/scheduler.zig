@@ -132,8 +132,10 @@ pub fn current() ?*Thread {
     return current_thread;
 }
 
-/// Timer tick. Updates vruntime and sets need_resched if preemption needed.
-pub fn tick() void {
+/// Timer ticks. Updates vruntime and sets need_resched if preemption needed.
+pub fn tick(elapsed_ticks: u64) void {
+    if (elapsed_ticks == 0) return;
+
     const held = lock.guard();
     defer held.release();
 
@@ -141,8 +143,9 @@ pub fn tick() void {
     if (curr.weight == 0) @panic(panic_msg.ZERO_WEIGHT);
 
     // vruntime delta inversely proportional to weight (higher weight = more CPU time).
-    const elapsed_ns = task.SCHED_TIME_SLICE_NS;
-    const delta = elapsed_ns * @as(u64, task.SCHED_BASE_WEIGHT) / @as(u64, curr.weight);
+    const elapsed_ns = @as(u128, task.SCHED_TIME_SLICE_NS) * elapsed_ticks;
+    const scaled_delta = elapsed_ns * task.SCHED_BASE_WEIGHT / curr.weight;
+    const delta: u64 = @intCast(@min(scaled_delta, @as(u128, std.math.maxInt(u64))));
     curr.virtual_runtime +|= delta;
     if (comptime trace.debug_kernel) trace.emit(.sched_tick, curr.id, curr.virtual_runtime, 0);
 

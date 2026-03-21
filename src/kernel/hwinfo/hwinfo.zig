@@ -87,6 +87,16 @@ pub const HardwareInfo = struct {
     pub fn reservedRegions(self: *const HardwareInfo) []const Region {
         return self.reserved_regions[0..self.reserved_region_count];
     }
+
+    /// Highest exclusive physical address covered by any RAM region.
+    pub fn maxMemoryEnd(self: *const HardwareInfo) u64 {
+        var max_end: u64 = 0;
+        for (self.memoryRegions()) |region| {
+            const end = region.base +| region.size;
+            if (end > max_end) max_end = end;
+        }
+        return max_end;
+    }
 };
 
 /// Global hardware info, populated by init().
@@ -348,6 +358,15 @@ test "returns valid slice from HardwareInfo.reservedRegions" {
     const regions = hw.reservedRegions();
     try testing.expectEqual(@as(usize, 1), regions.len);
     try testing.expectEqual(@as(u64, 0x8000_0000), regions[0].base);
+}
+
+test "reports the highest exclusive physical end across memory regions" {
+    var hw = HardwareInfo{};
+    hw.memory_regions[0] = .{ .base = 0x4000_0000, .size = 0x1000_0000 };
+    hw.memory_regions[1] = .{ .base = 0x1_2000_0000, .size = 0x2000_0000 };
+    hw.memory_region_count = 2;
+
+    try testing.expectEqual(@as(u64, 0x1_4000_0000), hw.maxMemoryEnd());
 }
 
 test "sorts regions by size descending" {

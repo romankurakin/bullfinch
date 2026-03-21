@@ -72,7 +72,7 @@ pub fn virtInit() void {
     const dtb = getDtb() orelse @panic(panic_msg.DTB_REQUIRED);
     hwinfo.init(hal.boot.dtb_ptr, dtb);
 
-    hal.mmu.expandPhysmap(hwinfo.info.total_memory);
+    hal.mmu.expandPhysmap(@intCast(hwinfo.info.maxMemoryEnd()));
 
     hal.mmu.removeIdentityMapping();
     boot_log.virt();

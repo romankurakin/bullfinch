@@ -119,9 +119,16 @@ pub fn build(b: *std.Build) void {
     // Tests run on host (native target).
     const test_step = b.step("test", "Run all tests");
     const native_target = b.resolveTargetQuery(.{});
+    const test_board_module = b.createModule(.{
+        .root_source_file = b.path("src/kernel/test_board.zig"),
+        .target = native_target,
+    });
     const test_module = b.createModule(.{
         .root_source_file = b.path("src/kernel/test.zig"),
         .target = native_target,
+        .imports = &.{
+            .{ .name = "board", .module = test_board_module },
+        },
     });
     const kernel_tests = b.addTest(.{
         .root_module = test_module,

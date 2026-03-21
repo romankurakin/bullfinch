@@ -469,6 +469,9 @@ pub const FreeContiguousError = error{
 };
 
 /// Free a contiguous allocation returned by allocContiguous.
+///
+/// The caller must pass the exact slice returned by allocContiguous.
+/// The PMM does not record allocation length.
 pub fn freeContiguous(pages: []Page) FreeContiguousError!void {
     if (pmm.arena_count == 0) {
         @panic(panic_msg.NOT_INITIALIZED);
@@ -481,14 +484,32 @@ pub fn freeContiguous(pages: []Page) FreeContiguousError!void {
     const held = pmm.lock.guard();
     defer held.release();
 
+    // Find arena containing this page.
+    const arena = findArenaForPage(head) orelse return error.AddressNotInArena;
+    const range = try validateContiguousRange(arena, head, pages.len);
+
+    // Clear contiguous_head flag before freeing (freePageLocked will clear all flags,
+    // but we clear it explicitly first for clarity)
+    head.flags.contiguous_head = false;
+
+    // Now free all pages.
+    for (range.start_idx..range.end_idx) |i| {
+        freePageLocked(&arena.pages[i]);
+    }
+}
+
+const ContiguousRange = struct {
+    start_idx: usize,
+    end_idx: usize,
+};
+
+fn validateContiguousRange(arena: *const Arena, head: *const Page, len: usize) FreeContiguousError!ContiguousRange {
     if (!head.flags.contiguous_head) {
         return error.NotContiguousHead;
     }
 
-    // Find arena containing this page.
-    const arena = findArenaForPage(head) orelse return error.AddressNotInArena;
     const start_idx = (@intFromPtr(head) - @intFromPtr(arena.pages.ptr)) / @sizeOf(Page);
-    const end_idx = std.math.add(usize, start_idx, pages.len) catch return error.AddressNotInArena;
+    const end_idx = std.math.add(usize, start_idx, len) catch return error.AddressNotInArena;
 
     // Validate all pages in range are allocated (not free/reserved) before freeing any.
     // This catches caller errors like wrong count or double-free of contiguous range.
@@ -506,14 +527,7 @@ pub fn freeContiguous(pages: []Page) FreeContiguousError!void {
         }
     }
 
-    // Clear contiguous_head flag before freeing (freePageLocked will clear all flags,
-    // but we clear it explicitly first for clarity)
-    head.flags.contiguous_head = false;
-
-    // Now free all pages.
-    for (start_idx..end_idx) |i| {
-        freePageLocked(&arena.pages[i]);
-    }
+    return .{ .start_idx = start_idx, .end_idx = end_idx };
 }
 
 /// Get physical address from Page pointer.
@@ -800,3 +814,4 @@ test "defaults Page state to free" {
 test "keeps Page.Flags packed to one byte" {
     try std.testing.expectEqual(@as(usize, 1), @sizeOf(Page.Flags));
 }
+

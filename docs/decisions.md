@@ -88,6 +88,10 @@ for legacy DMA that requires sub-4GB memory.
 **Debug:** Poison fills (0xDE) over zeroing. Use-after-free causes predictable
 corruption (0xDEDEDEDE), making bugs obvious instead of silent.
 
+**Contiguous free:** Caller-owned length (Zircon) over PMM-stored length (Linux
+compound pages). PMM validates head flag and page state; the caller owns the
+slice size. Keeps per-page metadata minimal.
+
 ---
 
 ## Rung 7: Kernel Object Allocator

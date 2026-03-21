@@ -38,9 +38,8 @@ const UnmapError = mmu_types.UnmapError;
 pub const KERNEL_VIRT_BASE: usize = 0xFFFF_FF80_0000_0000;
 
 /// Offset from KERNEL_VIRT_BASE for kernel stack region.
-/// Must be beyond physmap (RAM). 8GB offset supports systems up to 8GB RAM.
-/// Each stack slot is 12KB; 256 threads need ~3MB of VA space.
-pub const KSTACK_REGION_OFFSET: usize = 8 * (1 << 30); // 8GB
+/// Reserve the top 1GB TTBR1 slot for stacks so physmap expansion cannot overlap it.
+pub const KSTACK_REGION_OFFSET: usize = (ENTRIES_PER_TABLE - 1) * (1 << 30);
 
 const BLOCK_1GB_SIZE: usize = 1 << 30;
 const BLOCK_1GB_MASK: usize = BLOCK_1GB_SIZE - 1;
@@ -542,9 +541,9 @@ pub fn unmapPageAndFlush(root: *PageTable, vaddr: usize) UnmapError!usize {
 var l1_table_low: PageTable align(PAGE_SIZE) = PageTable.EMPTY;
 var l1_table_high: PageTable align(PAGE_SIZE) = PageTable.EMPTY;
 
-/// Maximum L1 index for physmap (512 entries, 0-511).
-/// With 39-bit VA (T1SZ=25), TTBR1 maps up to 512GB.
-const MAX_PHYSMAP_ENTRIES: usize = ENTRIES_PER_TABLE;
+/// Maximum number of 1GB physmap slots.
+/// Reserve the final slot for kernel stacks.
+const MAX_PHYSMAP_ENTRIES: usize = ENTRIES_PER_TABLE - 1;
 
 var stored_kernel_phys_load: usize = 0;
 var physmap_end_gb: usize = 0;
@@ -608,12 +607,11 @@ pub fn init(kernel_phys_load: usize, dtb_ptr: usize) void {
     SystemControlRegister.enableMmu();
 }
 
-/// Expand physmap to cover all RAM. Called after DTB is readable.
+/// Expand physmap to cover RAM up to the highest physical memory address.
 /// Uses 1GB blocks - no page allocation needed, just L1 entries.
 /// Called from virtInit() on primary core before SMP.
-pub fn expandPhysmap(ram_size: usize) void {
-    const new_end = stored_kernel_phys_load + ram_size;
-    const new_end_gb = @min((new_end + (1 << 30) - 1) >> 30, MAX_PHYSMAP_ENTRIES);
+pub fn expandPhysmap(max_phys_end: usize) void {
+    const new_end_gb = @min((max_phys_end + (1 << 30) - 1) >> 30, MAX_PHYSMAP_ENTRIES);
 
     var gb = physmap_end_gb;
     while (gb < new_end_gb) : (gb += 1) {
@@ -624,6 +622,41 @@ pub fn expandPhysmap(ram_size: usize) void {
     if (new_end_gb > physmap_end_gb) {
         TranslationLookasideBuffer.flushLocal(); // Local only - secondary cores not running yet
         physmap_end_gb = new_end_gb;
+    }
+}
+
+fn tableEmpty(table: *const PageTable) bool {
+    for (table.entries) |entry| {
+        if (entry.isValid()) return false;
+    }
+    return true;
+}
+
+/// Reclaim empty page-table pages below a kernel-owned top-level slot.
+pub fn reclaimEmptyTables(root: *PageTable, vaddr: usize, free_page: *const fn (usize) void) void {
+    if (!VirtualAddress.isCanonical(vaddr)) return;
+
+    const va = VirtualAddress.parse(vaddr);
+    const l1_entry = &root.entries[va.l1];
+    if (!l1_entry.isValid() or !l1_entry.isTable()) return;
+
+    const l2_table: *PageTable = @ptrFromInt(physToVirt(l1_entry.physAddr()));
+    const l2_entry = &l2_table.entries[va.l2];
+    if (!l2_entry.isValid() or !l2_entry.isTable()) return;
+
+    const l3_table: *PageTable = @ptrFromInt(physToVirt(l2_entry.physAddr()));
+    if (tableEmpty(l3_table)) {
+        const l3_virt = physToVirt(l2_entry.physAddr());
+        l2_entry.* = PageTableEntry.INVALID;
+        storeBarrier();
+        free_page(l3_virt);
+    }
+
+    if (tableEmpty(l2_table)) {
+        const l2_virt = physToVirt(l1_entry.physAddr());
+        l1_entry.* = PageTableEntry.INVALID;
+        storeBarrier();
+        free_page(l2_virt);
     }
 }
 

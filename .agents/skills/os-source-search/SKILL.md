@@ -1,7 +1,6 @@
 ---
 name: os-source-search
 description: Search reference OS source code online (Linux, xv6, seL4, MINIX3, Fuchsia/Zircon, FreeBSD). Use when looking up implementation patterns, understanding how production or teaching OSes handle specific features, or finding reference code for scheduler, memory management, IPC, drivers, syscalls.
-allowed-tools: WebFetch, WebSearch
 ---
 
 # OS Source Search Skill

@@ -7,7 +7,7 @@
 //! We use a 100 Hz tick rate (10ms per tick). Each tick:
 //! 1. Increment the tick counter
 //! 2. Schedule the next timer deadline (absolute, not relative, to prevent drift)
-//! 3. Call the scheduler hook for preemption (once scheduling is implemented)
+//! 3. Call the scheduler hook for preemption and CPU accounting
 //!
 //! Monotonic time combines ticks with the hardware counter for sub-tick precision.
 //!
@@ -38,8 +38,8 @@ var next_tick: u64 = 0;
 /// Number of timer ticks since boot.
 var tick_count: u64 = 0;
 
-/// Optional scheduler callback, invoked on each tick.
-var scheduler_tick: ?*const fn () void = null;
+/// Optional scheduler callback, invoked with the number of elapsed ticks.
+var scheduler_tick: ?*const fn (u64) void = null;
 
 /// Initialize clock subsystem. Timer frequency must be initialized first.
 pub fn init() void {
@@ -62,28 +62,42 @@ fn computeTicksPerInterval(freq: u64) u64 {
     return freq / TICK_RATE_HZ;
 }
 
-/// Register scheduler tick callback. Called once per tick for preemption.
-pub fn setSchedulerTick(callback: *const fn () void) void {
+/// Register scheduler tick callback. Called with the number of elapsed ticks.
+pub fn setSchedulerTick(callback: *const fn (u64) void) void {
     scheduler_tick = callback;
 }
 
 /// Handle timer interrupt. Called from trap handler.
 pub fn handleTimerIrq() void {
     const now = hal.timer.now();
-    tick_count += 1;
-
-    // Absolute deadlines prevent drift; catch up if we missed ticks
-    next_tick += ticks_per_interval;
-    if (next_tick <= now) {
-        const missed = (now - next_tick) / ticks_per_interval + 1;
-        next_tick += missed * ticks_per_interval;
-    }
+    const advance = advanceTickState(now, next_tick, ticks_per_interval);
+    tick_count += advance.elapsed_ticks;
+    next_tick = advance.next_tick;
 
     hal.timer.setDeadline(next_tick);
 
     if (scheduler_tick) |callback| {
-        callback();
+        callback(advance.elapsed_ticks);
     }
+}
+
+const TickAdvance = struct {
+    elapsed_ticks: u64,
+    next_tick: u64,
+};
+
+/// Advance periodic timer state from the scheduled deadline to `now`.
+fn advanceTickState(now: u64, scheduled_tick: u64, interval: u64) TickAdvance {
+    var elapsed_ticks: u64 = 1;
+    var deadline = scheduled_tick + interval;
+
+    if (deadline <= now) {
+        const missed = (now - deadline) / interval + 1;
+        elapsed_ticks += missed;
+        deadline += missed * interval;
+    }
+
+    return .{ .elapsed_ticks = elapsed_ticks, .next_tick = deadline };
 }
 
 /// Convert timer ticks to nanoseconds.
@@ -132,4 +146,18 @@ test "compute ticks per interval with valid frequencies" {
     try std.testing.expectEqual(@as(u64, 1), computeTicksPerInterval(100));
     try std.testing.expectEqual(@as(u64, 2), computeTicksPerInterval(200));
     try std.testing.expectEqual(@as(u64, 123), computeTicksPerInterval(12_300));
+}
+
+test "advanceTickState handles a single elapsed tick" {
+    const advance = advanceTickState(1_000, 1_000, 100);
+
+    try std.testing.expectEqual(@as(u64, 1), advance.elapsed_ticks);
+    try std.testing.expectEqual(@as(u64, 1_100), advance.next_tick);
+}
+
+test "advanceTickState accounts for missed intervals" {
+    const advance = advanceTickState(1_350, 1_000, 100);
+
+    try std.testing.expectEqual(@as(u64, 4), advance.elapsed_ticks);
+    try std.testing.expectEqual(@as(u64, 1_400), advance.next_tick);
 }

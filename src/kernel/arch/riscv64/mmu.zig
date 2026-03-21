@@ -38,9 +38,8 @@ const UnmapError = mmu_types.UnmapError;
 pub const KERNEL_VIRT_BASE: usize = 0xFFFF_8000_0000_0000;
 
 /// Offset from KERNEL_VIRT_BASE for kernel stack region.
-/// Must be beyond physmap (RAM). 8GB offset supports systems up to 8GB RAM.
-/// Stays within L3[256] (physmap) to use existing page table hierarchy.
-pub const KSTACK_REGION_OFFSET: usize = 8 * (1 << 30); // 8GB
+/// Reserve the final 1GB physmap slot for stacks.
+pub const KSTACK_REGION_OFFSET: usize = (ENTRIES_PER_TABLE - 1) * (1 << 30);
 
 /// Highest exclusive address in lower canonical range (bit 47 = 0).
 const LOWER_CANONICAL_LIMIT: usize = @as(usize, 1) << 47;
@@ -494,9 +493,9 @@ var root_table: PageTable align(PAGE_SIZE) = PageTable.EMPTY; // L3
 var l2_identity_table: PageTable align(PAGE_SIZE) = PageTable.EMPTY; // L2 for identity mapping
 var l2_physmap_table: PageTable align(PAGE_SIZE) = PageTable.EMPTY; // L2 for kernel physmap
 
-/// Maximum physmap entries (512 gigapages = 512GB).
-/// L3 entry 256 points to l2_physmap_table with 512 entries.
-const MAX_PHYSMAP_ENTRIES: usize = ENTRIES_PER_TABLE;
+/// Maximum number of 1GB physmap slots.
+/// L3 entry 256 points to l2_physmap_table; reserve the final slot for stacks.
+const MAX_PHYSMAP_ENTRIES: usize = ENTRIES_PER_TABLE - 1;
 
 /// VPN3 index for kernel higher-half (bit 47 = 1).
 const KERNEL_VPN3: usize = (KERNEL_VIRT_BASE >> 39) & 0x1FF; // 256
@@ -547,13 +546,12 @@ pub fn init(kernel_phys_load: usize, dtb_ptr: usize) void {
     TranslationLookasideBuffer.flushAll();
 }
 
-/// Expand physmap to cover all RAM. Called after DTB is readable.
+/// Expand physmap to cover RAM up to the highest physical memory address.
 /// Uses 1GB gigapages in l2_physmap_table.
 ///
 /// BOOT-TIME ONLY: Called from virtInit() on primary hart before SMP.
-pub fn expandPhysmap(ram_size: usize) void {
-    const new_end = stored_kernel_phys_load + ram_size;
-    const new_end_gb = @min((new_end + (1 << 30) - 1) >> 30, MAX_PHYSMAP_ENTRIES);
+pub fn expandPhysmap(max_phys_end: usize) void {
+    const new_end_gb = @min((max_phys_end + (1 << 30) - 1) >> 30, MAX_PHYSMAP_ENTRIES);
 
     var gb = physmap_end_gb;
     while (gb < new_end_gb) : (gb += 1) {
@@ -564,6 +562,45 @@ pub fn expandPhysmap(ram_size: usize) void {
     if (new_end_gb > physmap_end_gb) {
         TranslationLookasideBuffer.flushAll();
         physmap_end_gb = new_end_gb;
+    }
+}
+
+fn tableEmpty(table: *const PageTable) bool {
+    for (table.entries) |entry| {
+        if (entry.isValid()) return false;
+    }
+    return true;
+}
+
+/// Reclaim empty stack-region page tables below the static physmap L2 table.
+pub fn reclaimEmptyTables(root: *PageTable, vaddr: usize, free_page: *const fn (usize) void) void {
+    if (!VirtualAddress.isCanonical(vaddr)) return;
+
+    const va = VirtualAddress.parse(vaddr);
+    const l3_entry = &root.entries[va.vpn3];
+    if (!l3_entry.isValid() or l3_entry.isLeaf()) return;
+
+    const l2_table: *PageTable = @ptrFromInt(physToVirt(l3_entry.physAddr()));
+    const l2_entry = &l2_table.entries[va.vpn2];
+    if (!l2_entry.isValid() or l2_entry.isLeaf()) return;
+
+    const l1_table: *PageTable = @ptrFromInt(physToVirt(l2_entry.physAddr()));
+    const l1_entry = &l1_table.entries[va.vpn1];
+    if (!l1_entry.isValid() or l1_entry.isLeaf()) return;
+
+    const l0_table: *PageTable = @ptrFromInt(physToVirt(l1_entry.physAddr()));
+    if (tableEmpty(l0_table)) {
+        const l0_virt = physToVirt(l1_entry.physAddr());
+        l1_entry.* = PageTableEntry.INVALID;
+        fence();
+        free_page(l0_virt);
+    }
+
+    if (tableEmpty(l1_table)) {
+        const l1_virt = physToVirt(l2_entry.physAddr());
+        l2_entry.* = PageTableEntry.INVALID;
+        fence();
+        free_page(l1_virt);
     }
 }
 
