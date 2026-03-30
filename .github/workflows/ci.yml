@@ -7,7 +7,8 @@ on:
     branches: [main, master]
 
 jobs:
-  test:
+  test-arm64:
+    name: Test (ARM64)
     runs-on: ubuntu-24.04-arm
     env:
       ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/zig-cache
@@ -30,21 +31,74 @@ jobs:
         uses: actions/cache@v3
         with:
           path: zig-cache
-          key: ${{ runner.os }}-zig-${{ hashFiles('build.zig', 'src/**/*.zig') }}
+          key: arm64-zig-${{ hashFiles('build.zig', 'flake.nix', 'justfile', 'infra/**/*.zig', 'infra/**/*.json', 'src/**/*.zig') }}
           restore-keys: |
-            ${{ runner.os }}-zig-
-
-      - name: Check formatting
-        run: nix develop -c find . -name "*.zig" -not -path "./zig-cache/*" -not -path "./zig-out/*" -exec zig fmt --check {} \;
-
-      - name: Build ARM64
-        run: nix develop -c just build-arm64
-
-      - name: Build RISC-V64
-        run: nix develop -c just build-riscv64
+            arm64-zig-
 
       - name: Run unit tests
         run: nix develop -c just test
+
+  test-riscv64:
+    name: Test (RISC-V64)
+    runs-on: ubuntu-24.04-riscv
+    env:
+      ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/zig-cache
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Create zig-cache directory
+        run: mkdir -p zig-cache
+
+      - name: Cache Zig build cache
+        uses: actions/cache@v3
+        with:
+          path: zig-cache
+          key: riscv64-zig-${{ hashFiles('build.zig', 'flake.nix', 'justfile', 'infra/**/*.zig', 'infra/**/*.json', 'src/**/*.zig') }}
+          restore-keys: |
+            riscv64-zig-
+
+      - name: Run unit tests
+        run: nix develop -c just test
+
+  smoke:
+    name: Smoke
+    runs-on: ubuntu-24.04
+    env:
+      ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/zig-cache
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Create zig-cache directory
+        run: mkdir -p zig-cache
+
+      - name: Cache Zig build cache
+        uses: actions/cache@v3
+        with:
+          path: zig-cache
+          key: x64-zig-${{ hashFiles('build.zig', 'flake.nix', 'justfile', 'infra/**/*.zig', 'infra/**/*.json', 'src/**/*.zig') }}
+          restore-keys: |
+            x64-zig-
+
+      - name: Check formatting
+        run: nix develop -c find . -name "*.zig" -not -path "./zig-cache/*" -not -path "./zig-out/*" -exec zig fmt --check {} \;
 
       - name: Smoke test (boot both architectures in QEMU)
         run: nix develop -c just smoke
