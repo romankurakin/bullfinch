@@ -48,11 +48,11 @@ test-filter FILTER:
 
 smoke ARGS="": build-arm64 build-arm64-release build-riscv64 build-riscv64-release
     @echo "test: smoke"
-    @zig build smoke -- {{ARGS}}
+    @zig build -Dtarget=aarch64-freestanding smoke -- {{ARGS}}
 
 peek: build-arm64 build-arm64-release build-riscv64 build-riscv64-release
     @echo "test: peek"
-    @zig build smoke -- --peek
+    @zig build -Dtarget=aarch64-freestanding smoke -- --peek
 
 # Tools
 
