@@ -25,11 +25,6 @@
           ];
 
           shellHook = ''
-            # Workaround: Zig's setup hook sets ZIG_GLOBAL_CACHE_DIR to a sandbox path
-            # that doesn't exist outside the build. Force override to local directory.
-            # Fix pending: https://github.com/NixOS/nixpkgs/pull/479423
-            export ZIG_GLOBAL_CACHE_DIR="$PWD/zig-cache"
-
             echo "Bullfinch development environment"
             echo "Just: $(just --version)"
             echo "Zig: $(zig version)"

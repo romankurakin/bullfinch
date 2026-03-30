@@ -82,7 +82,7 @@ pub const TrapFrame = extern struct {
     /// Get syscall argument by index (0-5 maps to a0-a5/x10-x15).
     pub inline fn syscallArg(self: *const TrapFrame, n: u3) usize {
         if (n > 5) return 0;
-        return self.regs[9 + n]; // x10 is at regs[9]
+        return self.regs[9 + @as(usize, n)]; // x10 is at regs[9]
     }
 
     /// Set syscall return value (a0/x10 register).

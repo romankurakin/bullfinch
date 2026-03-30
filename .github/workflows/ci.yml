@@ -10,8 +10,6 @@ jobs:
   test-arm64:
     name: Test (ARM64)
     runs-on: ubuntu-24.04-arm
-    env:
-      ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/zig-cache
 
     steps:
       - name: Checkout code
@@ -19,30 +17,17 @@ jobs:
         with:
           submodules: true
 
-      - name: Install Nix
-        uses: cachix/install-nix-action@v31
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2.2.1
         with:
-          nix_path: nixpkgs=channel:nixos-unstable
-
-      - name: Create zig-cache directory
-        run: mkdir -p zig-cache
-
-      - name: Cache Zig build cache
-        uses: actions/cache@v3
-        with:
-          path: zig-cache
-          key: arm64-zig-${{ hashFiles('build.zig', 'flake.nix', 'justfile', 'infra/**/*.zig', 'infra/**/*.json', 'src/**/*.zig') }}
-          restore-keys: |
-            arm64-zig-
+          version: 0.15.2
 
       - name: Run unit tests
-        run: nix develop -c just test
+        run: zig build test --summary all
 
   test-riscv64:
     name: Test (RISC-V64)
     runs-on: ubuntu-24.04-riscv
-    env:
-      ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/zig-cache
 
     steps:
       - name: Checkout code
@@ -50,24 +35,13 @@ jobs:
         with:
           submodules: true
 
-      - name: Install Nix
-        uses: cachix/install-nix-action@v31
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2.2.1
         with:
-          nix_path: nixpkgs=channel:nixos-unstable
-
-      - name: Create zig-cache directory
-        run: mkdir -p zig-cache
-
-      - name: Cache Zig build cache
-        uses: actions/cache@v3
-        with:
-          path: zig-cache
-          key: riscv64-zig-${{ hashFiles('build.zig', 'flake.nix', 'justfile', 'infra/**/*.zig', 'infra/**/*.json', 'src/**/*.zig') }}
-          restore-keys: |
-            riscv64-zig-
+          version: 0.15.2
 
       - name: Run unit tests
-        run: nix develop -c just test
+        run: zig build test --summary all
 
   smoke:
     name: Smoke

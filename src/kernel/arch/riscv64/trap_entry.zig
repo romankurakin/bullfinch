@@ -274,6 +274,26 @@ fn genCallerRestoreAsm() []const u8 {
 
 const mem = std.mem;
 
+fn expectAsmContains(comptime asm_str: []const u8, comptime needle: []const u8) !void {
+    try std.testing.expect(mem.indexOf(u8, asm_str, needle) != null);
+}
+
+fn expectAsmOmits(comptime asm_str: []const u8, comptime needle: []const u8) !void {
+    try std.testing.expect(mem.indexOf(u8, asm_str, needle) == null);
+}
+
+fn expectAsmContainsAll(comptime asm_str: []const u8, comptime needles: []const []const u8) !void {
+    inline for (needles) |needle| {
+        try expectAsmContains(asm_str, needle);
+    }
+}
+
+fn expectAsmOmitsAll(comptime asm_str: []const u8, comptime needles: []const []const u8) !void {
+    inline for (needles) |needle| {
+        try expectAsmOmits(asm_str, needle);
+    }
+}
+
 test "generates full-save entry asm with expected structure" {
     const asm_str = comptime genEntryAsm(.{
         .full_save = true,
@@ -302,14 +322,44 @@ test "omits callee-saved registers in fast-path entry asm" {
     try std.testing.expect(mem.indexOf(u8, asm_str, "sd s11") == null);
 }
 
-test "keeps save/restore instruction counts matching" {
-    const full_sd = comptime mem.count(u8, genFullSaveAsm(false), "\nsd ");
-    const full_ld = comptime mem.count(u8, genFullRestoreAsm(), "\nld ");
-    const fast_sd = comptime mem.count(u8, genCallerSaveAsm(), "\nsd ");
-    const fast_ld = comptime mem.count(u8, genCallerRestoreAsm(), "\nld ");
+test "keeps save/restore coverage consistent" {
+    const fast_save = comptime genCallerSaveAsm();
+    const fast_restore = comptime genCallerRestoreAsm();
+    const full_save = comptime genFullSaveAsm(false);
+    const full_restore = comptime genFullRestoreAsm();
+    const pop_frame = comptime fmt.comptimePrint("addi sp, sp, {d}", .{FULL_FRAME_SIZE});
+    const fast_saved = [_][]const u8{
+        "sd ra,", "sd t0,", "sd t1,", "sd t2,",
+        "sd a0,", "sd a1,", "sd a2,", "sd a3,",
+        "sd a4,", "sd a5,", "sd a6,", "sd a7,",
+        "sd t3,", "sd t4,", "sd t5,", "sd t6,",
+        "csrr t0, sepc", "csrr t0, sstatus",
+    };
+    const fast_restored = [_][]const u8{
+        "ld ra,", "ld t0,", "ld t1,", "ld t2,",
+        "ld a0,", "ld a1,", "ld a2,", "ld a3,",
+        "ld a4,", "ld a5,", "ld a6,", "ld a7,",
+        "ld t3,", "ld t4,", "ld t5,", "ld t6,",
+        "csrw sepc, t0", "csrw sstatus, t0",
+    };
+    const full_saved_only = [_][]const u8{
+        "sd x2, 8(sp)",
+        comptime fmt.comptimePrint("sd t0, {d}(sp)", .{OFF_SP}),
+        comptime fmt.comptimePrint("sd t0, {d}(sp)", .{OFF_SCAUSE}),
+        comptime fmt.comptimePrint("sd t0, {d}(sp)", .{OFF_STVAL}),
+    };
+    const full_restored_omissions = [_][]const u8{
+        "ld x2, 8(sp)",
+        comptime fmt.comptimePrint("ld t0, {d}(sp)", .{OFF_SP}),
+        comptime fmt.comptimePrint("ld t0, {d}(sp)", .{OFF_SCAUSE}),
+        comptime fmt.comptimePrint("ld t0, {d}(sp)", .{OFF_STVAL}),
+    };
 
-    try std.testing.expectEqual(full_sd, full_ld);
-    try std.testing.expectEqual(fast_sd, fast_ld);
+    try expectAsmContainsAll(fast_save, &fast_saved);
+    try expectAsmContainsAll(fast_restore, &fast_restored);
+    try expectAsmContainsAll(full_save, &full_saved_only);
+    try expectAsmContains(full_restore, pop_frame);
+    try expectAsmOmitsAll(full_restore, &full_restored_omissions);
 }
 
 // Compile-time verification.
