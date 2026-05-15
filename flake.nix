@@ -6,28 +6,28 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
-    flake-utils.lib.eachSystem [
-      "x86_64-linux"
-      "aarch64-linux"
-      "riscv64-linux"
-    ] (system:
+  outputs = { nixpkgs, flake-utils, ... }:
+    flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
       in
       {
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
+            cargo
+            clippy
             just
-            zig
-            qemu
             llvm
+            qemu
+            rustc
+            rustfmt
           ];
 
           shellHook = ''
             echo "Bullfinch development environment"
+            echo "Rust: $(rustc --version)"
+            echo "Cargo: $(cargo --version)"
             echo "Just: $(just --version)"
-            echo "Zig: $(zig version)"
             echo "QEMU: $(qemu-system-aarch64 --version | head -1)"
             echo "LLVM: $(llvm-config --version)"
           '';

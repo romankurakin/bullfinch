@@ -1,8 +1,7 @@
 # Bullfinch
 
-Educational microkernel in Zig for ARM64 + RISC-V, inspired by MINIX 3 and
-Zircon. Named after the bird that thrives in harsh northern winters — built for
-learning, not production.
+Educational microkernel in Rust for ARM64 and RISC-V, inspired by MINIX 3 and
+Zircon. Built for clarity, correctness, and learning.
 
 ## Quick Start
 
@@ -10,15 +9,24 @@ learning, not production.
 just build-arm64      # or build-riscv64
 just qemu-arm64       # or qemu-riscv64
 just smoke            # smoke test both architectures
-just test             # run unit tests
+just test             # run host unit tests
+just lint             # run Clippy across tools and kernel targets
 ```
 
 ## Requirements
 
+- Rust toolchain with Cargo, rustfmt, and Clippy
+- Rust targets: `aarch64-unknown-none-softfloat`,
+  `riscv64gc-unknown-none-elf`
 - just
-- Zig
 - QEMU
-- LLVM
+- LLVM tools
+
+## Layout
+
+- `rust/kernel/` contains the freestanding kernel crate.
+- `tools/xtask/` contains the Rust developer tooling used by `just`.
+- `docs/` contains design notes, style rules, test guidance, and references.
 
 ## License
 

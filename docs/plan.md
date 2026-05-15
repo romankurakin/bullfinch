@@ -111,7 +111,7 @@ preemptive scheduling foundation.
 
 ### Rung 5: Device Tree Parsing
 
-**Implement:** libfdt integration, parse DTB for memory regions, interrupt
+**Implement:** Device tree parsing, parse DTB for memory regions, interrupt
 controller config (GIC/PLIC), peripheral addresses.
 
 **Questions:**
@@ -122,7 +122,7 @@ controller config (GIC/PLIC), peripheral addresses.
 **Research:**
 
 - Devicetree Specification defines node structure, properties, and bindings
-- libfdt API provides functions for traversing and querying DTB blobs
+- `repnop/fdt` provides a small zero-dependency parser suitable for `no_std`
 - Linux: drivers/of/ shows mature DTB parsing and driver matching
 - Zircon: board drivers parse DTB to configure platform-specific hardware
 - FreeBSD: FDT support in sys/dev/fdt/ for BSD-style implementation

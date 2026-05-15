@@ -1,0 +1,16 @@
+[target.aarch64-unknown-none-softfloat]
+rustflags = [
+  "-C", "link-arg=-Trust/kernel/boards/arm64/qemu_virt/kernel.ld",
+  "-C", "link-arg=--build-id=none",
+  "-C", "relocation-model=static",
+  "-C", "no-redzone=yes",
+]
+
+[target.riscv64gc-unknown-none-elf]
+rustflags = [
+  "-C", "link-arg=-Trust/kernel/boards/riscv64/qemu_virt/kernel.ld",
+  "-C", "link-arg=--build-id=none",
+  "-C", "relocation-model=static",
+  "-C", "code-model=medium",
+  "-C", "no-redzone=yes",
+]

@@ -3,19 +3,22 @@
 ## Commands
 
 ```bash
-just test                 # Unit tests (portable, host)
-just test-filter "name"   # Filter by name
-just smoke                # Integration (QEMU, dev+release on both archs)
+just test                 # Unit tests on the host.
+just test-filter "name"   # Run tests matching a filter.
+just lint                 # Clippy for tools, host kernel, and both targets.
+just smoke                # QEMU boot tests for both architectures.
+just peek                 # Brief QEMU boot output for both architectures.
 ```
 
 ## Structure
 
-Portable modules have inline `test` blocks run via `just test`. Non-portable
-modules are tested via `just smoke` which boots in QEMU.
+Portable kernel modules use Rust unit tests and run through `just test`.
+Architecture and hardware paths are validated by `just smoke`, which boots
+ARM64 and RISC-V in QEMU in debug and release mode.
 
 ## Naming
 
-Use `"Subject behavior"` pattern:
+Use the `"Subject behavior"` pattern:
 
 - `"translate handles 1GB block mappings"`
 

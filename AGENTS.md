@@ -1,73 +1,72 @@
-# Agent instructions for Bullfinch
+# Agent Instructions For Bullfinch
 
-Bullfinch is an educational microkernel inspired by MINIX 3 and Zircon.
-Prioritizes **clarity and correctness** over raw performance. Supports ARM64
+Bullfinch is an educational Rust microkernel inspired by MINIX 3 and Zircon.
+It prioritizes clarity and correctness over raw performance. It supports ARM64
 and RISC-V with capabilities-based security.
 
 ## Commands
 
 ```bash
-just build-arm64          # Build for ARM64
-just build-riscv64        # Build for RISC-V
+just build-arm64          # Build for ARM64.
+just build-riscv64        # Build for RISC-V.
 
-just qemu-arm64           # Run in QEMU (ARM64, interactive)
-just qemu-riscv64         # Run in QEMU (RISC-V, interactive)
+just qemu-arm64           # Run in QEMU (ARM64, interactive).
+just qemu-riscv64         # Run in QEMU (RISC-V, interactive).
 
-just peek-arm64           # Boot briefly, show console output
-just peek-riscv64         # Boot briefly, show console output
+just peek                 # Boot both architectures briefly.
+just peek-arm64           # Boot ARM64 briefly.
+just peek-riscv64         # Boot RISC-V briefly.
 
-just test                 # Unit tests (portable, runs on host)
-just test-filter "name"   # Run tests matching filter
-just smoke                # Integration tests (QEMU, both archs)
+just test                 # Unit tests on the host.
+just test-filter "name"   # Run tests matching filter.
+just lint                 # Clippy for tools and kernel targets.
+just smoke                # QEMU smoke tests for both architectures.
 
-just fmt                  # Format code
-just disasm-arm64         # Disassemble kernel (ARM64)
-just disasm-riscv64       # Disassemble kernel (RISC-V)
+just fmt                  # Format Rust code.
+just disasm-arm64         # Disassemble kernel (ARM64).
+just disasm-riscv64       # Disassemble kernel (RISC-V).
 ```
 
 ## Build System
 
-Single `build.zig` orchestrates:
-
-1. **Kernel** — Freestanding executable for target architecture
-2. **Userspace** — Each program compiled as separate executable
-3. **Packaging** — Userspace assembled into initramfs
-4. **Boards** — `-Dboard=<name>` selects from `src/kernel/arch/{arm64,riscv64}/boards/{board}/`
+Cargo builds the freestanding kernel crate. The `tools/xtask` Rust crate owns
+developer commands for building, QEMU smoke tests, formatting, linting,
+disassembly, and cleanup. `just` is a thin command runner over that Rust tool.
 
 ## Critical Rules
 
 ### Never
 
-- Use `undefined` without justification
-- Ignore errors or use `catch unreachable` without proof
-- Skip memory barriers (DSB/ISB on ARM64, fence on RISC-V)
-- Trust userspace input
-- Forget TLB ops after page table modifications
-- Hold locks across blocking operations or syscall boundaries
-- Use unbounded loops in kernel code (DoS risk)
-- Copy data between kernel/userspace without size validation
+- Use `unsafe` without a local safety proof.
+- Ignore errors where callers can recover.
+- Skip memory barriers (`DSB`/`ISB` on ARM64, `fence` on RISC-V).
+- Trust userspace, firmware, or device input.
+- Forget TLB maintenance after page table modifications.
+- Hold locks across blocking operations or syscall boundaries.
+- Use unbounded loops in kernel code where userspace can control progress.
+- Copy data between kernel and userspace without size validation.
 
 ### Always
 
-- Use explicit allocators (no hidden allocations)
-- Validate capability rights before operations
-- Use checked arithmetic for user values (`std.math.add`)
-- Test both ARM64 and RISC-V
-- Think: "What if interrupt fires right here?"
-- Document what locks protect what data
+- Prefer owned types and guards over raw handles.
+- Validate capability rights before operations.
+- Use checked arithmetic for user-controlled values.
+- Test both ARM64 and RISC-V.
+- Think: "What if an interrupt fires right here?"
+- Document what locks protect what data.
 
 ## Error Philosophy
 
-| Response   | When                                      | Example                                       |
-| ---------- | ----------------------------------------- | --------------------------------------------- |
-| `@panic()` | Kernel invariant violated, can't continue | Arithmetic overflow, double-free              |
-| `error`    | Caller mistake, they can recover          | Bad alignment, missing page table             |
-| `null`     | Absence of value, not an error            | OOM, lookup miss                              |
+| Response | When | Example |
+| --- | --- | --- |
+| `panic!()` | Kernel invariant violated, cannot continue | Arithmetic overflow, double-free |
+| `Result` | Caller mistake, caller can recover | Bad alignment, missing page table |
+| `Option` | Absence of value, not an error | OOM, lookup miss |
 
 ## Target Hardware
 
 | Platform | Architecture |
-|----------|--------------|
+| --- | --- |
 | QEMU virt | ARM64, RISC-V |
 | Raspberry Pi 5 | ARM64 (ARMv8.2-A) |
 | Orange Pi RV2 | RISC-V |
@@ -75,14 +74,16 @@ Single `build.zig` orchestrates:
 
 ## Architecture Notes
 
-- **Memory barriers** — Different per arch; required before hardware ops and TLB operations
-- **Privilege** — Exception vector alignment, register save sets, privilege boundary enforcement
-- **Hardware** — Interrupt controller config, timer access, MMU page table formats
+- **Memory barriers:** Different per architecture; required before hardware
+  operations and TLB maintenance.
+- **Privilege:** Exception vector alignment, register save sets, and privilege
+  boundary enforcement are architecture-specific.
+- **Hardware:** Interrupt controller setup, timer access, and MMU page table
+  formats live behind architecture modules.
 
 ## Documentation
 
-**Always read the relevant doc before performing a task** (e.g., read
-`docs/commits.md` before committing, `docs/code-style.md` before writing code).
+Always read the relevant doc before performing a task.
 
 - Roadmap: `docs/plan.md`
 - Design decisions: `docs/decisions.md`
@@ -94,13 +95,11 @@ Single `build.zig` orchestrates:
 
 ## Workflow
 
-For non-trivial changes, use plan mode to explore the codebase and design the
-approach before implementing. Run `just smoke` after changes to verify both
-architectures boot correctly.
+For non-trivial changes, explore the codebase and design the approach before
+editing. Run `just smoke` after architecture-sensitive changes.
 
 ## Skills
 
 Use `/os-reference-search` to search architecture specs (ARM, RISC-V) and OS
-books (OSTEP, OSDI3). Use `/pdf-search` for the general local PDF library via
-Sova. Use `/os-source-search` to look up implementation patterns in Linux, xv6,
-seL4, MINIX3, Fuchsia/Zircon, or FreeBSD.
+books (OSTEP, OSDI3). Use `/os-source-search` to look up implementation
+patterns in Linux, xv6, seL4, MINIX3, Fuchsia/Zircon, or FreeBSD.

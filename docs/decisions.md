@@ -72,8 +72,9 @@ drift accumulation—relative offsets compound timing errors.
 **Parsing strategy:** Upfront extraction into static struct over lazy on-demand.
 Avoids repeated parsing and chicken-egg with PMM initialization.
 
-**Module separation:** Pure DTB library (fdt.zig) separate from kernel device
-policy (hwinfo.zig). Library testable independently, reusable outside kernel.
+**Module separation:** Pure DTB parsing (`fdt`) separate from kernel device
+policy (`hwinfo`). Library code stays testable independently and reusable
+outside boot policy.
 
 ---
 
@@ -125,26 +126,8 @@ direct process switch. 8 bytes cost, avoids later refactor.
 **Single-wait:** One wait pointer over wait block array. Thread receives on
 endpoint OR bound notification—2 primitives instead of 3.
 
-**Rung 8 structs:**
-
-```zig
-const Process = struct { id: ProcessId, threads: ?*Thread };
-
-const Thread = struct {
-    id: ThreadId,
-    process: *Process,
-    state: State,
-    context: arch.Context,
-    trap_frame: *TrapFrame,
-    kernel_stack: [*]u8,
-    sched_next: ?*Thread,
-    blocked_on: ?*WaitQueue,
-    weight: u32,
-    virtual_runtime: u64,
-};
-```
-
-**Evolution:** +page_table/asid (Per-Task VM), +cpu (SMP), +sched_node (Tickless),
-+bound_notification (Async), +exception_channel (Faults).
+**Rung 8 model:** Processes and threads use opaque IDs for snapshots, owned
+kernel stacks, architecture-neutral contexts, and scheduler-private queues.
+Public code uses handles instead of reaching into the scheduler internals.
 
 ---

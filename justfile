@@ -1,70 +1,76 @@
-# Justfile for building and testing Bullfinch OS kernel
+# Justfile for building and testing Bullfinch.
 
 default:
     @just --list
 
+clippy := "cargo clippy"
+quiet := "--quiet"
+warnings := "-- -D warnings"
 
 build-arm64:
-    @echo "build: arm64"
-    @zig build -Dtarget=aarch64-freestanding -Dcpu=cortex_a76
+    @cargo run {{quiet}} -p bullfinch-tools -- build arm64 debug
 
 build-riscv64:
-    @echo "build: riscv64"
-    @zig build -Dtarget=riscv64-freestanding
+    @cargo run {{quiet}} -p bullfinch-tools -- build riscv64 debug
 
 build-arm64-release:
-    @echo "build: arm64 (release)"
-    @zig build -Dtarget=aarch64-freestanding -Dcpu=cortex_a76 -Doptimize=ReleaseFast
+    @cargo run {{quiet}} -p bullfinch-tools -- build arm64 release
 
 build-riscv64-release:
-    @echo "build: riscv64 (release)"
-    @zig build -Dtarget=riscv64-freestanding -Doptimize=ReleaseFast
-
-# Run in QEMU (uses boards.zig config)
+    @cargo run {{quiet}} -p bullfinch-tools -- build riscv64 release
 
 qemu-arm64:
-    @echo "qemu: arm64"
-    @zig build run -Dtarget=aarch64-freestanding -Dcpu=cortex_a76
+    @cargo run {{quiet}} -p bullfinch-tools -- qemu arm64 debug
 
 qemu-riscv64:
-    @echo "qemu: riscv64"
-    @zig build run -Dtarget=riscv64-freestanding
+    @cargo run {{quiet}} -p bullfinch-tools -- qemu riscv64 debug
 
 qemu-arm64-release:
-    @echo "qemu: arm64 (release)"
-    @zig build run -Dtarget=aarch64-freestanding -Dcpu=cortex_a76 -Doptimize=ReleaseFast
+    @cargo run {{quiet}} -p bullfinch-tools -- qemu arm64 release
 
 qemu-riscv64-release:
-    @echo "qemu: riscv64 (release)"
-    @zig build run -Dtarget=riscv64-freestanding -Doptimize=ReleaseFast
+    @cargo run {{quiet}} -p bullfinch-tools -- qemu riscv64 release
 
 test:
-    @echo "test: unit"
-    @zig build test --summary all
+    @cargo test {{quiet}} -p bullfinch-kernel --lib
 
 test-filter FILTER:
-    @echo "test: unit (filter={{FILTER}})"
-    @zig build test --summary all -Dtest-filter="{{FILTER}}"
+    @cargo test {{quiet}} -p bullfinch-kernel --lib "{{FILTER}}"
 
-smoke ARGS="": build-arm64 build-arm64-release build-riscv64 build-riscv64-release
-    @echo "test: smoke"
-    @zig build -Dtarget=aarch64-freestanding smoke -- {{ARGS}}
+lint: _lint-tools _lint-kernel (_lint-target "aarch64-unknown-none-softfloat") (_lint-target "riscv64gc-unknown-none-elf")
 
-peek: build-arm64 build-arm64-release build-riscv64 build-riscv64-release
-    @echo "test: peek"
-    @zig build -Dtarget=aarch64-freestanding smoke -- --peek
+_lint-tools:
+    @{{clippy}} {{quiet}} -p bullfinch-tools {{warnings}}
 
-# Tools
+_lint-kernel:
+    @{{clippy}} {{quiet}} -p bullfinch-kernel --lib {{warnings}}
+
+_lint-target target:
+    @{{clippy}} {{quiet}} -p bullfinch-kernel --target {{target}} --bin kernel {{warnings}}
+
+smoke:
+    @cargo run {{quiet}} -p bullfinch-tools -- smoke
+
+peek:
+    @cargo run {{quiet}} -p bullfinch-tools -- peek
+
+peek-arm64:
+    @cargo run {{quiet}} -p bullfinch-tools -- peek arm64
+
+peek-riscv64:
+    @cargo run {{quiet}} -p bullfinch-tools -- peek riscv64
 
 fmt:
-    @echo "fmt: src/"
-    @zig fmt src
+    @cargo fmt {{quiet}} --all
 
-disasm-arm64: build-arm64
-    @llvm-objdump -d --mattr=+all zig-out/kernel/arm64-qemu_virt-debug.elf
+fmt-check:
+    @cargo fmt {{quiet}} --all --check
 
-disasm-riscv64: build-riscv64
-    @llvm-objdump -d -M no-aliases zig-out/kernel/riscv64-qemu_virt-debug.elf
+disasm-arm64:
+    @cargo run {{quiet}} -p bullfinch-tools -- disasm arm64 debug
+
+disasm-riscv64:
+    @cargo run {{quiet}} -p bullfinch-tools -- disasm riscv64 debug
 
 clean:
-    @rm -rf zig-out zig-cache
+    @cargo run {{quiet}} -p bullfinch-tools -- clean

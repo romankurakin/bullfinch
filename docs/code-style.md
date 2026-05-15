@@ -1,44 +1,117 @@
 # Code Style
 
-See [Zig Language Reference](https://ziglang.org/documentation/master/) and
-[Zig Style Guide](https://ziglang.org/documentation/master/#Style-Guide).
+Bullfinch is Rust code first. Keep code explicit, small, and reviewable.
 
-## Project Conventions
+## Baseline
 
-- Use `@panic()` for unrecoverable kernel errors
-- Keep arch-specific code in `src/kernel/arch/{arm64,riscv64}/`
-- Use HAL abstractions for portable kernel code
-- Mark kernel entry points with `export`
-- Group panic messages in `panic_msg` struct (see `src/kernel/pmm.zig:10`)
-- Re-export only in module root files
-- Arch selection is target-driven. `build.zig` picks `src/kernel/arch/{arm64,riscv64}` and injects the board module. Use `hal` or the arch root to reach arch-specific code.
+- Use Rust 2024, `#![no_std]`, and `panic = "abort"` for kernel code.
+- Use `core` by default. Add `alloc` only when allocator initialization makes it
+  sound.
+- Keep FP/SIMD disabled or unused until save/restore support exists.
+- Run `just lint` before handing off kernel or tool changes.
 
-## Slices over raw pointer arithmetic
+Kernel crate attributes:
 
-Prefer returning and passing slices (`[]T`) instead of base pointers (`*T`)
-for multi-element allocations. Zig's built-in bounds checking on slice indexing
-provides free safety in debug builds with zero cost in release. Avoid helper
-functions that manually offset pointers when a slice would carry the length
-intrinsically.
+```rust
+#![no_std]
+#![deny(unsafe_op_in_unsafe_fn)]
+#![deny(unused_must_use)]
+```
 
-## Comment Tags
+## Rust API Rules
 
-`// TODO(scope):` — mark incomplete functionality or planned improvements
+- Prefer ownership, borrowing, guards, and `Drop` over raw handles.
+- Prefer newtypes for addresses, page counts, IDs, rights, ticks, frequencies,
+  and deadlines.
+- Prefer `Option` for absence and `Result` for recoverable caller errors.
+- Panic only for violated kernel invariants.
+- Keep unsafe implementation details module-private where practical.
+- Expose a safe API only when it is sound for every safe caller.
+- Keep architecture-specific code under `arch/{aarch64,riscv64}`. Portable
+  modules should consume architecture-neutral types.
 
-## Comment Style
+## Modules
 
-Use plain English and light punctuation. Avoid decorative separators.
+- Use normal Rust modules: `mod.rs` for multi-file modules and `foo.rs` for
+  small single-file modules.
+- Use `#[path = "..."]` only at target-selection boundaries.
+- Keep binary-only boot and runtime code outside reusable model modules.
+- Re-export only items that are part of the public module API.
 
-- `///` and `//!` comments: write complete sentences and end summary sentences with
-  terminal punctuation (`.`, `:`, `?`, or `!`).
-- `//` comments: sentence fragments are fine for local notes; use terminal
-  punctuation when writing full sentences.
+## Unsafe Code
 
-## Documentation Style
+Rust `unsafe` has two roles:
 
-**Always document:** safety reasoning, architecture quirks, spec refs,
-non-obvious "why"
+- `unsafe fn`, `unsafe trait`, and `unsafe extern` define obligations that
+  callers or implementers must uphold.
+- `unsafe { ... }` and `unsafe impl` assert that those obligations have been
+  checked at that site.
 
-**Never document:** obvious "what", Zig basics, self-explanatory code
+Rules:
 
-See `src/kernel/arch/arm64/mmu.zig` for documentation examples.
+- Keep unsafe blocks as small as practical.
+- Even inside `unsafe fn`, wrap unsafe operations in explicit `unsafe` blocks.
+- Use privacy to protect invariants relied on by unsafe code.
+- Do not create Rust references to MMIO registers. Use raw pointers and
+  volatile operations.
+- Do not convert integers into references until ownership, alignment, validity,
+  and aliasing are proven.
+- Rust atomics do not replace ARM64 `DSB`/`ISB`, RISC-V `fence`, or TLB
+  maintenance instructions.
+
+## Safety Comments
+
+Use Rustdoc `# Safety` sections for unsafe APIs:
+
+```rust
+/// Switches from one saved CPU context to another.
+///
+/// # Safety
+///
+/// The caller must ensure both contexts are valid for the architecture switch
+/// ABI and that the target stack remains mapped.
+pub unsafe fn switch_context(old: &mut Context, new: &Context);
+```
+
+Use `// SAFETY:` immediately before each unsafe block or unsafe impl:
+
+```rust
+// SAFETY: `ptr` comes from a mapped MMIO register and is used only with a
+// volatile access.
+unsafe { core::ptr::write_volatile(ptr, value) };
+```
+
+The comment must prove the exact operation. Good safety comments name the
+invariant, the earlier check, or the hardware rule that makes the operation
+valid. They should not say only "this is safe".
+
+## Layout And Assembly
+
+- Use `#[repr(C)]` for data shared with assembly, C ABI, or firmware.
+- Use `#[repr(transparent)]` for integer and pointer newtypes.
+- Avoid `#[repr(packed)]` for active kernel data.
+- Add compile-time size/alignment/offset assertions for hardware-visible
+  layout.
+- Keep boot and trap assembly small. Call Rust once stack, ABI, and register
+  state are valid.
+
+## Naming
+
+- Modules and functions: `snake_case`.
+- Types and traits: `UpperCamelCase`.
+- Constants and statics: `SCREAMING_SNAKE_CASE`.
+- Constructors: `new`, `from_*`, or `try_from_*`.
+- Prefer clear names over abbreviations in kernel APIs.
+- Avoid acronym shouting in Rust type names: use `Asid`, `Tlb`, `Vmo`, `Vmar`,
+  `Ipc`.
+
+## General Comments
+
+Use plain English and light punctuation.
+
+- `///` and `//!` comments: complete sentences with terminal punctuation.
+- `//` comments: fragments are fine for local notes.
+
+Always document safety reasoning, architecture quirks, spec references, lock
+ownership, memory ordering, barrier requirements, and non-obvious invariants.
+Do not document obvious code or Rust basics.

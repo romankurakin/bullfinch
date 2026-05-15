@@ -1,11 +1,10 @@
-# Zig build artifacts
-zig-out/
-zig-cache/
-zig-lib/
+# Build artifacts
+target/
+rust/kernel/target/
 
-# Cache
-.zig-cache/
+# Local caches and tools
 .cache/
+.tools/
 
 # IDE files
 .vscode/

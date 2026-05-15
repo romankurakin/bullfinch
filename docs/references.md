@@ -1,5 +1,13 @@
 # References
 
+## Rust
+
+- [Rust Reference](https://doc.rust-lang.org/reference/)
+- [Rustonomicon](https://doc.rust-lang.org/nomicon/)
+- [Standard Library Safety Comments](https://std-dev-guide.rust-lang.org/policy/safety-comments.html)
+- [The Embedded Rust Book: `no_std`](https://doc.rust-lang.org/stable/embedded-book/intro/no-std.html)
+- [Writing an OS in Rust](https://os.phil-opp.com/)
+
 ## Operating Systems Books
 
 - [OSTEP](https://pages.cs.wisc.edu/~remzi/OSTEP) — Operating Systems: Three
@@ -44,7 +52,7 @@
 ## Papers
 
 - Liedtke, "Improving IPC by Kernel Design" (SOSP 1993)
-- Liedtke, "On µ-Kernel Construction" (SOSP 1995)
+- Liedtke, "On microkernel construction" (SOSP 1995)
 - Bonwick, "The Slab Allocator: An Object-Caching Kernel Memory Allocator"
   (USENIX Summer 1994)
 - Baumann et al., "A fork() in the road" (HotOS 2019)
@@ -54,4 +62,3 @@
 - [Devicetree Specification](https://devicetree.org/specifications)
 - [WebAssembly Specification](https://webassembly.github.io/spec)
 - [WASI Specification](https://wasi.dev)
-- [Zig Language Reference](https://ziglang.org/documentation/master/)

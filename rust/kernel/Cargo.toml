@@ -1,0 +1,17 @@
+[package]
+name = "bullfinch-kernel"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "kernel"
+path = "src/lib.rs"
+
+[dependencies]
+fdt = { version = "0.2.0-alpha2", default-features = false }
+
+[[bin]]
+name = "kernel"
+path = "src/main.rs"
+test = false
+bench = false
