@@ -19,6 +19,9 @@ build-arm64-release:
 build-riscv64-release:
     @cargo run {{quiet}} -p bullfinch-tools -- build riscv64 release
 
+host:
+    @cargo run {{quiet}} -p bullfinch-tools -- host
+
 qemu-arm64:
     @cargo run {{quiet}} -p bullfinch-tools -- qemu arm64 debug
 
@@ -37,6 +40,14 @@ test:
 test-filter FILTER:
     @cargo test {{quiet}} -p bullfinch-kernel --lib "{{FILTER}}"
 
+hooks:
+    @prek validate-config prek.toml
+    @prek run -c prek.toml --all-files
+
+hooks-install:
+    @prek install -c prek.toml --hook-type pre-commit
+    @prek install -c prek.toml --hook-type pre-push
+
 lint: _lint-tools _lint-kernel (_lint-target "aarch64-unknown-none-softfloat") (_lint-target "riscv64gc-unknown-none-elf")
 
 _lint-tools:
@@ -50,6 +61,12 @@ _lint-target target:
 
 smoke:
     @cargo run {{quiet}} -p bullfinch-tools -- smoke
+
+smoke-arm64:
+    @cargo run {{quiet}} -p bullfinch-tools -- smoke arm64
+
+smoke-riscv64:
+    @cargo run {{quiet}} -p bullfinch-tools -- smoke riscv64
 
 peek:
     @cargo run {{quiet}} -p bullfinch-tools -- peek

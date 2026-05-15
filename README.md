@@ -9,6 +9,8 @@ Zircon. Built for clarity, correctness, and learning.
 just build-arm64      # or build-riscv64
 just qemu-arm64       # or qemu-riscv64
 just smoke            # smoke test both architectures
+just host             # show host tool and smoke support
+just hooks            # run prek hooks
 just test             # run host unit tests
 just lint             # run Clippy across tools and kernel targets
 ```
@@ -19,6 +21,7 @@ just lint             # run Clippy across tools and kernel targets
 - Rust targets: `aarch64-unknown-none-softfloat`,
   `riscv64gc-unknown-none-elf`
 - just
+- prek
 - QEMU
 - LLVM tools
 

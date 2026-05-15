@@ -1,0 +1,28 @@
+#:schema https://www.schemastore.org/prek.json
+
+[[repos]]
+repo = "local"
+
+[[repos.hooks]]
+id = "bullfinch-fmt-check"
+name = "Bullfinch fmt-check"
+entry = "just fmt-check"
+language = "system"
+pass_filenames = false
+stages = ["pre-commit"]
+
+[[repos.hooks]]
+id = "bullfinch-lint"
+name = "Bullfinch lint"
+entry = "just lint"
+language = "system"
+pass_filenames = false
+stages = ["pre-commit"]
+
+[[repos.hooks]]
+id = "bullfinch-smoke"
+name = "Bullfinch smoke"
+entry = "just smoke"
+language = "system"
+pass_filenames = false
+stages = ["pre-push"]

@@ -7,8 +7,8 @@ on:
     branches: [ master]
 
 jobs:
-  test:
-    name: Test
+  checks:
+    name: Checks
     runs-on: ubuntu-24.04-arm
 
     steps:
@@ -21,14 +21,44 @@ jobs:
       - name: Install Rust toolchain
         run: rustup show
 
-      - name: Check formatting
-        run: nix develop -c just fmt-check
+      - name: Run hooks
+        run: nix develop --no-write-lock-file -c just hooks
 
       - name: Run unit tests
-        run: nix develop -c just test
+        run: nix develop --no-write-lock-file -c just test
 
-      - name: Run Clippy
-        run: nix develop -c just lint
+  smoke-arm64:
+    name: Smoke ARM64
+    runs-on: ubuntu-24.04-arm
+    needs: checks
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Install Rust toolchain
+        run: rustup show
 
       - name: Smoke test
-        run: nix develop -c just smoke
+        run: nix develop --no-write-lock-file -c just smoke-arm64
+
+  smoke-riscv64:
+    name: Smoke RISC-V
+    runs-on: ubuntu-24.04-riscv
+    needs: checks
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Smoke test
+        run: nix develop --no-write-lock-file -c just smoke-riscv64

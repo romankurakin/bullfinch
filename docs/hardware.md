@@ -16,6 +16,11 @@ Use `-cpu max` for all extensions or specific core (`cortex-a72`, `neoverse-n1`)
 Supported: ASIMD, FP16, Crypto, CRC32, LSE, RAS, SVE, PAC, BTI, MTE (needs
 `-machine mte=on`)
 
+The kernel currently targets `aarch64-unknown-none-softfloat`. This is
+intentional: normal kernel code is FP/SIMD-free, and the soft-float ABI prevents
+LLVM from treating NEON/FP as part of the baseline kernel ABI. Use explicit
+guarded FP/SIMD paths later if a hot kernel routine needs them.
+
 ## QEMU virt (RISC-V)
 
 Use `-cpu max` or `-cpu rv64,v=true,zba=true,...`
@@ -59,6 +64,11 @@ Not supported: LSE (8.1+), FP16 (8.2+), DotProd (8.2+), SVE, PAC (8.3+), BTI
 **Atomics**: Pi 5 has LSE, UNO Q has LL/SC only, RV2 has LR/SC + AMO.
 
 **Vectors**: Pi 5 NEON only, RV2 has RVV 1.0, QEMU has both SVE and RVV.
+
+**Boot**: Direct QEMU boot remains the fast developer path. ARM64 QEMU uses a
+raw image, while RISC-V QEMU with OpenSBI loads the ELF kernel. U-Boot is a good
+real-board path, but should be added as separate board profiles before replacing
+the direct smoke path.
 
 ## References
 

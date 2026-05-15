@@ -26,6 +26,7 @@ enum Commands {
     Smoke(SmokeArgs),
     Peek(PeekArgs),
     Disasm(BuildArgs),
+    Host,
     Clean,
 }
 
@@ -74,14 +75,16 @@ fn run() -> Result<(), String> {
             mode: args.mode,
         }),
         Commands::Disasm(args) => disasm_command(args),
+        Commands::Host => host_command(),
         Commands::Clean => clean_command(),
     }
 }
 
 fn qemu_command(args: BuildArgs) -> Result<(), String> {
+    ensure_smoke_support(args.arch)?;
     let artifact = build_kernel(args.arch, args.mode)?;
     let board = board_for(args.arch);
-    let mut command = qemu_command_for(board, &artifact);
+    let mut command = qemu_command_for(board, &artifact)?;
     let status = command.status().map_err(|error| {
         format!(
             "failed to start {}: {error}",
@@ -112,8 +115,9 @@ fn smoke_command(args: SmokeArgs) -> Result<(), String> {
 }
 
 fn disasm_command(args: BuildArgs) -> Result<(), String> {
+    ensure_tool(objdump_program(), "llvm-objdump")?;
     let artifact = build_kernel(args.arch, args.mode)?;
-    let mut command = Command::new(env::var_os("OBJDUMP").unwrap_or_else(|| "llvm-objdump".into()));
+    let mut command = Command::new(objdump_program());
     command.arg("-d");
     if args.arch == Arch::Riscv64 {
         command.args(["-M", "no-aliases"]);
@@ -130,7 +134,22 @@ fn clean_command() -> Result<(), String> {
     Ok(())
 }
 
+fn host_command() -> Result<(), String> {
+    let host = Host::detect();
+    println!("host: {}-{}", host.arch, host.os);
+    for arch in Arch::all() {
+        let board = board_for(arch);
+        println!("{}:", arch.name());
+        println!("  rust target: {}", arch.rust_target());
+        println!("  qemu: {}", board.system);
+        println!("  boot image: {}", board.boot_image.name());
+        println!("  smoke: {}", smoke_support_message(arch, host));
+    }
+    Ok(())
+}
+
 fn build_kernel(arch: Arch, mode: Mode) -> Result<KernelArtifact, String> {
+    ensure_build_support(arch)?;
     let mut command = cargo_command();
     command.args([
         "build",
@@ -160,7 +179,6 @@ fn build_kernel(arch: Arch, mode: Mode) -> Result<KernelArtifact, String> {
 
     let base = format!("{}-qemu_virt-{}", arch.name(), mode.name());
     let elf = out_dir.join(format!("{base}.elf"));
-    let bin = out_dir.join(format!("{base}.bin"));
     fs::copy(&source, &elf).map_err(|error| {
         format!(
             "failed to copy {} to {}: {error}",
@@ -169,20 +187,27 @@ fn build_kernel(arch: Arch, mode: Mode) -> Result<KernelArtifact, String> {
         )
     })?;
 
-    let mut objcopy = Command::new(env::var_os("OBJCOPY").unwrap_or_else(|| "llvm-objcopy".into()));
-    objcopy.args(["-O", "binary"]);
-    objcopy.arg(&source);
-    objcopy.arg(&bin);
-    run_status(objcopy, "llvm-objcopy")?;
+    let bin = if board_for(arch).boot_image == BootImage::Bin {
+        let bin = out_dir.join(format!("{base}.bin"));
+        let mut objcopy = Command::new(objcopy_program());
+        objcopy.args(["-O", "binary"]);
+        objcopy.arg(&source);
+        objcopy.arg(&bin);
+        run_status(objcopy, "llvm-objcopy")?;
+        Some(bin)
+    } else {
+        None
+    };
 
     Ok(KernelArtifact { elf, bin })
 }
 
 fn run_smoke_variant(arch: Arch, mode: Mode, peek: bool, verbose: bool) -> Result<bool, String> {
+    ensure_smoke_support(arch)?;
     let artifact = build_kernel(arch, mode)?;
     let board = board_for(arch);
     let name = format!("{}-qemu_virt-{}", arch.name(), mode.name());
-    let mut command = qemu_command_for(board, &artifact);
+    let mut command = qemu_command_for(board, &artifact)?;
     if verbose {
         eprintln!("{name}: running {:?}", command);
     }
@@ -232,7 +257,7 @@ fn smoke_variants(
     }
 }
 
-fn qemu_command_for(board: Board, artifact: &KernelArtifact) -> Command {
+fn qemu_command_for(board: Board, artifact: &KernelArtifact) -> Result<Command, String> {
     let mut command = Command::new(board.system);
     command.args(["-machine", board.machine]);
     if let Some(cpu) = board.cpu {
@@ -241,11 +266,15 @@ fn qemu_command_for(board: Board, artifact: &KernelArtifact) -> Command {
     command.args(board.args);
     command.arg("-nographic");
     command.arg("-kernel");
-    command.arg(match board.boot_image {
+    let boot_image = match board.boot_image {
         BootImage::Elf => &artifact.elf,
-        BootImage::Bin => &artifact.bin,
-    });
-    command
+        BootImage::Bin => artifact
+            .bin
+            .as_ref()
+            .ok_or_else(|| "board requires a raw binary image".to_string())?,
+    };
+    command.arg(boot_image);
+    Ok(command)
 }
 
 fn run_with_timeout(command: &mut Command, timeout: Duration) -> Result<String, String> {
@@ -341,6 +370,95 @@ fn print_block(name: &str, status: &str, output: &str) {
     println!("---- end ----");
 }
 
+fn ensure_build_support(arch: Arch) -> Result<(), String> {
+    ensure_tool("cargo", "cargo")?;
+    ensure_rust_target_installed(arch)?;
+
+    if board_for(arch).boot_image == BootImage::Bin {
+        ensure_tool(objcopy_program(), "llvm-objcopy")?;
+        ensure_raw_binary_host(arch)?;
+    }
+
+    Ok(())
+}
+
+fn ensure_smoke_support(arch: Arch) -> Result<(), String> {
+    ensure_build_support(arch)?;
+    ensure_tool(board_for(arch).system, board_for(arch).system)
+}
+
+fn ensure_raw_binary_host(arch: Arch) -> Result<(), String> {
+    let host = Host::detect();
+    if arch == Arch::Arm64 && host.arch != "aarch64" {
+        return Err(format!(
+            "{} smoke needs a host that can produce its raw boot image; detected {}-{}. Run it on MacBook M1/M2/M3/M4 or ubuntu-24.04-arm.",
+            arch.name(),
+            host.arch,
+            host.os,
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_rust_target_installed(arch: Arch) -> Result<(), String> {
+    let output = Command::new("rustup")
+        .args(["target", "list", "--installed"])
+        .output()
+        .map_err(|error| {
+            format!(
+                "failed to run rustup target list --installed: {error}. Install Rust through rustup so rust-toolchain.toml can provision kernel targets."
+            )
+        })?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "rustup target list --installed exited with {}",
+            output.status
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if stdout.lines().any(|line| line.trim() == arch.rust_target()) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Rust target {} is not installed. Run `rustup target add {}`.",
+            arch.rust_target(),
+            arch.rust_target()
+        ))
+    }
+}
+
+fn ensure_tool(program: impl AsRef<std::ffi::OsStr>, label: &str) -> Result<(), String> {
+    let status = Command::new(program.as_ref())
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|error| format!("missing required tool {label}: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("required tool {label} exited with {status}"))
+    }
+}
+
+fn smoke_support_message(arch: Arch, host: Host) -> &'static str {
+    if arch == Arch::Arm64 && host.arch != "aarch64" {
+        "unsupported on this host"
+    } else {
+        "supported if Rust target and QEMU are installed"
+    }
+}
+
+fn objcopy_program() -> std::ffi::OsString {
+    env::var_os("OBJCOPY").unwrap_or_else(|| "llvm-objcopy".into())
+}
+
+fn objdump_program() -> std::ffi::OsString {
+    env::var_os("OBJDUMP").unwrap_or_else(|| "llvm-objdump".into())
+}
+
 fn cargo_command() -> Command {
     let mut command = Command::new("cargo");
     command.current_dir(repo_root());
@@ -405,6 +523,10 @@ enum Arch {
 }
 
 impl Arch {
+    const fn all() -> [Self; 2] {
+        [Self::Arm64, Self::Riscv64]
+    }
+
     fn name(self) -> &'static str {
         match self {
             Self::Arm64 => "arm64",
@@ -452,15 +574,39 @@ struct Board {
     boot_image: BootImage,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 enum BootImage {
     Elf,
     Bin,
 }
 
+impl BootImage {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Elf => "elf",
+            Self::Bin => "raw binary",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Host {
+    arch: &'static str,
+    os: &'static str,
+}
+
+impl Host {
+    const fn detect() -> Self {
+        Self {
+            arch: env::consts::ARCH,
+            os: env::consts::OS,
+        }
+    }
+}
+
 struct KernelArtifact {
     elf: PathBuf,
-    bin: PathBuf,
+    bin: Option<PathBuf>,
 }
 
 enum Stream {

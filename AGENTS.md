@@ -17,10 +17,14 @@ just peek                 # Boot both architectures briefly.
 just peek-arm64           # Boot ARM64 briefly.
 just peek-riscv64         # Boot RISC-V briefly.
 
+just host                 # Show host tool and smoke support.
+just hooks                # Run prek hooks.
 just test                 # Unit tests on the host.
 just test-filter "name"   # Run tests matching filter.
 just lint                 # Clippy for tools and kernel targets.
 just smoke                # QEMU smoke tests for both architectures.
+just smoke-arm64          # QEMU smoke tests for ARM64.
+just smoke-riscv64        # QEMU smoke tests for RISC-V.
 
 just fmt                  # Format Rust code.
 just disasm-arm64         # Disassemble kernel (ARM64).
