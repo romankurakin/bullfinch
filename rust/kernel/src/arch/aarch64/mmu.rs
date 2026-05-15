@@ -257,10 +257,10 @@ pub fn post_mmu_init() {}
 pub fn expand_physmap(max_end: PhysicalAddress) {
     let new_end = core::cmp::min(max_end.get().div_ceil(BLOCK_1G), MAX_PHYSMAP_ENTRIES);
 
+    let current = PHYSMAP_END_GB.get();
     // SAFETY: Called during single-core boot before secondary CPUs exist.
     // TODO(smp): once secondary CPUs come online, expand under a lock and
     // shoot down their TLBs.
-    let current = PHYSMAP_END_GB.get();
     unsafe {
         let high = &mut *HIGH_TABLE.get();
         for gb in current..new_end {

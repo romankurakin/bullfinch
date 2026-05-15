@@ -495,18 +495,28 @@ impl Kmalloc {
         if !self.initialized {
             return Err(FreeError::NotInitialized);
         }
+        // SAFETY: `free` is unsafe and requires the caller to pass a live
+        // pointer from this allocator.
         if unsafe { try_free(&mut self.pool_64, ptr) }? {
             return Ok(());
         }
+        // SAFETY: Same caller-owned pointer contract as above. This probes the
+        // next size class without taking ownership unless it matches.
         if unsafe { try_free(&mut self.pool_128, ptr) }? {
             return Ok(());
         }
+        // SAFETY: Same caller-owned pointer contract as above. This probes the
+        // next size class without taking ownership unless it matches.
         if unsafe { try_free(&mut self.pool_256, ptr) }? {
             return Ok(());
         }
+        // SAFETY: Same caller-owned pointer contract as above. This probes the
+        // next size class without taking ownership unless it matches.
         if unsafe { try_free(&mut self.pool_512, ptr) }? {
             return Ok(());
         }
+        // SAFETY: Same caller-owned pointer contract as above. This probes the
+        // final size class.
         if unsafe { try_free(&mut self.pool_1024, ptr) }? {
             return Ok(());
         }
@@ -581,6 +591,8 @@ fn alloc_raw(size: usize, alignment: Option<usize>) -> Result<NonNull<u8>, Alloc
 /// back-pointer.
 unsafe fn free_raw(ptr: NonNull<u8>) -> Result<(), FreeError> {
     let _guard = KMALLOC_LOCK.guard();
+    // SAFETY: The caller proves `ptr` belongs to this allocator and is not
+    // already freed. The lock gives exclusive allocator access.
     unsafe { kmalloc().free(ptr) }
 }
 

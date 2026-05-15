@@ -249,10 +249,10 @@ pub fn post_mmu_init() {
 pub fn expand_physmap(max_end: PhysicalAddress) {
     let new_end = core::cmp::min(max_end.get().div_ceil(GIGAPAGE), MAX_PHYSMAP_ENTRIES);
 
+    let current = PHYSMAP_END_GB.get();
     // SAFETY: Called during single-hart boot before SMP exists.
     // TODO(smp): once secondary harts come online, expand under a lock and
     // issue cross-hart sfence shootdown.
-    let current = PHYSMAP_END_GB.get();
     unsafe {
         let physmap = &mut *PHYSMAP_L2_TABLE.get();
         for gb in current..new_end {

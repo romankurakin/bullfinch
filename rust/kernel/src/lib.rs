@@ -1,4 +1,5 @@
 #![no_std]
+#![deny(clippy::undocumented_unsafe_blocks)]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(unused_must_use)]
 

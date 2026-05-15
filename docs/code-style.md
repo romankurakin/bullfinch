@@ -14,6 +14,7 @@ Kernel crate attributes:
 
 ```rust
 #![no_std]
+#![deny(clippy::undocumented_unsafe_blocks)]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(unused_must_use)]
 ```
@@ -52,6 +53,8 @@ Rules:
 - Keep unsafe blocks as small as practical.
 - Even inside `unsafe fn`, wrap unsafe operations in explicit `unsafe` blocks.
 - Use privacy to protect invariants relied on by unsafe code.
+- Keep unsafe visible. Do not hide caller obligations behind a safe function
+  unless the function is sound for every safe caller.
 - Do not create Rust references to MMIO registers. Use raw pointers and
   volatile operations.
 - Do not convert integers into references until ownership, alignment, validity,

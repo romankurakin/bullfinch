@@ -571,6 +571,7 @@ impl PhysicalMemoryManager {
         let arena = self
             .arena_for(head)
             .ok_or(FreeContiguousError::AddressNotInArena)?;
+        // SAFETY: `arena_for` checked that `head` belongs to this arena.
         let head_page =
             unsafe { arena.page_ref(head) }.ok_or(FreeContiguousError::AddressNotInArena)?;
         if !head_page.contiguous_head {
@@ -585,6 +586,7 @@ impl PhysicalMemoryManager {
         }
         for index in start..end {
             let handle = PageHandle::new(head.arena_index, index as u32);
+            // SAFETY: The range was checked against `arena.usable_pages`.
             let page =
                 unsafe { arena.page_ref(handle) }.ok_or(FreeContiguousError::AddressNotInArena)?;
             if page.state != PageState::Allocated {

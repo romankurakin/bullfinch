@@ -143,7 +143,9 @@ impl Gic {
     /// Caller must own exclusive access to the GIC (true during boot).
     unsafe fn init(self) {
         match self {
+            // SAFETY: This method's caller owns the active GIC instance.
             Self::V2(gic) => unsafe { gic.init() },
+            // SAFETY: This method's caller owns the active GIC instance.
             Self::V3(gic) => unsafe { gic.init() },
         }
     }
@@ -152,7 +154,9 @@ impl Gic {
     /// Caller must ensure the GIC is initialized.
     unsafe fn enable_timer_interrupt(self) {
         match self {
+            // SAFETY: This method's caller proved that the GIC is initialized.
             Self::V2(gic) => unsafe { gic.enable_timer_interrupt() },
+            // SAFETY: This method's caller proved that the GIC is initialized.
             Self::V3(gic) => unsafe { gic.enable_timer_interrupt() },
         }
     }
@@ -161,7 +165,9 @@ impl Gic {
     /// Caller must invoke from trap context with the GIC initialized.
     unsafe fn acknowledge(self) -> u32 {
         match self {
+            // SAFETY: This method's caller is in trap context with the GIC ready.
             Self::V2(gic) => unsafe { gic.acknowledge() },
+            // SAFETY: This method's caller is in trap context with the GIC ready.
             Self::V3(gic) => unsafe { gic.acknowledge() },
         }
     }
@@ -170,7 +176,9 @@ impl Gic {
     /// `intid` must be the value previously returned by `acknowledge`.
     unsafe fn end_of_interrupt(self, intid: u32) {
         match self {
+            // SAFETY: This method's caller passes the active INTID.
             Self::V2(gic) => unsafe { gic.end_of_interrupt(intid) },
+            // SAFETY: This method's caller passes the active INTID.
             Self::V3(gic) => unsafe { gic.end_of_interrupt(intid) },
         }
     }
@@ -201,6 +209,7 @@ impl GicV2 {
     /// # Safety
     /// Caller owns the distributor and CPU interface registers.
     unsafe fn init(self) {
+        // SAFETY: The caller owns these mapped GICv2 MMIO registers.
         unsafe {
             mmio::write32(self.distributor.checked_add(Self::GICD_CONTROL).unwrap(), 0);
             mmio::write32(self.distributor.checked_add(Self::GICD_CONTROL).unwrap(), 1);
@@ -220,6 +229,7 @@ impl GicV2 {
     /// # Safety
     /// GIC must be initialized.
     unsafe fn enable_timer_interrupt(self) {
+        // SAFETY: The caller proved that the GICv2 distributor is initialized.
         unsafe {
             mmio::write8(
                 self.distributor
@@ -239,6 +249,7 @@ impl GicV2 {
     /// # Safety
     /// Must be called from trap context with the GIC initialized.
     unsafe fn acknowledge(self) -> u32 {
+        // SAFETY: The caller is in trap context and the CPU interface is ready.
         unsafe {
             mmio::read32(
                 self.cpu_interface
@@ -251,6 +262,7 @@ impl GicV2 {
     /// # Safety
     /// `intid` must be the value previously returned by `acknowledge`.
     unsafe fn end_of_interrupt(self, intid: u32) {
+        // SAFETY: The caller passes the INTID returned by this CPU interface.
         unsafe {
             mmio::write32(
                 self.cpu_interface

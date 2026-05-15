@@ -14,19 +14,23 @@
       {
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
-            cargo
-            clippy
             just
             llvm
             qemu
-            rustc
-            rustfmt
           ];
 
           shellHook = ''
             echo "Bullfinch development environment"
-            echo "Rust: $(rustc --version)"
-            echo "Cargo: $(cargo --version)"
+            if command -v rustc >/dev/null; then
+              echo "Rust: $(rustc --version)"
+            else
+              echo "Rust: install rustup and run rustup show"
+            fi
+            if command -v cargo >/dev/null; then
+              echo "Cargo: $(cargo --version)"
+            else
+              echo "Cargo: install rustup and run rustup show"
+            fi
             echo "Just: $(just --version)"
             echo "QEMU: $(qemu-system-aarch64 --version | head -1)"
             echo "LLVM: $(llvm-config --version)"

@@ -10,6 +10,7 @@ use kernel::mmu::VirtualAddress;
 /// `address` must refer to a 4-byte-aligned, currently mapped MMIO register
 /// whose read has no side effects beyond the device's defined behavior.
 pub unsafe fn read32(address: VirtualAddress) -> u32 {
+    // SAFETY: The caller proves that `address` is a valid 32-bit MMIO register.
     unsafe { core::ptr::read_volatile(address.get() as *const u32) }
 }
 
@@ -17,6 +18,7 @@ pub unsafe fn read32(address: VirtualAddress) -> u32 {
 /// `address` must refer to a 4-byte-aligned, currently mapped MMIO register
 /// that accepts a 32-bit write.
 pub unsafe fn write32(address: VirtualAddress, value: u32) {
+    // SAFETY: The caller proves that `address` is a valid 32-bit MMIO register.
     unsafe { core::ptr::write_volatile(address.get() as *mut u32, value) };
 }
 
@@ -24,5 +26,6 @@ pub unsafe fn write32(address: VirtualAddress, value: u32) {
 /// `address` must refer to a currently mapped MMIO register that accepts an
 /// 8-bit write.
 pub unsafe fn write8(address: VirtualAddress, value: u8) {
+    // SAFETY: The caller proves that `address` is a valid 8-bit MMIO register.
     unsafe { core::ptr::write_volatile(address.get() as *mut u8, value) };
 }
