@@ -10,10 +10,18 @@
     flake-utils.lib.eachSystem [
       "aarch64-linux"
       "riscv64-linux"
-      "x86_64-linux"
     ] (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+        qemu = pkgs.qemu.override {
+          minimal = true;
+          hostCpuTargets = [
+            "aarch64-softmmu"
+            "riscv64-softmmu"
+          ];
+          uringSupport = false;
+          pluginsSupport = false;
+        };
       in
       {
         devShells.default = pkgs.mkShell {
