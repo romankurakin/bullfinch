@@ -7,58 +7,90 @@ on:
     branches: [ master]
 
 jobs:
-  checks:
-    name: Checks
+  hooks:
+    name: Hooks
     runs-on: ubuntu-24.04-arm
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Nix
-        uses: cachix/install-nix-action@v31
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Install host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y just llvm
+          cargo install --locked prek
+
+      - name: Run hooks
+        run: just hooks-pre-commit
+
+  test-arm64:
+    name: Unit ARM64
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Install Rust toolchain
         run: rustup show
 
-      - name: Run hooks
-        run: nix develop --no-write-lock-file -c just hooks
+      - name: Run unit tests
+        run: cargo test --quiet -p bullfinch-kernel --lib
+
+  test-riscv64:
+    name: Unit RISC-V
+    runs-on: ubuntu-24.04-riscv
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: rustup show
 
       - name: Run unit tests
-        run: nix develop --no-write-lock-file -c just test
+        run: cargo test --quiet -p bullfinch-kernel --lib
 
   smoke-arm64:
     name: Smoke ARM64
     runs-on: ubuntu-24.04-arm
-    needs: checks
+    needs: [hooks, test-arm64, test-riscv64]
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Nix
-        uses: cachix/install-nix-action@v31
-
       - name: Install Rust toolchain
         run: rustup show
 
+      - name: Install host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y just llvm qemu-system-arm qemu-system-misc
+
       - name: Smoke test
-        run: nix develop --no-write-lock-file -c just smoke-arm64
+        run: just smoke-arm64
 
   smoke-riscv64:
     name: Smoke RISC-V
-    runs-on: ubuntu-24.04-riscv
-    needs: checks
+    runs-on: ubuntu-24.04-arm
+    needs: [hooks, test-arm64, test-riscv64]
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Nix
-        uses: cachix/install-nix-action@v31
-
       - name: Install Rust toolchain
         run: rustup show
 
+      - name: Install host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y just llvm qemu-system-arm qemu-system-misc
+
       - name: Smoke test
-        run: nix develop --no-write-lock-file -c just smoke-riscv64
+        run: just smoke-riscv64

@@ -44,6 +44,10 @@ hooks:
     @prek validate-config prek.toml
     @prek run -c prek.toml --all-files
 
+hooks-pre-commit:
+    @prek validate-config prek.toml
+    @prek run -c prek.toml --hook-stage pre-commit --all-files
+
 hooks-install:
     @prek install -c prek.toml --hook-type pre-commit
     @prek install -c prek.toml --hook-type pre-push
