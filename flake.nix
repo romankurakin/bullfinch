@@ -7,7 +7,11 @@
   };
 
   outputs = { nixpkgs, flake-utils, ... }:
-    flake-utils.lib.eachDefaultSystem (system:
+    flake-utils.lib.eachSystem [
+      "aarch64-linux"
+      "riscv64-linux"
+      "x86_64-linux"
+    ] (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
       in
