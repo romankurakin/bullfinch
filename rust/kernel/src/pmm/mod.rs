@@ -1,8 +1,9 @@
 //! Physical page allocator.
 //!
 //! Memory is split into arenas discovered from the DTB. Each arena keeps one
-//! metadata entry per physical page. Metadata lives at the end of the arena so
-//! low physical addresses remain available for later DMA-sensitive users.
+//! metadata entry per physical page. Metadata is placed as high as possible in
+//! each arena without overlapping firmware or kernel reservations, so low
+//! physical addresses remain available for later DMA-sensitive users.
 
 use core::{mem::ManuallyDrop, ptr};
 
@@ -21,7 +22,10 @@ const KERNEL_RESERVE_PAD: usize = 2 * 1024 * 1024;
 pub enum InitError {
     NoMemoryRegions,
     MetadataTooLarge,
+    MetadataAddressUnavailable,
     TooManyReservedRanges,
+    DroppedReservedRegions,
+    OverlappingMemoryRegions,
     AddressNotMapped,
     ArithmeticOverflow,
     PageIndexTooLarge,
@@ -102,7 +106,6 @@ impl PageHandle {
 struct Arena {
     base: PhysicalAddress,
     page_count: usize,
-    usable_pages: usize,
     pages: PageStorage,
 }
 
@@ -110,7 +113,6 @@ impl Arena {
     const EMPTY: Self = Self {
         base: PhysicalAddress::ZERO,
         page_count: 0,
-        usable_pages: 0,
         pages: PageStorage::empty(),
     };
 
@@ -154,7 +156,10 @@ impl Arena {
         }
         // SAFETY: The PMM lock gives exclusive metadata access. `contains_page`
         // proved that this handle indexes this arena's metadata slice.
-        Some(unsafe { &mut *self.pages.ptr.add(page.page_index as usize) })
+        let ptr = unsafe { self.pages.ptr.add(page.page_index as usize) };
+        // SAFETY: `ptr` points at the checked metadata slot. The caller holds
+        // exclusive mutable access.
+        Some(unsafe { &mut *ptr })
     }
 
     /// # Safety
@@ -167,7 +172,10 @@ impl Arena {
         }
         // SAFETY: `contains_page` proved that this handle indexes this arena's
         // metadata slice.
-        Some(unsafe { &*self.pages.ptr.add(page.page_index as usize) })
+        let ptr = unsafe { self.pages.ptr.add(page.page_index as usize) };
+        // SAFETY: `ptr` points at the checked metadata slot. The caller keeps
+        // mutable access away from this reference.
+        Some(unsafe { &*ptr })
     }
 }
 
@@ -219,6 +227,38 @@ impl ReservedRange {
     }
 }
 
+fn validate_memory_regions(regions: &[MemoryRegion]) -> Result<(), InitError> {
+    for left_index in 0..regions.len() {
+        let left = regions[left_index];
+        let left_end = left.end().ok_or(InitError::ArithmeticOverflow)?;
+        for right in &regions[left_index + 1..] {
+            let right_end = right.end().ok_or(InitError::ArithmeticOverflow)?;
+            if ranges_overlap(left.base, left_end, right.base, right_end) {
+                return Err(InitError::OverlappingMemoryRegions);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn ranges_overlap(
+    left_start: PhysicalAddress,
+    left_end: PhysicalAddress,
+    right_start: PhysicalAddress,
+    right_end: PhysicalAddress,
+) -> bool {
+    left_start < right_end && right_start < left_end
+}
+
+fn ranges_overlap_or_touch(
+    left_start: PhysicalAddress,
+    left_end: PhysicalAddress,
+    right_start: PhysicalAddress,
+    right_end: PhysicalAddress,
+) -> bool {
+    left_start <= right_end && right_start <= left_end
+}
+
 type PhysicalToVirtual = fn(PhysicalAddress) -> VirtualAddress;
 
 struct PhysicalMemoryManager {
@@ -260,6 +300,10 @@ impl PhysicalMemoryManager {
         physical_to_virtual: PhysicalToVirtual,
     ) -> Result<(), InitError> {
         self.reset();
+        if info.dropped_reserved_regions != 0 {
+            return Err(InitError::DroppedReservedRegions);
+        }
+        validate_memory_regions(info.memory_regions())?;
         self.reserve_kernel(kernel_start, kernel_end)?;
         self.reserve_device_tree(info)?;
         self.reserve_firmware_regions(info)?;
@@ -322,6 +366,46 @@ impl PhysicalMemoryManager {
         Ok(())
     }
 
+    fn find_metadata_range(
+        &self,
+        arena_base: PhysicalAddress,
+        total_pages: usize,
+        metadata_pages: usize,
+    ) -> Result<Option<PhysicalAddress>, InitError> {
+        if metadata_pages == 0 || metadata_pages > total_pages {
+            return Ok(None);
+        }
+        let metadata_bytes = metadata_pages
+            .checked_mul(PAGE_SIZE)
+            .ok_or(InitError::ArithmeticOverflow)?;
+        let arena_bytes = total_pages
+            .checked_mul(PAGE_SIZE)
+            .ok_or(InitError::ArithmeticOverflow)?;
+        let arena_end = arena_base
+            .checked_add(arena_bytes)
+            .ok_or(InitError::ArithmeticOverflow)?;
+        let minimum_end = arena_base
+            .checked_add(metadata_bytes)
+            .ok_or(InitError::ArithmeticOverflow)?;
+        let mut candidate_start = PhysicalAddress::new(arena_end.get() - metadata_bytes);
+
+        loop {
+            let candidate_end = candidate_start
+                .checked_add(metadata_bytes)
+                .ok_or(InitError::ArithmeticOverflow)?;
+            let Some(overlap) = self.overlapping_reserved_range(candidate_start, candidate_end)
+            else {
+                return Ok(Some(candidate_start));
+            };
+
+            let new_end = overlap.start.align_down().get();
+            if new_end < minimum_end {
+                return Ok(None);
+            }
+            candidate_start = PhysicalAddress::new(new_end.get() - metadata_bytes);
+        }
+    }
+
     fn init_arena(
         &mut self,
         region: MemoryRegion,
@@ -338,7 +422,8 @@ impl PhysicalMemoryManager {
             return Ok(None);
         }
 
-        let aligned_size = region_end.get() - aligned_base.get();
+        let aligned_end = region_end.align_down().get();
+        let aligned_size = aligned_end.get() - aligned_base.get();
         let total_pages = aligned_size / PAGE_SIZE;
         if total_pages == 0 {
             return Ok(None);
@@ -355,13 +440,9 @@ impl PhysicalMemoryManager {
             return Err(InitError::MetadataTooLarge);
         }
 
-        let usable_pages = total_pages - metadata_pages;
-        let usable_bytes = usable_pages
-            .checked_mul(PAGE_SIZE)
-            .ok_or(InitError::ArithmeticOverflow)?;
-        let metadata_physical = aligned_base
-            .checked_add(usable_bytes)
-            .ok_or(InitError::ArithmeticOverflow)?;
+        let metadata_physical = self
+            .find_metadata_range(aligned_base, total_pages, metadata_pages)?
+            .ok_or(InitError::MetadataAddressUnavailable)?;
         let metadata_virtual = physical_to_virtual(metadata_physical);
         if metadata_virtual.get() == 0 {
             return Err(InitError::AddressNotMapped);
@@ -372,10 +453,12 @@ impl PhysicalMemoryManager {
             len: total_pages,
             arena_index,
         };
-        // SAFETY: The physmap covers the arena. Metadata pages are reserved
-        // before they can enter the free list.
+        let metadata_page_start = (metadata_physical.get() - aligned_base.get()) / PAGE_SIZE;
+        let metadata_page_end = metadata_page_start + metadata_pages;
+        // SAFETY: The physmap covers the arena. `find_metadata_range` proved the
+        // metadata storage does not overlap firmware or kernel reservations.
         for (index, page) in unsafe { storage.as_mut_slice() }.iter_mut().enumerate() {
-            let state = if index >= usable_pages {
+            let state = if (metadata_page_start..metadata_page_end).contains(&index) {
                 PageState::Reserved
             } else {
                 PageState::Free
@@ -389,13 +472,12 @@ impl PhysicalMemoryManager {
         self.record_reserved(metadata_physical, metadata_end)?;
         self.total_pages = self
             .total_pages
-            .checked_add(usable_pages)
+            .checked_add(total_pages - metadata_pages)
             .ok_or(InitError::ArithmeticOverflow)?;
 
         Ok(Some(Arena {
             base: aligned_base,
             page_count: total_pages,
-            usable_pages,
             pages: storage,
         }))
     }
@@ -405,9 +487,22 @@ impl PhysicalMemoryManager {
         start: PhysicalAddress,
         end: PhysicalAddress,
     ) -> Result<(), InitError> {
-        let Some(range) = ReservedRange::new(start, end) else {
+        let Some(mut range) = ReservedRange::new(start, end) else {
             return Ok(());
         };
+        let mut index = 0;
+        while index < self.reserved_count {
+            let existing = self.reserved_ranges[index];
+            if !ranges_overlap_or_touch(range.start, range.end, existing.start, existing.end) {
+                index += 1;
+                continue;
+            }
+            range = ReservedRange {
+                start: core::cmp::min(range.start, existing.start),
+                end: core::cmp::max(range.end, existing.end),
+            };
+            self.remove_reserved(index);
+        }
         if self.reserved_count >= self.reserved_ranges.len() {
             return Err(InitError::TooManyReservedRanges);
         }
@@ -416,13 +511,33 @@ impl PhysicalMemoryManager {
         Ok(())
     }
 
+    fn remove_reserved(&mut self, index: usize) {
+        for current in index..self.reserved_count - 1 {
+            self.reserved_ranges[current] = self.reserved_ranges[current + 1];
+        }
+        self.reserved_count -= 1;
+        self.reserved_ranges[self.reserved_count] = ReservedRange::EMPTY;
+    }
+
+    fn overlapping_reserved_range(
+        &self,
+        start: PhysicalAddress,
+        end: PhysicalAddress,
+    ) -> Option<ReservedRange> {
+        self.reserved_ranges[..self.reserved_count]
+            .iter()
+            .copied()
+            .filter(|range| ranges_overlap(start, end, range.start, range.end))
+            .max_by_key(|range| range.start)
+    }
+
     fn mark_reserved_ranges(&mut self) {
         for range_index in 0..self.reserved_count {
             let range = self.reserved_ranges[range_index];
             for arena_index in 0..self.arena_count {
                 let arena = self.arenas[arena_index];
                 let arena_start = arena.base;
-                let Some(arena_end) = arena.base.checked_add(arena.usable_pages * PAGE_SIZE) else {
+                let Some(arena_end) = arena.base.checked_add(arena.page_count * PAGE_SIZE) else {
                     continue;
                 };
                 if range.end <= arena_start || range.start >= arena_end {
@@ -432,9 +547,9 @@ impl PhysicalMemoryManager {
                 let end = core::cmp::min(range.end, arena_end);
                 let start_index = (start.get() - arena_start.get()) / PAGE_SIZE;
                 let end_index = (end.get() - arena_start.get()).div_ceil(PAGE_SIZE);
-                for index in start_index..core::cmp::min(end_index, arena.usable_pages) {
+                for index in start_index..core::cmp::min(end_index, arena.page_count) {
                     let handle = PageHandle::new(arena.pages.arena_index, index as u32);
-                    // SAFETY: The computed index is within `usable_pages`.
+                    // SAFETY: The computed index is within `page_count`.
                     if let Some(page) = unsafe { arena.page_mut(handle) } {
                         page.state = PageState::Reserved;
                     }
@@ -450,9 +565,9 @@ impl PhysicalMemoryManager {
 
         for arena_index in 0..self.arena_count {
             let arena = self.arenas[arena_index];
-            for index in 0..arena.usable_pages {
+            for index in 0..arena.page_count {
                 let handle = PageHandle::new(arena.pages.arena_index, index as u32);
-                // SAFETY: The loop index is within `usable_pages`.
+                // SAFETY: The loop index is within `page_count`.
                 let Some(page) = (unsafe { arena.page_mut(handle) }) else {
                     continue;
                 };
@@ -516,14 +631,14 @@ impl PhysicalMemoryManager {
 
         for arena_index in 0..self.arena_count {
             let arena = self.arenas[arena_index];
-            if arena.usable_pages < count {
+            if arena.page_count < count {
                 continue;
             }
             let mut run_start = None;
             let mut run_length = 0usize;
-            for index in 0..arena.usable_pages {
+            for index in 0..arena.page_count {
                 let handle = PageHandle::new(arena.pages.arena_index, index as u32);
-                // SAFETY: The loop index is within `usable_pages`.
+                // SAFETY: The loop index is within `page_count`.
                 let page = unsafe { arena.page_ref(handle) }?;
                 if page.state != PageState::Free {
                     run_start = None;
@@ -581,12 +696,12 @@ impl PhysicalMemoryManager {
         let end = start
             .checked_add(count)
             .ok_or(FreeContiguousError::AddressNotInArena)?;
-        if end > arena.usable_pages {
+        if end > arena.page_count {
             return Err(FreeContiguousError::AddressNotInArena);
         }
         for index in start..end {
             let handle = PageHandle::new(head.arena_index, index as u32);
-            // SAFETY: The range was checked against `arena.usable_pages`.
+            // SAFETY: The range was checked against `arena.page_count`.
             let page =
                 unsafe { arena.page_ref(handle) }.ok_or(FreeContiguousError::AddressNotInArena)?;
             if page.state != PageState::Allocated {
@@ -851,7 +966,6 @@ mod tests {
         let arena = Arena {
             base: PhysicalAddress::new(0x1000),
             page_count: 4,
-            usable_pages: 4,
             pages: PageStorage {
                 ptr: pages.as_mut_ptr(),
                 len: pages.len(),
@@ -882,7 +996,6 @@ mod tests {
         pmm.arenas[0] = Arena {
             base: PhysicalAddress::new(0x1000),
             page_count: 2,
-            usable_pages: 2,
             pages: storage,
         };
         pmm.arena_count = 1;
@@ -909,7 +1022,6 @@ mod tests {
         pmm.arenas[0] = Arena {
             base: PhysicalAddress::new(0x4000),
             page_count: 8,
-            usable_pages: 8,
             pages: storage,
         };
         pmm.arena_count = 1;
@@ -920,15 +1032,71 @@ mod tests {
         assert_eq!(run.count(), 3);
         assert_eq!(run.head_for_test(), PageHandle::new(0, 0));
         // SAFETY: The test owns `pmm` and no mutable metadata reference is live.
-        assert!(
-            unsafe { pmm.arenas[0].page_ref(run.head_for_test()) }
-                .unwrap()
-                .is_contiguous_head()
-        );
+        let head_page = unsafe { pmm.arenas[0].page_ref(run.head_for_test()) };
+        assert!(head_page.unwrap().is_contiguous_head());
         let head = run.head_for_test();
         let count = run.count();
         core::mem::forget(run);
         pmm.free_contiguous(head, count).unwrap();
         assert_eq!(pmm.free_pages, 8);
+    }
+
+    #[test]
+    fn metadata_search_skips_reserved_tail() {
+        let mut pmm = PhysicalMemoryManager::empty();
+        pmm.record_reserved(PhysicalAddress::new(0x9000), PhysicalAddress::new(0xa000))
+            .unwrap();
+
+        let metadata = pmm
+            .find_metadata_range(PhysicalAddress::new(0x1000), 9, 1)
+            .unwrap();
+
+        assert_eq!(metadata, Some(PhysicalAddress::new(0x8000)));
+    }
+
+    #[test]
+    fn metadata_search_reports_no_safe_span() {
+        let mut pmm = PhysicalMemoryManager::empty();
+        pmm.record_reserved(PhysicalAddress::new(0x1000), PhysicalAddress::new(0xa000))
+            .unwrap();
+
+        let metadata = pmm
+            .find_metadata_range(PhysicalAddress::new(0x1000), 9, 1)
+            .unwrap();
+
+        assert_eq!(metadata, None);
+    }
+
+    #[test]
+    fn rejects_overlapping_memory_regions() {
+        let regions = [
+            MemoryRegion {
+                base: PhysicalAddress::new(0x1000),
+                size: 0x3000,
+            },
+            MemoryRegion {
+                base: PhysicalAddress::new(0x3000),
+                size: 0x2000,
+            },
+        ];
+
+        assert_eq!(
+            validate_memory_regions(&regions),
+            Err(InitError::OverlappingMemoryRegions)
+        );
+    }
+
+    #[test]
+    fn merges_touching_reserved_ranges() {
+        let mut pmm = PhysicalMemoryManager::empty();
+        pmm.record_reserved(PhysicalAddress::new(0x2000), PhysicalAddress::new(0x3000))
+            .unwrap();
+        pmm.record_reserved(PhysicalAddress::new(0x3000), PhysicalAddress::new(0x4000))
+            .unwrap();
+
+        assert_eq!(pmm.reserved_count, 1);
+        assert!(pmm.is_reserved(PhysicalAddress::new(0x2000)));
+        assert!(pmm.is_reserved(PhysicalAddress::new(0x3fff)));
+        assert!(!pmm.is_reserved(PhysicalAddress::new(0x4000)));
     }
 }

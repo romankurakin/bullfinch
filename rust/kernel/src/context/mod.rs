@@ -70,6 +70,14 @@ mod host {
     /// Bare-metal callers must use the architecture implementation. Host tests
     /// must not rely on this function to transfer execution.
     pub unsafe fn switch_context(_old: &mut Context, _new: &Context) {}
+
+    /// Host-test placeholder for trap-return context switching.
+    ///
+    /// # Safety
+    ///
+    /// Bare-metal callers must use the architecture implementation. Host tests
+    /// must not rely on this function to transfer execution.
+    pub unsafe fn switch_context_from_trap(_old: &mut Context, _new: &Context) {}
 }
 
 #[cfg(not(all(

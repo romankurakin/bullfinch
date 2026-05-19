@@ -732,9 +732,13 @@ pub fn enter_idle(switch_context: ContextSwitch) -> Result<(), ScheduleError> {
         let _guard = SCHEDULER_LOCK.guard();
         scheduler().enter_idle_contexts()?
     };
-    // SAFETY: The scheduler returned contexts it owns. The new context belongs
-    // to the idle thread and has a live guard-mapped kernel stack.
-    unsafe { switch_context(&mut *pair.old, &*pair.new) };
+    // SAFETY: The scheduler returned the boot context it owns.
+    let old = unsafe { &mut *pair.old };
+    // SAFETY: The new context belongs to the idle thread and has a live
+    // guard-mapped kernel stack.
+    let new = unsafe { &*pair.new };
+    // SAFETY: The scheduler owns both contexts and checked the target stack.
+    unsafe { switch_context(old, new) };
     Ok(())
 }
 
@@ -745,9 +749,13 @@ pub fn preempt_from_trap(switch_context: ContextSwitch) -> Result<(), ScheduleEr
     }) else {
         return Ok(());
     };
+    // SAFETY: The scheduler returned the outgoing thread context it owns.
+    let old = unsafe { &mut *pair.old };
+    // SAFETY: The scheduler returned the selected runnable thread context.
+    let new = unsafe { &*pair.new };
     // SAFETY: The trap frame remains on the outgoing thread's stack while this
     // software context switch saves callee-saved state and changes stacks.
-    unsafe { switch_context(&mut *pair.old, &*pair.new) };
+    unsafe { switch_context(old, new) };
     Ok(())
 }
 

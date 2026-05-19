@@ -1,13 +1,13 @@
 //! ARM64 memory-management unit.
 //!
 //! ARM64 keeps user and kernel address spaces in separate translation-table
-//! base registers. Early boot uses 39-bit virtual addresses and 1 GiB blocks,
+//! base registers. Early boot uses 39 bit virtual addresses and 1 GiB blocks,
 //! which avoids allocator use before PMM exists.
 //!
 //! See ARM Architecture Reference Manual, Chapter D8 (The AArch64 Virtual Memory
 //! System Architecture).
 
-#![allow(dead_code)]
+#![allow(dead_code, reason = "kernel and library builds use different helpers")]
 
 use core::{arch::asm, cell::UnsafeCell};
 
@@ -22,7 +22,7 @@ use kernel::{
 
 use super::cpu;
 
-/// Higher-half base. With T0SZ=T1SZ=25 (39-bit VA), TTBR1 covers the top half.
+/// Higher-half base. With T0SZ=T1SZ=25 (39 bit VA), TTBR1 covers the top half.
 pub const KERNEL_VIRTUAL_BASE: usize = 0xffff_ff80_0000_0000;
 
 /// Physical load address chosen by the linker script for QEMU virt.
@@ -286,12 +286,12 @@ pub fn remove_identity_mapping() {
     TranslationLookasideBuffer::flush_local();
 }
 
-/// Translates a virtual address through an ARM64 page-table tree.
+/// Translates a virtual address through an ARM64 page table tree.
 ///
 /// # Safety
 ///
 /// `root` and every table descriptor reachable from it must point to valid
-/// page-table pages mapped in the kernel physmap. The caller must prevent
+/// page table pages mapped in the kernel physmap. The caller must prevent
 /// concurrent mutation of that tree for the duration of the walk.
 pub unsafe fn translate(root: &PageTable, address: VirtualAddress) -> Option<PhysicalAddress> {
     if !is_canonical(address) {
@@ -313,7 +313,7 @@ pub unsafe fn translate(root: &PageTable, address: VirtualAddress) -> Option<Phy
     }
 
     let table = table_from_physical(entry.output_address()?);
-    // SAFETY: A valid table entry points to a page-table page owned by the MMU.
+    // SAFETY: A valid table entry points to a page table page owned by the MMU.
     let entry = unsafe { (*table).entries[l2] };
     if !entry.is_valid() {
         return None;
@@ -325,7 +325,7 @@ pub unsafe fn translate(root: &PageTable, address: VirtualAddress) -> Option<Phy
     }
 
     let table = table_from_physical(entry.output_address()?);
-    // SAFETY: A valid table entry points to a page-table page owned by the MMU.
+    // SAFETY: A valid table entry points to a page table page owned by the MMU.
     let entry = unsafe { (*table).entries[l3] };
     entry
         .is_valid()
@@ -337,12 +337,12 @@ pub unsafe fn translate(root: &PageTable, address: VirtualAddress) -> Option<Phy
         .flatten()
 }
 
-/// Installs one 4 KiB leaf mapping in an existing page-table tree.
+/// Installs one 4 KiB leaf mapping in an existing page table tree.
 ///
 /// # Safety
 ///
 /// `root` and every table descriptor used by this mapping must belong to a
-/// valid page-table tree owned by the caller. The caller must have exclusive
+/// valid page table tree owned by the caller. The caller must have exclusive
 /// mutation rights to the tree and must coordinate with any address-space or
 /// remote-TLB users not covered by the local invalidation here.
 pub unsafe fn map_page(
@@ -409,7 +409,7 @@ pub fn map_kernel_page_with_alloc(
     permissions: MappingPermissions,
     allocate_table: PageTableAllocator,
 ) -> Result<(), MapError> {
-    // SAFETY: The high kernel table is the active kernel-owned table. Boot is
+    // SAFETY: The high kernel table is the active kernel owned table. Boot is
     // still single-core while stack slots are created in the current rung.
     unsafe {
         map_page_with_alloc(
@@ -426,8 +426,8 @@ pub fn map_kernel_page_with_alloc(
 ///
 /// # Safety
 ///
-/// `root` must be a valid kernel-owned page-table root. The caller must hold
-/// the page-table mutation lock once SMP exists, and `allocate_table` must
+/// `root` must be a valid kernel owned page table root. The caller must hold
+/// the page table mutation lock once SMP exists, and `allocate_table` must
 /// return a zeroed, page-aligned table page mapped in the kernel physmap.
 unsafe fn map_page_with_alloc(
     root: &mut PageTable,
@@ -486,17 +486,17 @@ unsafe fn map_page_with_alloc(
 }
 
 pub fn unmap_kernel_page(virtual_address: VirtualAddress) -> Result<PhysicalAddress, UnmapError> {
-    // SAFETY: The high kernel table is the active kernel-owned table. Stack
-    // teardown runs before SMP page-table sharing exists.
+    // SAFETY: The high kernel table is the active kernel owned table. Stack
+    // teardown runs before SMP page table sharing exists.
     unsafe { unmap_page(&mut *HIGH_TABLE.get(), virtual_address) }
 }
 
-/// Removes one 4 KiB leaf mapping from an existing page-table tree.
+/// Removes one 4 KiB leaf mapping from an existing page table tree.
 ///
 /// # Safety
 ///
 /// `root` and every table descriptor used by this mapping must belong to a
-/// valid page-table tree owned by the caller. The caller must have exclusive
+/// valid page table tree owned by the caller. The caller must have exclusive
 /// mutation rights to the tree and must not free the physical page until all
 /// CPUs that could use the old translation have observed the TLB invalidation.
 pub unsafe fn unmap_page(
@@ -547,7 +547,7 @@ impl TranslationLookasideBuffer {
     pub fn flush_all() {
         cpu::data_sync_barrier_inner_shareable();
         // SAFETY: ARM requires DSB before TLBI and DSB+ISB after TLBI. This makes
-        // page-table updates visible to later instruction and data accesses.
+        // page table updates visible to later instruction and data accesses.
         unsafe { asm!("tlbi alle1is", options(nostack, preserves_flags)) };
         cpu::data_sync_barrier_inner_shareable();
         cpu::instruction_barrier();
@@ -642,7 +642,7 @@ fn validate_boot_range(start_gb: usize, end_gb: usize) {
     }
 }
 
-// TCR_EL1: 39-bit VA, 4 KiB granule, 40-bit PA.
+// TCR_EL1: 39 bit VA, 4 KiB granule, 40-bit PA.
 fn default_tcr() -> u64 {
     let mut tcr = 0u64;
     tcr |= 25; // T0SZ

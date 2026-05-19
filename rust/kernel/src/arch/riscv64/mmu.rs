@@ -1,11 +1,11 @@
 //! RISC-V Sv48 memory-management unit.
 //!
-//! Sv48 uses four 9-bit page-table levels. Boot uses 1 GiB gigapages beneath a
+//! Sv48 uses four 9 bit page table levels. Boot uses 1 GiB gigapages beneath a
 //! static root, which avoids allocator use before PMM exists.
 //!
 //! See RISC-V Privileged Specification, Sections 12.3-12.6 (Virtual Memory).
 
-#![allow(dead_code)]
+#![allow(dead_code, reason = "kernel and library builds use different helpers")]
 
 use core::{arch::asm, cell::UnsafeCell};
 
@@ -277,12 +277,12 @@ pub fn remove_identity_mapping() {
     TranslationLookasideBuffer::flush_all();
 }
 
-/// Translates a virtual address through a RISC-V Sv48 page-table tree.
+/// Translates a virtual address through a RISC-V Sv48 page table tree.
 ///
 /// # Safety
 ///
 /// `root` and every branch descriptor reachable from it must point to valid
-/// page-table pages mapped in the kernel physmap. The caller must prevent
+/// page table pages mapped in the kernel physmap. The caller must prevent
 /// concurrent mutation of that tree for the duration of the walk.
 pub unsafe fn translate(root: &PageTable, address: VirtualAddress) -> Option<PhysicalAddress> {
     if !is_canonical(address) {
@@ -305,7 +305,7 @@ pub unsafe fn translate(root: &PageTable, address: VirtualAddress) -> Option<Phy
     }
 
     let table = table_from_physical(entry.output_address()?);
-    // SAFETY: A valid branch entry points to a page-table page owned by the MMU.
+    // SAFETY: A valid branch entry points to a page table page owned by the MMU.
     let entry = unsafe { (*table).entries[vpn2] };
     if !entry.is_valid() {
         return None;
@@ -317,7 +317,7 @@ pub unsafe fn translate(root: &PageTable, address: VirtualAddress) -> Option<Phy
     }
 
     let table = table_from_physical(entry.output_address()?);
-    // SAFETY: A valid branch entry points to a page-table page owned by the MMU.
+    // SAFETY: A valid branch entry points to a page table page owned by the MMU.
     let entry = unsafe { (*table).entries[vpn1] };
     if !entry.is_valid() {
         return None;
@@ -329,7 +329,7 @@ pub unsafe fn translate(root: &PageTable, address: VirtualAddress) -> Option<Phy
     }
 
     let table = table_from_physical(entry.output_address()?);
-    // SAFETY: A valid branch entry points to a page-table page owned by the MMU.
+    // SAFETY: A valid branch entry points to a page table page owned by the MMU.
     let entry = unsafe { (*table).entries[vpn0] };
     entry
         .is_valid()
@@ -341,12 +341,12 @@ pub unsafe fn translate(root: &PageTable, address: VirtualAddress) -> Option<Phy
         .flatten()
 }
 
-/// Installs one 4 KiB leaf mapping in an existing Sv48 page-table tree.
+/// Installs one 4 KiB leaf mapping in an existing Sv48 page table tree.
 ///
 /// # Safety
 ///
 /// `root` and every branch descriptor used by this mapping must belong to a
-/// valid page-table tree owned by the caller. The caller must have exclusive
+/// valid page table tree owned by the caller. The caller must have exclusive
 /// mutation rights to the tree and must coordinate with any address-space or
 /// remote-sfence users not covered by the local invalidation here.
 pub unsafe fn map_page(
@@ -420,7 +420,7 @@ pub fn map_kernel_page_with_alloc(
     permissions: MappingPermissions,
     allocate_table: PageTableAllocator,
 ) -> Result<(), MapError> {
-    // SAFETY: The root table is the active kernel-owned table. Boot is still
+    // SAFETY: The root table is the active kernel owned table. Boot is still
     // single-hart while stack slots are created in the current rung.
     unsafe {
         map_page_with_alloc(
@@ -437,8 +437,8 @@ pub fn map_kernel_page_with_alloc(
 ///
 /// # Safety
 ///
-/// `root` must be a valid kernel-owned Sv48 root. The caller must hold the
-/// page-table mutation lock once SMP exists, and `allocate_table` must return a
+/// `root` must be a valid kernel owned Sv48 root. The caller must hold the
+/// page table mutation lock once SMP exists, and `allocate_table` must return a
 /// zeroed, page-aligned table page mapped in the kernel physmap.
 unsafe fn map_page_with_alloc(
     root: &mut PageTable,
@@ -507,17 +507,17 @@ unsafe fn map_page_with_alloc(
 }
 
 pub fn unmap_kernel_page(virtual_address: VirtualAddress) -> Result<PhysicalAddress, UnmapError> {
-    // SAFETY: The root table is the active kernel-owned table. Stack teardown
-    // runs before SMP page-table sharing exists.
+    // SAFETY: The root table is the active kernel owned table. Stack teardown
+    // runs before SMP page table sharing exists.
     unsafe { unmap_page(&mut *ROOT_TABLE.get(), virtual_address) }
 }
 
-/// Removes one 4 KiB leaf mapping from an existing Sv48 page-table tree.
+/// Removes one 4 KiB leaf mapping from an existing Sv48 page table tree.
 ///
 /// # Safety
 ///
 /// `root` and every branch descriptor used by this mapping must belong to a
-/// valid page-table tree owned by the caller. The caller must have exclusive
+/// valid page table tree owned by the caller. The caller must have exclusive
 /// mutation rights to the tree and must not free the physical page until all
 /// harts that could use the old translation have observed the sfence.
 pub unsafe fn unmap_page(
@@ -579,7 +579,7 @@ pub struct TranslationLookasideBuffer;
 impl TranslationLookasideBuffer {
     pub fn flush_all() {
         cpu::fence_rw_rw();
-        // SAFETY: RISC-V does not order page-table writes with address
+        // SAFETY: RISC-V does not order page table writes with address
         // translation by itself. SFENCE.VMA is the architectural handoff.
         unsafe { asm!("sfence.vma zero, zero", options(nostack, preserves_flags)) };
     }

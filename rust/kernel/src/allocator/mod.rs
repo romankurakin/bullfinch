@@ -1,7 +1,7 @@
 //! Kernel object allocator.
 //!
-//! Fixed-size pools allocate objects from self-contained slab pages. Each slab
-//! stores its metadata in slot 0 and an encoded back-pointer at the page start,
+//! Fixed size pools allocate objects from self contained slab pages. Each slab
+//! stores its metadata in slot 0 and an encoded back pointer at the page start,
 //! so freeing an object does not need external metadata.
 
 use core::{cell::UnsafeCell, marker::PhantomData, mem::MaybeUninit, ptr::NonNull};
@@ -124,13 +124,13 @@ impl<T> Pool<T> {
     ///
     /// `object` must have been returned by this pool and must not have already
     /// been freed. Passing an arbitrary pointer can make the allocator read an
-    /// invalid slab back-pointer.
+    /// invalid slab back pointer.
     unsafe fn free(&mut self, object: NonNull<MaybeUninit<T>>) -> Result<(), FreeError> {
         let object_addr = object.as_ptr() as usize;
         let page_base = object_addr & !(PAGE_SIZE - 1);
         let back_pointer = page_base as *const usize;
         // SAFETY: `page_base` is derived from the object pointer. Validation
-        // below rejects pages whose encoded back-pointer does not match this
+        // below rejects pages whose encoded back pointer does not match this
         // pool before any slab metadata is trusted.
         let encoded = unsafe { back_pointer.read() };
         let slab = self
@@ -143,7 +143,7 @@ impl<T> Pool<T> {
             return Err(FreeError::InvalidSlab);
         }
 
-        // SAFETY: The encoded back-pointer and expected address checks above
+        // SAFETY: The encoded back pointer and expected address checks above
         // prove that this pool owns the slab header for `page_base`.
         let slab_ref = unsafe { slab.as_ref() };
         if slab_ref.page_addr != page_base || slab_ref.cookie != self.slab_cookie(page_base) {
@@ -195,7 +195,7 @@ impl<T> Pool<T> {
         if slab_mut.free_count == max_free && self.slab_count > MIN_SLABS {
             self.unlink_slab(slab);
             self.slab_count -= 1;
-            // SAFETY: The page is leaving this pool. Poisoning the back-pointer
+            // SAFETY: The page is leaving this pool. Poisoning the back pointer
             // makes stale frees fail the cookie check.
             unsafe {
                 (slab_mut.page_addr as *mut usize).write(usize::MAX);
@@ -309,8 +309,10 @@ impl<T> Pool<T> {
                 prev: core::ptr::null_mut(),
                 in_partial_list: false,
             });
-            (page_addr as *mut usize).write(self.encode_back_pointer(page_addr, slab));
         }
+        // SAFETY: The first word in this owned page stores the encoded slab
+        // pointer used to validate frees.
+        unsafe { (page_addr as *mut usize).write(self.encode_back_pointer(page_addr, slab)) };
 
         self.link_slab(slab);
         self.slab_count += 1;
@@ -588,7 +590,7 @@ fn alloc_raw(size: usize, alignment: Option<usize>) -> Result<NonNull<u8>, Alloc
 ///
 /// `ptr` must have been returned by `alloc_raw` and must not have already been
 /// freed. Passing a forged pointer can make the allocator read an invalid slab
-/// back-pointer.
+/// back pointer.
 unsafe fn free_raw(ptr: NonNull<u8>) -> Result<(), FreeError> {
     let _guard = KMALLOC_LOCK.guard();
     // SAFETY: The caller proves `ptr` belongs to this allocator and is not
@@ -802,9 +804,10 @@ mod tests {
         assert_ne!(first, second);
         assert_eq!(pool.total_allocated(), 2);
 
-        // SAFETY: `first` and `second` came from this pool and are freed once.
+        // SAFETY: `first` came from this pool and is freed once.
         unsafe { pool.free(first) }.unwrap();
         assert_eq!(pool.total_allocated(), 1);
+        // SAFETY: `second` came from this pool and is freed once.
         unsafe { pool.free(second) }.unwrap();
         assert_eq!(pool.total_allocated(), 0);
     }
@@ -855,14 +858,12 @@ mod tests {
         let storage_base = page_base + pool.usable_start();
 
         let misaligned = NonNull::new((object_addr + 1) as *mut MaybeUninit<TestObject>).unwrap();
-        // SAFETY: Error-path test passes malformed pointers to validate checks.
-        assert_eq!(
-            unsafe { pool.free(misaligned) },
-            Err(FreeError::MisalignedPointer)
-        );
+        // SAFETY: Error path test passes malformed pointers to validate checks.
+        let misaligned_result = unsafe { pool.free(misaligned) };
+        assert_eq!(misaligned_result, Err(FreeError::MisalignedPointer));
 
         let metadata = NonNull::new(storage_base as *mut MaybeUninit<TestObject>).unwrap();
-        // SAFETY: Error-path test passes the metadata slot intentionally.
+        // SAFETY: Error path test passes the metadata slot intentionally.
         assert_eq!(unsafe { pool.free(metadata) }, Err(FreeError::MetadataSlot));
 
         let out_of_bounds = NonNull::new(
@@ -870,15 +871,13 @@ mod tests {
                 as *mut MaybeUninit<TestObject>,
         )
         .unwrap();
-        // SAFETY: Error-path test passes an out-of-bounds slot intentionally.
-        assert_eq!(
-            unsafe { pool.free(out_of_bounds) },
-            Err(FreeError::OutOfBounds)
-        );
+        // SAFETY: Error path test passes an out of bounds slot intentionally.
+        let out_of_bounds_result = unsafe { pool.free(out_of_bounds) };
+        assert_eq!(out_of_bounds_result, Err(FreeError::OutOfBounds));
 
         // SAFETY: `object` came from this pool and has not been freed.
         unsafe { pool.free(object) }.unwrap();
-        // SAFETY: Error-path test intentionally repeats the free.
+        // SAFETY: Error path test intentionally repeats the free.
         assert_eq!(unsafe { pool.free(object) }, Err(FreeError::DoubleFree));
     }
 
@@ -895,7 +894,7 @@ mod tests {
         unsafe {
             back_pointer.write(0);
         }
-        // SAFETY: Error-path test intentionally corrupts the slab back-pointer.
+        // SAFETY: Error path test intentionally corrupts the slab back pointer.
         assert_eq!(unsafe { pool.free(object) }, Err(FreeError::InvalidSlab));
         // SAFETY: Restore metadata before freeing the live object.
         unsafe {

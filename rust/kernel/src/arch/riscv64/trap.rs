@@ -8,10 +8,14 @@
 
 use core::arch::{asm, global_asm};
 
-use kernel::trap::{frame::riscv64::TrapFrame, report::TrapFrameSnapshot};
+use kernel::trap::{
+    frame::riscv64::{IrqFrame, TrapFrame},
+    report::TrapFrameSnapshot,
+};
 
 const STVEC_MODE_VECTORED: usize = 1;
 const FRAME_SIZE_NEGATIVE: isize = -(TrapFrame::SIZE as isize);
+const IRQ_FRAME_SIZE_NEGATIVE: isize = -(IrqFrame::SIZE as isize);
 
 global_asm!(
     r#"
@@ -31,7 +35,7 @@ __bullfinch_riscv64_trap_vector:
     .endr
 
     # Slot 5 is the supervisor timer interrupt.
-    j rust_riscv64_kernel_trap_entry
+    j rust_riscv64_kernel_fast_irq_entry
 
     # Slots 6-255 avoid short-table fallthrough for platform/local causes.
     .rept 250
@@ -122,6 +126,53 @@ rust_riscv64_kernel_trap_entry:
     ld x5, 32(sp)
     addi sp, sp, {frame_size}
     sret
+
+    .global rust_riscv64_kernel_fast_irq_entry
+rust_riscv64_kernel_fast_irq_entry:
+    addi sp, sp, {irq_frame_size_negative}
+    sd ra, 0(sp)
+    sd t0, 8(sp)
+    sd t1, 16(sp)
+    sd t2, 24(sp)
+    sd a0, 32(sp)
+    sd a1, 40(sp)
+    sd a2, 48(sp)
+    sd a3, 56(sp)
+    sd a4, 64(sp)
+    sd a5, 72(sp)
+    sd a6, 80(sp)
+    sd a7, 88(sp)
+    sd t3, 96(sp)
+    sd t4, 104(sp)
+    sd t5, 112(sp)
+    sd t6, 120(sp)
+    csrr t0, sepc
+    sd t0, {irq_program_counter_offset}(sp)
+    csrr t0, sstatus
+    sd t0, {irq_status_offset}(sp)
+    call rust_riscv64_handle_kernel_fast_irq
+    ld t0, {irq_program_counter_offset}(sp)
+    csrw sepc, t0
+    ld t0, {irq_status_offset}(sp)
+    csrw sstatus, t0
+    ld ra, 0(sp)
+    ld t0, 8(sp)
+    ld t1, 16(sp)
+    ld t2, 24(sp)
+    ld a0, 32(sp)
+    ld a1, 40(sp)
+    ld a2, 48(sp)
+    ld a3, 56(sp)
+    ld a4, 64(sp)
+    ld a5, 72(sp)
+    ld a6, 80(sp)
+    ld a7, 88(sp)
+    ld t3, 96(sp)
+    ld t4, 104(sp)
+    ld t5, 112(sp)
+    ld t6, 120(sp)
+    addi sp, sp, {irq_frame_size}
+    sret
     "#,
     frame_size_negative = const FRAME_SIZE_NEGATIVE,
     frame_size = const TrapFrame::SIZE,
@@ -131,6 +182,10 @@ rust_riscv64_kernel_trap_entry:
     cause_offset = const TrapFrame::CAUSE_OFFSET,
     trap_value_offset = const TrapFrame::TRAP_VALUE_OFFSET,
     last_register_offset = const TrapFrame::LAST_REGISTER_OFFSET,
+    irq_frame_size_negative = const IRQ_FRAME_SIZE_NEGATIVE,
+    irq_frame_size = const IrqFrame::SIZE,
+    irq_program_counter_offset = const IrqFrame::PROGRAM_COUNTER_OFFSET,
+    irq_status_offset = const IrqFrame::STATUS_OFFSET,
 );
 
 unsafe extern "C" {
@@ -155,6 +210,7 @@ pub fn init() {
 }
 
 const _: () = assert!(TrapFrame::SIZE == 288);
+const _: () = assert!(IrqFrame::SIZE == 144);
 
 #[unsafe(no_mangle)]
 extern "C" fn rust_riscv64_handle_kernel_trap(frame: *mut TrapFrame) {
@@ -172,4 +228,9 @@ extern "C" fn rust_riscv64_handle_kernel_trap(frame: *mut TrapFrame) {
 
     crate::console::print_unsafe("\n[TRAP:riscv64]\nmissing trap frame\n");
     crate::hal::cpu::halt()
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn rust_riscv64_handle_kernel_fast_irq() {
+    crate::runtime::trap::handle_fast_interrupt();
 }

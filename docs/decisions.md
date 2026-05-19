@@ -37,13 +37,11 @@ board doesn't require modifying kernel code.
 **Trap frame:** Uniform 288-byte layout across architectures over arch-specific
 sizes. Common code can inspect registers without conditionals.
 
-**IRQ fast path:** Partial register save (176/144 bytes) over full context (288).
-Reduces interrupt latency. Full save only for synchronous exceptions that may
-inspect callee-saved state.
+**IRQ fast path:** Partial IRQ frames (176/144 bytes) over full 288-byte trap
+frames. Lower interrupt latency while restores IRQ state.
 
-**Assembly generation:** Derived offsets from struct layout over hardcoded
-values. Single source of truth prevents assembly/struct desync when layout
-changes.
+**Assembly layout:** Frame sizes and field offsets over unchecked
+hardcoded offsets. Layout drift fails at build time.
 
 ---
 
@@ -83,8 +81,8 @@ outside boot policy.
 **Strategy:** Free list with per-page metadata over bitmap or buddy system.
 O(1) allocation and free, simpler than buddy while handling fragmentation.
 
-**Metadata placement:** End of arena over beginning. Keeps low addresses free
-for legacy DMA that requires sub-4GB memory.
+**Metadata placement:** Highest safe arena span over beginning. Keeps low
+addresses free for legacy DMA while avoiding firmware and kernel reservations.
 
 **Debug:** Poison fills (0xDE) over zeroing. Use-after-free causes predictable
 corruption (0xDEDEDEDE), making bugs obvious instead of silent.

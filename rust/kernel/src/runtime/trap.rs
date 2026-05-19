@@ -26,8 +26,7 @@ pub fn handle_kernel_interrupt(frame: &mut impl TrapFrameSnapshot) {
     panic_trap(TrapReport::from_frame(frame));
 }
 
-#[cfg(target_arch = "aarch64")]
-pub fn handle_arch_interrupt() {
+pub fn handle_fast_interrupt() {
     if !crate::hal::interrupt::handle_timer_interrupt(None) {
         let mut out = crate::console::Console::new();
         out.print("\n[TRAP]\nunhandled interrupt\n");
@@ -41,8 +40,9 @@ unsafe fn switch_context(
     new: &crate::hal::context::Context,
 ) {
     // SAFETY: The task module owns scheduler contexts and only hands us pairs
-    // that can be switched at a trap-return boundary.
-    unsafe { crate::hal::context::switch_context(old, new) };
+    // that can be switched at an exception-return boundary. The final `eret` or
+    // `sret` restores the interrupted context's IRQ state.
+    unsafe { crate::hal::context::switch_context_from_trap(old, new) };
 }
 
 fn panic_trap(report: TrapReport) -> ! {

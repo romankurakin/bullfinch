@@ -7,6 +7,7 @@ use core::arch::asm;
 
 const SUPERVISOR_INTERRUPT_ENABLE: usize = 1 << 1;
 
+#[allow(dead_code, reason = "used by the library CPU backend")]
 pub fn disable_interrupts() -> bool {
     let sstatus: usize;
     // SAFETY: Reading sstatus is local hart state. SIE records whether
@@ -40,17 +41,23 @@ pub fn enable_interrupts() {
     }
 }
 
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "used by spinlock guards through the library CPU backend"
+)]
 pub fn restore_interrupts(was_enabled: bool) {
     if was_enabled {
         enable_interrupts();
     }
 }
 
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "used by spin loops through the library CPU backend"
+)]
 pub fn spin_wait() {
-    // SAFETY: PAUSE is a hint instruction. On implementations that ignore it,
-    // it behaves like a no-op in the polling loop.
+    // SAFETY: PAUSE is a hint instruction. On CPUs that ignore it, it behaves
+    // like a no op in the polling loop.
     unsafe {
         asm!(
             ".insn i 0x0F, 0, x0, x0, 0x10",
@@ -59,16 +66,11 @@ pub fn spin_wait() {
     };
 }
 
-/// `fence rw, rw` — required after page-table writes and before SFENCE.VMA.
+/// The RISC V read write fence is required after page table writes and before
+/// SFENCE VMA.
 pub fn fence_rw_rw() {
-    // SAFETY: Orders page-table writes before subsequent translation.
+    // SAFETY: Orders page table writes before subsequent translation.
     unsafe { asm!("fence rw, rw", options(nomem, nostack, preserves_flags)) };
-}
-
-#[allow(dead_code)]
-pub fn fence_i() {
-    // SAFETY: Synchronizes instruction fetch after code changes.
-    unsafe { asm!("fence.i", options(nomem, nostack, preserves_flags)) };
 }
 
 fn wait_for_interrupt() {

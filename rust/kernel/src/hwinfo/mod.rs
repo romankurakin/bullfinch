@@ -96,11 +96,15 @@ impl HardwareInfo {
         }
     }
 
-    pub fn from_fdt(dtb_phys: DeviceTreeBlobPhysicalAddress, fdt: &Fdt<'_>) -> Self {
+    pub fn from_fdt(
+        dtb_phys: DeviceTreeBlobPhysicalAddress,
+        fdt: &Fdt<'_>,
+        dtb_blob: &[u8],
+    ) -> Self {
         let mut info = Self::empty(dtb_phys);
         info.dtb_size = fdt.total_size();
         info.collect_memory_regions(fdt);
-        info.collect_reserved_regions(fdt);
+        info.collect_reserved_regions(fdt, dtb_blob);
         info.timer_frequency = timer_frequency(fdt);
         info.cpu_count = cpu_count(fdt);
         info.features.hardware_random = has_hardware_random(fdt);
@@ -172,7 +176,41 @@ impl HardwareInfo {
         sort_regions_by_size(&mut self.memory_regions[..self.memory_region_count]);
     }
 
-    fn collect_reserved_regions(&mut self, fdt: &Fdt<'_>) {
+    fn collect_reserved_regions(&mut self, fdt: &Fdt<'_>, dtb_blob: &[u8]) {
+        self.collect_memory_reservation_block(fdt, dtb_blob);
+        self.collect_reserved_memory_node(fdt);
+    }
+
+    fn collect_memory_reservation_block(&mut self, fdt: &Fdt<'_>, dtb_blob: &[u8]) {
+        let offset = fdt.header().memory_reserve_map_offset as usize;
+        let Some(mut block) = dtb_blob.get(offset..) else {
+            self.dropped_reserved_regions = self.dropped_reserved_regions.saturating_add(1);
+            return;
+        };
+
+        while block.len() >= 16 {
+            let Some(address) = read_be_u64(block) else {
+                break;
+            };
+            let Some(size) = read_be_u64(&block[8..]) else {
+                break;
+            };
+            if address == 0 && size == 0 {
+                return;
+            }
+            let Some(region) = MemoryRegion::from_fdt_reg(address, size) else {
+                self.dropped_reserved_regions = self.dropped_reserved_regions.saturating_add(1);
+                block = &block[16..];
+                continue;
+            };
+            self.push_reserved_region(region);
+            block = &block[16..];
+        }
+
+        self.dropped_reserved_regions = self.dropped_reserved_regions.saturating_add(1);
+    }
+
+    fn collect_reserved_memory_node(&mut self, fdt: &Fdt<'_>) {
         let root = fdt.root();
         let Some(parent) = root.find_node("/reserved-memory") else {
             return;
@@ -193,6 +231,19 @@ impl HardwareInfo {
             }
         }
     }
+}
+
+fn read_be_u64(bytes: &[u8]) -> Option<u64> {
+    Some(u64::from_be_bytes([
+        *bytes.first()?,
+        *bytes.get(1)?,
+        *bytes.get(2)?,
+        *bytes.get(3)?,
+        *bytes.get(4)?,
+        *bytes.get(5)?,
+        *bytes.get(6)?,
+        *bytes.get(7)?,
+    ]))
 }
 
 // Insertion sort is fine: MAX_MEMORY_ARENAS is 4 and this runs once at boot.
@@ -414,7 +465,8 @@ mod tests {
     fn extracts_boot_hardware_info_from_fdt() {
         let blob = test_dtb();
         let fdt = Fdt::new_unaligned(&blob).unwrap();
-        let hw = HardwareInfo::from_fdt(DeviceTreeBlobPhysicalAddress::new(0x4800_0000), &fdt);
+        let hw =
+            HardwareInfo::from_fdt(DeviceTreeBlobPhysicalAddress::new(0x4800_0000), &fdt, &blob);
 
         assert_eq!(hw.dtb_phys, DeviceTreeBlobPhysicalAddress::new(0x4800_0000));
         assert_eq!(hw.dtb_size, blob.len());
@@ -445,6 +497,46 @@ mod tests {
                 redistributor_base: Some(PhysicalAddress::new(0x080a_0000)),
             })
         );
+    }
+
+    #[test]
+    fn extracts_header_memory_reservations_from_fdt() {
+        let mut dtb = DtbBuilder::new();
+        dtb.reserve(0x8100_0000, 0x20_0000);
+        dtb.begin_node("");
+        dtb.end_node();
+
+        let blob = dtb.finish();
+        let fdt = Fdt::new_unaligned(&blob).unwrap();
+        let hw =
+            HardwareInfo::from_fdt(DeviceTreeBlobPhysicalAddress::new(0x4800_0000), &fdt, &blob);
+
+        assert_eq!(
+            hw.reserved_regions(),
+            &[MemoryRegion {
+                base: PhysicalAddress::new(0x8100_0000),
+                size: 0x20_0000,
+            }]
+        );
+        assert_eq!(hw.dropped_reserved_regions, 0);
+    }
+
+    #[test]
+    fn records_reserved_region_overflow() {
+        let mut dtb = DtbBuilder::new();
+        for index in 0..MAX_RESERVED_REGIONS + 1 {
+            dtb.reserve(0x8100_0000 + (index as u64) * 0x10_0000, 0x1000);
+        }
+        dtb.begin_node("");
+        dtb.end_node();
+
+        let blob = dtb.finish();
+        let fdt = Fdt::new_unaligned(&blob).unwrap();
+        let hw =
+            HardwareInfo::from_fdt(DeviceTreeBlobPhysicalAddress::new(0x4800_0000), &fdt, &blob);
+
+        assert_eq!(hw.reserved_regions().len(), MAX_RESERVED_REGIONS);
+        assert_eq!(hw.dropped_reserved_regions, 1);
     }
 
     fn test_dtb() -> Vec<u8> {
@@ -514,6 +606,7 @@ mod tests {
     }
 
     struct DtbBuilder {
+        reserved: Vec<(u64, u64)>,
         structs: Vec<u8>,
         strings: Vec<u8>,
     }
@@ -521,9 +614,14 @@ mod tests {
     impl DtbBuilder {
         fn new() -> Self {
             Self {
+                reserved: Vec::new(),
                 structs: Vec::new(),
                 strings: Vec::new(),
             }
+        }
+
+        fn reserve(&mut self, address: u64, size: u64) {
+            self.reserved.push((address, size));
         }
 
         fn begin_node(&mut self, name: &str) {
@@ -577,8 +675,8 @@ mod tests {
             self.push_struct_u32(FDT_END);
 
             const HEADER_LEN: usize = 40;
-            const RESERVE_MAP_LEN: usize = 16;
-            let structs_offset = HEADER_LEN + RESERVE_MAP_LEN;
+            let reserve_map_len = (self.reserved.len() + 1) * 16;
+            let structs_offset = HEADER_LEN + reserve_map_len;
             let strings_offset = structs_offset + self.structs.len();
             let total_size = strings_offset + self.strings.len();
 
@@ -597,7 +695,11 @@ mod tests {
             ] {
                 out.extend_from_slice(&word.to_be_bytes());
             }
-            out.extend_from_slice(&[0; RESERVE_MAP_LEN]);
+            for (address, size) in &self.reserved {
+                out.extend_from_slice(&address.to_be_bytes());
+                out.extend_from_slice(&size.to_be_bytes());
+            }
+            out.extend_from_slice(&[0; 16]);
             out.extend_from_slice(&self.structs);
             out.extend_from_slice(&self.strings);
             out

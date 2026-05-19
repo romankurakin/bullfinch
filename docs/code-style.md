@@ -10,15 +10,6 @@ Bullfinch is Rust code first. Keep code explicit, small, and reviewable.
 - Keep FP/SIMD disabled or unused until save/restore support exists.
 - Run `just lint` before handing off kernel or tool changes.
 
-Kernel crate attributes:
-
-```rust
-#![no_std]
-#![deny(clippy::undocumented_unsafe_blocks)]
-#![deny(unsafe_op_in_unsafe_fn)]
-#![deny(unused_must_use)]
-```
-
 ## Rust API Rules
 
 - Prefer ownership, borrowing, guards, and `Drop` over raw handles.

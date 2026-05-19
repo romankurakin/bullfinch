@@ -4,7 +4,7 @@
 //! the trap frame used by exceptions. The layout mirrors AAPCS64: x19-x28,
 //! x29(fp), x30(lr), sp, and the saved interrupt state.
 
-#![allow(dead_code)]
+#![allow(dead_code, reason = "assembly owns context frame fields")]
 
 use core::arch::global_asm;
 
@@ -30,6 +30,14 @@ pub struct Context {
 
 impl Context {
     pub const SIZE: usize = 128;
+    pub const X19_OFFSET: usize = core::mem::offset_of!(Context, x19);
+    pub const X21_OFFSET: usize = core::mem::offset_of!(Context, x21);
+    pub const X23_OFFSET: usize = core::mem::offset_of!(Context, x23);
+    pub const X25_OFFSET: usize = core::mem::offset_of!(Context, x25);
+    pub const X27_OFFSET: usize = core::mem::offset_of!(Context, x27);
+    pub const FRAME_POINTER_OFFSET: usize = core::mem::offset_of!(Context, frame_pointer);
+    pub const STACK_POINTER_OFFSET: usize = core::mem::offset_of!(Context, stack_pointer);
+    pub const IRQ_ENABLED_OFFSET: usize = core::mem::offset_of!(Context, irq_enabled);
 
     pub const fn new(entry_pc: usize, stack_top: usize) -> Self {
         Self {
@@ -72,6 +80,7 @@ impl Context {
 
 unsafe extern "C" {
     fn bullfinch_switch_context(old: *mut Context, new: *const Context);
+    fn bullfinch_switch_context_from_trap(old: *mut Context, new: *const Context);
     fn bullfinch_thread_trampoline() -> !;
 }
 
@@ -89,6 +98,19 @@ pub unsafe fn switch_context(old: &mut Context, new: &Context) {
     unsafe { bullfinch_switch_context(old, new) };
 }
 
+/// Switches contexts while already returning through an exception or IRQ frame.
+///
+/// # Safety
+///
+/// `old` and `new` must satisfy the same requirements as [`switch_context`].
+/// The caller must be on a trap or IRQ path whose final `eret` restores
+/// interrupt state from the saved exception status.
+pub unsafe fn switch_context_from_trap(old: &mut Context, new: &Context) {
+    // SAFETY: The caller proves the context ABI requirements and the trap-return
+    // boundary owns interrupt-state restoration.
+    unsafe { bullfinch_switch_context_from_trap(old, new) };
+}
+
 pub fn thread_trampoline_address() -> usize {
     bullfinch_thread_trampoline as *const () as usize
 }
@@ -100,25 +122,25 @@ global_asm!(
     .global bullfinch_switch_context
     .type bullfinch_switch_context, %function
 bullfinch_switch_context:
-    stp x19, x20, [x0, #0]
-    stp x21, x22, [x0, #16]
-    stp x23, x24, [x0, #32]
-    stp x25, x26, [x0, #48]
-    stp x27, x28, [x0, #64]
-    stp x29, x30, [x0, #80]
+    stp x19, x20, [x0, #{x19_offset}]
+    stp x21, x22, [x0, #{x21_offset}]
+    stp x23, x24, [x0, #{x23_offset}]
+    stp x25, x26, [x0, #{x25_offset}]
+    stp x27, x28, [x0, #{x27_offset}]
+    stp x29, x30, [x0, #{frame_pointer_offset}]
     mov x2, sp
-    str x2, [x0, #96]
+    str x2, [x0, #{stack_pointer_offset}]
 
-    ldp x19, x20, [x1, #0]
-    ldp x21, x22, [x1, #16]
-    ldp x23, x24, [x1, #32]
-    ldp x25, x26, [x1, #48]
-    ldp x27, x28, [x1, #64]
-    ldp x29, x30, [x1, #80]
-    ldr x2, [x1, #96]
+    ldp x19, x20, [x1, #{x19_offset}]
+    ldp x21, x22, [x1, #{x21_offset}]
+    ldp x23, x24, [x1, #{x23_offset}]
+    ldp x25, x26, [x1, #{x25_offset}]
+    ldp x27, x28, [x1, #{x27_offset}]
+    ldp x29, x30, [x1, #{frame_pointer_offset}]
+    ldr x2, [x1, #{stack_pointer_offset}]
     mov sp, x2
 
-    ldr x2, [x1, #104]
+    ldr x2, [x1, #{irq_enabled_offset}]
     cbz x2, 1f
     msr daifclr, #3
     b 2f
@@ -127,22 +149,53 @@ bullfinch_switch_context:
 2:
     ret
 
+    .global bullfinch_switch_context_from_trap
+    .type bullfinch_switch_context_from_trap, %function
+bullfinch_switch_context_from_trap:
+    stp x19, x20, [x0, #{x19_offset}]
+    stp x21, x22, [x0, #{x21_offset}]
+    stp x23, x24, [x0, #{x23_offset}]
+    stp x25, x26, [x0, #{x25_offset}]
+    stp x27, x28, [x0, #{x27_offset}]
+    stp x29, x30, [x0, #{frame_pointer_offset}]
+    mov x2, sp
+    str x2, [x0, #{stack_pointer_offset}]
+
+    ldp x19, x20, [x1, #{x19_offset}]
+    ldp x21, x22, [x1, #{x21_offset}]
+    ldp x23, x24, [x1, #{x23_offset}]
+    ldp x25, x26, [x1, #{x25_offset}]
+    ldp x27, x28, [x1, #{x27_offset}]
+    ldp x29, x30, [x1, #{frame_pointer_offset}]
+    ldr x2, [x1, #{stack_pointer_offset}]
+    mov sp, x2
+    ret
+
     .global bullfinch_thread_trampoline
     .type bullfinch_thread_trampoline, %function
 bullfinch_thread_trampoline:
     mov x0, x20
     br x19
 "#
+    ,
+    x19_offset = const Context::X19_OFFSET,
+    x21_offset = const Context::X21_OFFSET,
+    x23_offset = const Context::X23_OFFSET,
+    x25_offset = const Context::X25_OFFSET,
+    x27_offset = const Context::X27_OFFSET,
+    frame_pointer_offset = const Context::FRAME_POINTER_OFFSET,
+    stack_pointer_offset = const Context::STACK_POINTER_OFFSET,
+    irq_enabled_offset = const Context::IRQ_ENABLED_OFFSET,
 );
 
 const _: () = assert!(core::mem::size_of::<Context>() == Context::SIZE);
 const _: () = assert!(core::mem::align_of::<Context>() == 16);
-const _: () = assert!(core::mem::offset_of!(Context, x19) == 0);
+const _: () = assert!(Context::X19_OFFSET == 0);
 const _: () = assert!(core::mem::offset_of!(Context, x20) == 8);
-const _: () = assert!(core::mem::offset_of!(Context, frame_pointer) == 80);
+const _: () = assert!(Context::FRAME_POINTER_OFFSET == 80);
 const _: () = assert!(core::mem::offset_of!(Context, link_register) == 88);
-const _: () = assert!(core::mem::offset_of!(Context, stack_pointer) == 96);
-const _: () = assert!(core::mem::offset_of!(Context, irq_enabled) == 104);
+const _: () = assert!(Context::STACK_POINTER_OFFSET == 96);
+const _: () = assert!(Context::IRQ_ENABLED_OFFSET == 104);
 
 #[cfg(test)]
 mod tests {

@@ -5,19 +5,12 @@
 //! architecture implementation at compile time with zero runtime cost.
 
 pub mod cpu {
-    #[allow(dead_code)]
-    pub fn disable_interrupts() {
-        let _ = crate::arch::cpu::disable_interrupts();
-    }
-
     pub fn halt() -> ! {
         crate::arch::cpu::halt()
     }
 }
 
 pub mod context {
-    #![allow(dead_code)]
-
     pub type Context = kernel::context::Context;
 
     /// Switches from one kernel context to another.
@@ -30,6 +23,17 @@ pub mod context {
     pub unsafe fn switch_context(old: &mut Context, new: &Context) {
         // SAFETY: This is the HAL boundary for the arch-specific switch ABI.
         unsafe { kernel::context::switch_context(old, new) };
+    }
+
+    /// Switches context from a trap or IRQ handler without changing live IRQ state.
+    ///
+    /// # Safety
+    ///
+    /// The caller must be returning through an architecture exception return
+    /// frame that will restore interrupt state.
+    pub unsafe fn switch_context_from_trap(old: &mut Context, new: &Context) {
+        // SAFETY: This is the HAL boundary for the arch-specific trap switch ABI.
+        unsafe { kernel::context::switch_context_from_trap(old, new) };
     }
 }
 
@@ -56,9 +60,6 @@ pub mod mmu {
         pmm,
     };
 
-    #[allow(dead_code)]
-    pub const KERNEL_VIRTUAL_BASE: VirtualAddress =
-        VirtualAddress::new(crate::arch::mmu::KERNEL_VIRTUAL_BASE);
     pub const KERNEL_PHYSICAL_LOAD: PhysicalAddress =
         PhysicalAddress::new(crate::arch::mmu::KERNEL_PHYSICAL_LOAD);
 
@@ -66,7 +67,6 @@ pub mod mmu {
         crate::arch::mmu::physical_to_virtual(address)
     }
 
-    #[allow(dead_code)]
     pub fn virtual_to_physical(address: VirtualAddress) -> PhysicalAddress {
         crate::arch::mmu::virtual_to_physical(address)
     }
@@ -116,7 +116,6 @@ pub mod mmu {
         Some(virtual_address)
     }
 
-    #[allow(dead_code)]
     pub fn remove_identity_mapping() {
         crate::arch::mmu::remove_identity_mapping();
     }

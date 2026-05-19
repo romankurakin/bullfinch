@@ -9,7 +9,7 @@
 
 use core::arch::{asm, global_asm};
 
-use kernel::trap::frame::arm64::TrapFrame;
+use kernel::trap::frame::arm64::{IrqFrame, TrapFrame};
 
 global_asm!(
     r#"
@@ -104,18 +104,53 @@ __bullfinch_aarch64_trap_vectors:
     eret
     .endm
 
+    .macro save_irq_frame handler
+    sub sp, sp, #{irq_frame_size}
+    stp x0, x1, [sp, #0]
+    stp x2, x3, [sp, #16]
+    stp x4, x5, [sp, #32]
+    stp x6, x7, [sp, #48]
+    stp x8, x9, [sp, #64]
+    stp x10, x11, [sp, #80]
+    stp x12, x13, [sp, #96]
+    stp x14, x15, [sp, #112]
+    stp x16, x17, [sp, #128]
+    stp x18, x30, [sp, #144]
+    mrs x0, elr_el1
+    mrs x1, spsr_el1
+    stp x0, x1, [sp, #{irq_exception_return_address_offset}]
+    bl \handler
+    ldp x0, x1, [sp, #{irq_exception_return_address_offset}]
+    msr elr_el1, x0
+    msr spsr_el1, x1
+    ldp x2, x3, [sp, #16]
+    ldp x4, x5, [sp, #32]
+    ldp x6, x7, [sp, #48]
+    ldp x8, x9, [sp, #64]
+    ldp x10, x11, [sp, #80]
+    ldp x12, x13, [sp, #96]
+    ldp x14, x15, [sp, #112]
+    ldp x16, x17, [sp, #128]
+    ldp x18, x30, [sp, #144]
+    ldp x0, x1, [sp, #0]
+    add sp, sp, #{irq_frame_size}
+    eret
+    .endm
+
     .global rust_aarch64_kernel_trap_entry
 rust_aarch64_kernel_trap_entry:
     save_trap_frame rust_aarch64_handle_kernel_trap
 
     .global rust_aarch64_kernel_irq_entry
 rust_aarch64_kernel_irq_entry:
-    save_trap_frame rust_aarch64_handle_kernel_irq
+    save_irq_frame rust_aarch64_handle_kernel_irq
     "#,
     frame_size = const TrapFrame::SIZE,
     link_register_offset = const TrapFrame::LINK_REGISTER_OFFSET,
     exception_return_address_offset = const TrapFrame::EXCEPTION_RETURN_ADDRESS_OFFSET,
     syndrome_offset = const TrapFrame::SYNDROME_OFFSET,
+    irq_frame_size = const IrqFrame::SIZE,
+    irq_exception_return_address_offset = const IrqFrame::EXCEPTION_RETURN_ADDRESS_OFFSET,
 );
 
 unsafe extern "C" {
@@ -138,6 +173,7 @@ pub fn init() {
 }
 
 const _: () = assert!(TrapFrame::SIZE == 288);
+const _: () = assert!(IrqFrame::SIZE == 176);
 
 #[unsafe(no_mangle)]
 extern "C" fn rust_aarch64_handle_kernel_trap(frame: *mut TrapFrame) {
@@ -154,14 +190,6 @@ extern "C" fn rust_aarch64_handle_kernel_trap(frame: *mut TrapFrame) {
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn rust_aarch64_handle_kernel_irq(frame: *mut TrapFrame) {
-    // SAFETY: The IRQ assembly entry uses the same frame save/restore macro as
-    // synchronous traps, and the frame is uniquely owned by this activation.
-    if unsafe { frame.as_mut() }.is_some() {
-        crate::runtime::trap::handle_arch_interrupt();
-        return;
-    }
-
-    crate::console::print_unsafe("\n[TRAP:arm64]\nmissing irq frame\n");
-    crate::hal::cpu::halt()
+extern "C" fn rust_aarch64_handle_kernel_irq() {
+    crate::runtime::trap::handle_fast_interrupt();
 }

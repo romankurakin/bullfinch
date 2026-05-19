@@ -102,6 +102,22 @@ pub mod arm64 {
         }
     }
 
+    #[repr(C)]
+    pub struct IrqFrame {
+        /// x0-x18 followed by x30. Callee-saved registers stay live across the
+        /// Rust IRQ handler and are captured by the context switch continuation
+        /// only when the timer preempts.
+        regs: [u64; 20],
+        elr: u64,
+        spsr: u64,
+    }
+
+    impl IrqFrame {
+        pub const SIZE: usize = core::mem::size_of::<Self>();
+        pub const EXCEPTION_RETURN_ADDRESS_OFFSET: usize = core::mem::offset_of!(IrqFrame, elr);
+        pub const PROGRAM_STATUS_OFFSET: usize = core::mem::offset_of!(IrqFrame, spsr);
+    }
+
     const _: () = assert!(core::mem::size_of::<TrapFrame>() == 288);
     const _: () = assert!(core::mem::offset_of!(TrapFrame, regs) == 0);
     const _: () = assert!(TrapFrame::SAVED_STACK_POINTER_OFFSET == 248);
@@ -110,6 +126,10 @@ pub mod arm64 {
     const _: () = assert!(TrapFrame::PROGRAM_STATUS_OFFSET == 264);
     const _: () = assert!(TrapFrame::SYNDROME_OFFSET == 272);
     const _: () = assert!(TrapFrame::FAULT_ADDRESS_OFFSET == 280);
+    const _: () = assert!(core::mem::size_of::<IrqFrame>() == 176);
+    const _: () = assert!(core::mem::offset_of!(IrqFrame, regs) == 0);
+    const _: () = assert!(IrqFrame::EXCEPTION_RETURN_ADDRESS_OFFSET == 160);
+    const _: () = assert!(IrqFrame::PROGRAM_STATUS_OFFSET == 168);
 
     #[cfg(test)]
     mod tests {
@@ -120,6 +140,8 @@ pub mod arm64 {
             assert_eq!(TrapFrame::SIZE, 288);
             assert_eq!(TrapFrame::SAVED_STACK_POINTER_OFFSET, 248);
             assert_eq!(TrapFrame::FAULT_ADDRESS_OFFSET, 280);
+            assert_eq!(IrqFrame::SIZE, 176);
+            assert_eq!(IrqFrame::EXCEPTION_RETURN_ADDRESS_OFFSET, 160);
         }
 
         #[test]
@@ -288,6 +310,22 @@ pub mod riscv64 {
         }
     }
 
+    #[repr(C)]
+    pub struct IrqFrame {
+        /// ra, t0-t2, a0-a7, and t3-t6. The callee-saved set is preserved by the
+        /// Rust call chain and captured by the context switch continuation only
+        /// when the timer preempts.
+        regs: [u64; 16],
+        sepc: u64,
+        sstatus: u64,
+    }
+
+    impl IrqFrame {
+        pub const SIZE: usize = core::mem::size_of::<Self>();
+        pub const PROGRAM_COUNTER_OFFSET: usize = core::mem::offset_of!(IrqFrame, sepc);
+        pub const STATUS_OFFSET: usize = core::mem::offset_of!(IrqFrame, sstatus);
+    }
+
     const _: () = assert!(core::mem::size_of::<TrapFrame>() == 288);
     const _: () = assert!(core::mem::offset_of!(TrapFrame, regs) == 0);
     const _: () = assert!(TrapFrame::SAVED_STACK_POINTER_OFFSET == 248);
@@ -296,6 +334,10 @@ pub mod riscv64 {
     const _: () = assert!(TrapFrame::CAUSE_OFFSET == 272);
     const _: () = assert!(TrapFrame::TRAP_VALUE_OFFSET == 280);
     const _: () = assert!(TrapFrame::LAST_REGISTER_OFFSET == 240);
+    const _: () = assert!(core::mem::size_of::<IrqFrame>() == 144);
+    const _: () = assert!(core::mem::offset_of!(IrqFrame, regs) == 0);
+    const _: () = assert!(IrqFrame::PROGRAM_COUNTER_OFFSET == 128);
+    const _: () = assert!(IrqFrame::STATUS_OFFSET == 136);
 
     #[cfg(test)]
     mod tests {
@@ -307,6 +349,8 @@ pub mod riscv64 {
             assert_eq!(TrapFrame::SAVED_STACK_POINTER_OFFSET, 248);
             assert_eq!(TrapFrame::TRAP_VALUE_OFFSET, 280);
             assert_eq!(TrapFrame::LAST_REGISTER_OFFSET, 240);
+            assert_eq!(IrqFrame::SIZE, 144);
+            assert_eq!(IrqFrame::PROGRAM_COUNTER_OFFSET, 128);
         }
 
         #[test]

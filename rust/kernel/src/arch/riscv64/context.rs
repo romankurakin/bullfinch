@@ -3,7 +3,7 @@
 //! This is the psABI callee-saved register set for voluntary switches,
 //! separate from the trap frame used by exceptions.
 
-#![allow(dead_code)]
+#![allow(dead_code, reason = "assembly owns context frame fields")]
 
 use core::arch::global_asm;
 
@@ -30,6 +30,21 @@ pub struct Context {
 
 impl Context {
     pub const SIZE: usize = 128;
+    pub const S0_OFFSET: usize = core::mem::offset_of!(Context, s0);
+    pub const S1_OFFSET: usize = core::mem::offset_of!(Context, s1);
+    pub const S2_OFFSET: usize = core::mem::offset_of!(Context, s2);
+    pub const S3_OFFSET: usize = core::mem::offset_of!(Context, s3);
+    pub const S4_OFFSET: usize = core::mem::offset_of!(Context, s4);
+    pub const S5_OFFSET: usize = core::mem::offset_of!(Context, s5);
+    pub const S6_OFFSET: usize = core::mem::offset_of!(Context, s6);
+    pub const S7_OFFSET: usize = core::mem::offset_of!(Context, s7);
+    pub const S8_OFFSET: usize = core::mem::offset_of!(Context, s8);
+    pub const S9_OFFSET: usize = core::mem::offset_of!(Context, s9);
+    pub const S10_OFFSET: usize = core::mem::offset_of!(Context, s10);
+    pub const S11_OFFSET: usize = core::mem::offset_of!(Context, s11);
+    pub const RETURN_ADDRESS_OFFSET: usize = core::mem::offset_of!(Context, return_address);
+    pub const STACK_POINTER_OFFSET: usize = core::mem::offset_of!(Context, stack_pointer);
+    pub const IRQ_ENABLED_OFFSET: usize = core::mem::offset_of!(Context, irq_enabled);
 
     pub const fn new(entry_pc: usize, stack_top: usize) -> Self {
         Self {
@@ -73,6 +88,7 @@ impl Context {
 
 unsafe extern "C" {
     fn bullfinch_switch_context(old: *mut Context, new: *const Context);
+    fn bullfinch_switch_context_from_trap(old: *mut Context, new: *const Context);
     fn bullfinch_thread_trampoline() -> !;
 }
 
@@ -90,6 +106,19 @@ pub unsafe fn switch_context(old: &mut Context, new: &Context) {
     unsafe { bullfinch_switch_context(old, new) };
 }
 
+/// Switches contexts while already returning through a trap or IRQ frame.
+///
+/// # Safety
+///
+/// `old` and `new` must satisfy the same requirements as [`switch_context`].
+/// The caller must be on a trap or IRQ path whose final `sret` restores
+/// interrupt state from the saved supervisor status.
+pub unsafe fn switch_context_from_trap(old: &mut Context, new: &Context) {
+    // SAFETY: The caller proves the context ABI requirements and the trap-return
+    // boundary owns interrupt-state restoration.
+    unsafe { bullfinch_switch_context_from_trap(old, new) };
+}
+
 pub fn thread_trampoline_address() -> usize {
     bullfinch_thread_trampoline as *const () as usize
 }
@@ -101,37 +130,37 @@ global_asm!(
     .global bullfinch_switch_context
     .type bullfinch_switch_context, @function
 bullfinch_switch_context:
-    sd s0, 0(a0)
-    sd s1, 8(a0)
-    sd s2, 16(a0)
-    sd s3, 24(a0)
-    sd s4, 32(a0)
-    sd s5, 40(a0)
-    sd s6, 48(a0)
-    sd s7, 56(a0)
-    sd s8, 64(a0)
-    sd s9, 72(a0)
-    sd s10, 80(a0)
-    sd s11, 88(a0)
-    sd ra, 96(a0)
-    sd sp, 104(a0)
+    sd s0, {s0_offset}(a0)
+    sd s1, {s1_offset}(a0)
+    sd s2, {s2_offset}(a0)
+    sd s3, {s3_offset}(a0)
+    sd s4, {s4_offset}(a0)
+    sd s5, {s5_offset}(a0)
+    sd s6, {s6_offset}(a0)
+    sd s7, {s7_offset}(a0)
+    sd s8, {s8_offset}(a0)
+    sd s9, {s9_offset}(a0)
+    sd s10, {s10_offset}(a0)
+    sd s11, {s11_offset}(a0)
+    sd ra, {return_address_offset}(a0)
+    sd sp, {stack_pointer_offset}(a0)
 
-    ld s0, 0(a1)
-    ld s1, 8(a1)
-    ld s2, 16(a1)
-    ld s3, 24(a1)
-    ld s4, 32(a1)
-    ld s5, 40(a1)
-    ld s6, 48(a1)
-    ld s7, 56(a1)
-    ld s8, 64(a1)
-    ld s9, 72(a1)
-    ld s10, 80(a1)
-    ld s11, 88(a1)
-    ld ra, 96(a1)
-    ld sp, 104(a1)
+    ld s0, {s0_offset}(a1)
+    ld s1, {s1_offset}(a1)
+    ld s2, {s2_offset}(a1)
+    ld s3, {s3_offset}(a1)
+    ld s4, {s4_offset}(a1)
+    ld s5, {s5_offset}(a1)
+    ld s6, {s6_offset}(a1)
+    ld s7, {s7_offset}(a1)
+    ld s8, {s8_offset}(a1)
+    ld s9, {s9_offset}(a1)
+    ld s10, {s10_offset}(a1)
+    ld s11, {s11_offset}(a1)
+    ld ra, {return_address_offset}(a1)
+    ld sp, {stack_pointer_offset}(a1)
 
-    ld t0, 112(a1)
+    ld t0, {irq_enabled_offset}(a1)
     beqz t0, 1f
     csrsi sstatus, 0x2
     j 2f
@@ -140,22 +169,72 @@ bullfinch_switch_context:
 2:
     ret
 
+    .global bullfinch_switch_context_from_trap
+    .type bullfinch_switch_context_from_trap, @function
+bullfinch_switch_context_from_trap:
+    sd s0, {s0_offset}(a0)
+    sd s1, {s1_offset}(a0)
+    sd s2, {s2_offset}(a0)
+    sd s3, {s3_offset}(a0)
+    sd s4, {s4_offset}(a0)
+    sd s5, {s5_offset}(a0)
+    sd s6, {s6_offset}(a0)
+    sd s7, {s7_offset}(a0)
+    sd s8, {s8_offset}(a0)
+    sd s9, {s9_offset}(a0)
+    sd s10, {s10_offset}(a0)
+    sd s11, {s11_offset}(a0)
+    sd ra, {return_address_offset}(a0)
+    sd sp, {stack_pointer_offset}(a0)
+
+    ld s0, {s0_offset}(a1)
+    ld s1, {s1_offset}(a1)
+    ld s2, {s2_offset}(a1)
+    ld s3, {s3_offset}(a1)
+    ld s4, {s4_offset}(a1)
+    ld s5, {s5_offset}(a1)
+    ld s6, {s6_offset}(a1)
+    ld s7, {s7_offset}(a1)
+    ld s8, {s8_offset}(a1)
+    ld s9, {s9_offset}(a1)
+    ld s10, {s10_offset}(a1)
+    ld s11, {s11_offset}(a1)
+    ld ra, {return_address_offset}(a1)
+    ld sp, {stack_pointer_offset}(a1)
+    ret
+
     .global bullfinch_thread_trampoline
     .type bullfinch_thread_trampoline, @function
 bullfinch_thread_trampoline:
     mv a0, s2
     jr s1
 "#
+    ,
+    s0_offset = const Context::S0_OFFSET,
+    s1_offset = const Context::S1_OFFSET,
+    s2_offset = const Context::S2_OFFSET,
+    s3_offset = const Context::S3_OFFSET,
+    s4_offset = const Context::S4_OFFSET,
+    s5_offset = const Context::S5_OFFSET,
+    s6_offset = const Context::S6_OFFSET,
+    s7_offset = const Context::S7_OFFSET,
+    s8_offset = const Context::S8_OFFSET,
+    s9_offset = const Context::S9_OFFSET,
+    s10_offset = const Context::S10_OFFSET,
+    s11_offset = const Context::S11_OFFSET,
+    return_address_offset = const Context::RETURN_ADDRESS_OFFSET,
+    stack_pointer_offset = const Context::STACK_POINTER_OFFSET,
+    irq_enabled_offset = const Context::IRQ_ENABLED_OFFSET,
 );
 
 const _: () = assert!(core::mem::size_of::<Context>() == Context::SIZE);
 const _: () = assert!(core::mem::align_of::<Context>() == 16);
-const _: () = assert!(core::mem::offset_of!(Context, s0) == 0);
-const _: () = assert!(core::mem::offset_of!(Context, s1) == 8);
-const _: () = assert!(core::mem::offset_of!(Context, s11) == 88);
-const _: () = assert!(core::mem::offset_of!(Context, return_address) == 96);
-const _: () = assert!(core::mem::offset_of!(Context, stack_pointer) == 104);
-const _: () = assert!(core::mem::offset_of!(Context, irq_enabled) == 112);
+const _: () = assert!(Context::S0_OFFSET == 0);
+const _: () = assert!(Context::S1_OFFSET == 8);
+const _: () = assert!(Context::S11_OFFSET == 88);
+const _: () = assert!(Context::RETURN_ADDRESS_OFFSET == 96);
+const _: () = assert!(Context::STACK_POINTER_OFFSET == 104);
+const _: () = assert!(Context::IRQ_ENABLED_OFFSET == 112);
 
 #[cfg(test)]
 mod tests {

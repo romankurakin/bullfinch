@@ -3,6 +3,9 @@ name = "bullfinch-kernel"
 version = "0.1.0"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [lib]
 name = "kernel"
 path = "src/lib.rs"

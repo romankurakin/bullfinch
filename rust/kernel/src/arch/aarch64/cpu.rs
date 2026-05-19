@@ -7,6 +7,7 @@ use core::arch::asm;
 
 const DAIF_IRQ_MASK: u8 = 0b0010;
 
+#[allow(dead_code, reason = "used by the library CPU backend")]
 pub fn disable_interrupts() -> bool {
     let daif: usize;
     // SAFETY: Reading DAIF has no memory effect and tells us whether IRQ was
@@ -33,19 +34,25 @@ pub fn enable_interrupts() {
     };
 }
 
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "used by spinlock guards through the library CPU backend"
+)]
 pub fn restore_interrupts(was_enabled: bool) {
     if was_enabled {
         enable_interrupts();
     }
 }
 
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "used by spin loops through the library CPU backend"
+)]
 pub fn spin_wait() {
     core::hint::spin_loop();
 }
 
-/// DSB ISH — required before TLB invalidation and after page-table writes.
+/// DSB ISH is required before TLB invalidation and after page table writes.
 pub fn data_sync_barrier_inner_shareable() {
     // SAFETY: DSB ISH completes prior memory accesses before continuing.
     unsafe { asm!("dsb ish", options(nomem, nostack, preserves_flags)) };
@@ -56,7 +63,7 @@ pub fn data_sync_barrier_system() {
     unsafe { asm!("dsb sy", options(nomem, nostack, preserves_flags)) };
 }
 
-/// ISB — flushes the pipeline after translation or system-register changes.
+/// ISB flushes the pipeline after translation or system register changes.
 pub fn instruction_barrier() {
     // SAFETY: ISB flushes the pipeline.
     unsafe { asm!("isb", options(nomem, nostack, preserves_flags)) };

@@ -69,7 +69,7 @@ fn read_hardware_info(dtb: DeviceTreeBlobPhysicalAddress) -> Result<HardwareInfo
 
     let blob = DeviceTreeBlob::new(dtb)?;
     let fdt = blob.as_fdt()?;
-    Ok(HardwareInfo::from_fdt(dtb, &fdt))
+    Ok(HardwareInfo::from_fdt(dtb, &fdt, blob.data))
 }
 
 struct DeviceTreeBlob {
