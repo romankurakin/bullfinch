@@ -19,9 +19,12 @@ use crate::{hal, startup::log as boot_log};
 pub enum BootError {
     MissingDeviceTree,
     DeviceTreeHeader,
+    DeviceTreeParse,
     DeviceTreeTooLarge,
     DeviceTreeMagic,
     DeviceTreeMisaligned,
+    DeviceTreeAddressNotMapped,
+    MemoryMap,
 }
 
 /// Magic value at byte offset 0 of every flat device-tree blob.
@@ -32,12 +35,12 @@ const FDT_MAGIC: u32 = 0xd00d_feed;
 ///
 /// Runs with the MMU off. Traps and page tables are set up now, but the DTB
 /// is not parsed yet because it may sit above the tiny identity map.
-pub fn phys_init(dtb: DeviceTreeBlobPhysicalAddress) {
+pub fn phys_init(dtb: DeviceTreeBlobPhysicalAddress) -> Result<(), BootError> {
     boot_log::header();
     boot_log::uart();
     hal::trap::init();
     boot_log::trap();
-    hal::mmu::init(dtb);
+    hal::mmu::init(dtb).map_err(|_| BootError::MemoryMap)
 }
 
 /// Phase two: virtual boot.
@@ -69,7 +72,7 @@ fn read_hardware_info(dtb: DeviceTreeBlobPhysicalAddress) -> Result<HardwareInfo
 
     let blob = DeviceTreeBlob::new(dtb)?;
     let fdt = blob.as_fdt()?;
-    Ok(HardwareInfo::from_fdt(dtb, &fdt, blob.data))
+    HardwareInfo::from_fdt(dtb, &fdt, blob.data).map_err(|_| BootError::DeviceTreeParse)
 }
 
 struct DeviceTreeBlob {
@@ -86,7 +89,9 @@ impl DeviceTreeBlob {
         }
 
         let physical = PhysicalAddress::new(dtb.get());
-        let virtual_address = hal::mmu::physical_to_virtual(physical).get();
+        let virtual_address = hal::mmu::try_physical_to_virtual(physical)
+            .ok_or(BootError::DeviceTreeAddressNotMapped)?
+            .get();
 
         // SAFETY: `hal::mmu::init` maps at least DEVICE_TREE_BLOB_MAX_SIZE bytes
         // around the bootloader-provided DTB pointer before this function runs.
@@ -113,7 +118,7 @@ impl DeviceTreeBlob {
     }
 
     fn as_fdt(&self) -> Result<Fdt<'_>, BootError> {
-        Fdt::new_unaligned(self.data).map_err(map_fdt_error)
+        Fdt::new_unaligned_fallible(self.data).map_err(map_fdt_error)
     }
 }
 

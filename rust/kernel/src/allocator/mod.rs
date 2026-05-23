@@ -4,12 +4,12 @@
 //! stores its metadata in slot 0 and an encoded back pointer at the page start,
 //! so freeing an object does not need external metadata.
 
-use core::{cell::UnsafeCell, marker::PhantomData, mem::MaybeUninit, ptr::NonNull};
+use core::{marker::PhantomData, mem::MaybeUninit, ptr::NonNull};
 
 use crate::{
     mmu::{PAGE_SIZE, PhysicalAddress, VirtualAddress},
     pmm,
-    sync::SpinLock,
+    sync::Locked,
 };
 
 const CACHE_LINE_SIZE: usize = 64;
@@ -21,8 +21,8 @@ const POISON_FREE: u8 = 0xdd;
 
 type PageAllocFn = fn() -> Option<NonNull<u8>>;
 type PageFreeFn = fn(NonNull<u8>);
-type PhysicalToVirtual = fn(PhysicalAddress) -> VirtualAddress;
-type VirtualToPhysical = fn(VirtualAddress) -> PhysicalAddress;
+type PhysicalToVirtual = fn(PhysicalAddress) -> Option<VirtualAddress>;
+type VirtualToPhysical = fn(VirtualAddress) -> Option<PhysicalAddress>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AllocError {
@@ -419,6 +419,11 @@ struct Kmalloc {
     initialized: bool,
 }
 
+// SAFETY: Slab pointers are allocator-owned metadata. All access is serialized
+// by `Locked<Kmalloc>`, so moving the allocator between CPUs does not permit
+// unsynchronized slab mutation.
+unsafe impl Send for Kmalloc {}
+
 impl Kmalloc {
     const fn empty() -> Self {
         Self {
@@ -562,18 +567,13 @@ impl Drop for KernelAllocation {
     }
 }
 
-struct KmallocCell(UnsafeCell<Kmalloc>);
-
-// SAFETY: All global allocator access is serialized by `KMALLOC_LOCK`.
-unsafe impl Sync for KmallocCell {}
-
-static KMALLOC: KmallocCell = KmallocCell(UnsafeCell::new(Kmalloc::empty()));
-static KMALLOC_LOCK: SpinLock = SpinLock::new();
-static MAPPERS: MapperCell = MapperCell(UnsafeCell::new(Mappers::identity()));
+static KMALLOC: Locked<Kmalloc> = Locked::new(Kmalloc::empty());
+static MAPPERS: Locked<Mappers> = Locked::new(Mappers::identity());
 
 pub fn init(physical_to_virtual: PhysicalToVirtual, virtual_to_physical: VirtualToPhysical) {
-    let _guard = KMALLOC_LOCK.guard();
-    kmalloc().init(physical_to_virtual, virtual_to_physical);
+    KMALLOC
+        .lock()
+        .init(physical_to_virtual, virtual_to_physical);
 }
 
 pub fn alloc(size: usize, alignment: Option<usize>) -> Result<KernelAllocation, AllocError> {
@@ -582,8 +582,7 @@ pub fn alloc(size: usize, alignment: Option<usize>) -> Result<KernelAllocation, 
 }
 
 fn alloc_raw(size: usize, alignment: Option<usize>) -> Result<NonNull<u8>, AllocError> {
-    let _guard = KMALLOC_LOCK.guard();
-    kmalloc().alloc(size, alignment)
+    KMALLOC.lock().alloc(size, alignment)
 }
 
 /// # Safety
@@ -592,10 +591,9 @@ fn alloc_raw(size: usize, alignment: Option<usize>) -> Result<NonNull<u8>, Alloc
 /// freed. Passing a forged pointer can make the allocator read an invalid slab
 /// back pointer.
 unsafe fn free_raw(ptr: NonNull<u8>) -> Result<(), FreeError> {
-    let _guard = KMALLOC_LOCK.guard();
     // SAFETY: The caller proves `ptr` belongs to this allocator and is not
     // already freed. The lock gives exclusive allocator access.
-    unsafe { kmalloc().free(ptr) }
+    unsafe { KMALLOC.lock().free(ptr) }
 }
 
 pub fn boot_probe() -> Result<(), AllocError> {
@@ -621,20 +619,20 @@ unsafe fn try_free<const N: usize>(
 
 fn pmm_alloc_page() -> Option<NonNull<u8>> {
     let page = pmm::alloc_page()?;
-    let physical = page.leak_physical()?;
-    let virtual_address = mappers().physical_to_virtual(physical);
+    let physical = page.physical_address()?;
+    let virtual_address = MAPPERS.lock().physical_to_virtual(physical)?;
+    let transferred = page.into_physical()?;
+    // The transfer must preserve the page identity checked before mapper lookup.
+    debug_assert_eq!(transferred, physical);
     NonNull::new(virtual_address.get() as *mut u8)
 }
 
 fn pmm_free_page(page: NonNull<u8>) {
-    let physical = mappers().virtual_to_physical(VirtualAddress::new(page.as_ptr() as usize));
+    let physical = MAPPERS
+        .lock()
+        .virtual_to_physical(VirtualAddress::new(page.as_ptr() as usize))
+        .expect("kmalloc page is covered by the physmap");
     pmm::free_physical_page(physical);
-}
-
-fn kmalloc() -> &'static mut Kmalloc {
-    // SAFETY: Callers hold `KMALLOC_LOCK` or are executing from a pool callback
-    // called while the lock is held.
-    unsafe { &mut *KMALLOC.0.get() }
 }
 
 struct Mappers {
@@ -650,35 +648,20 @@ impl Mappers {
         }
     }
 
-    fn physical_to_virtual(&self, address: PhysicalAddress) -> VirtualAddress {
+    fn physical_to_virtual(&self, address: PhysicalAddress) -> Option<VirtualAddress> {
         (self.physical_to_virtual)(address)
     }
 
-    fn virtual_to_physical(&self, address: VirtualAddress) -> PhysicalAddress {
+    fn virtual_to_physical(&self, address: VirtualAddress) -> Option<PhysicalAddress> {
         (self.virtual_to_physical)(address)
     }
 }
 
-struct MapperCell(UnsafeCell<Mappers>);
-
-// SAFETY: Mappers are written once during allocator init before allocations can
-// reach PMM-backed slabs. Later reads use immutable function pointers.
-unsafe impl Sync for MapperCell {}
-
 fn set_mappers(physical_to_virtual: PhysicalToVirtual, virtual_to_physical: VirtualToPhysical) {
-    // SAFETY: Global allocator init holds `KMALLOC_LOCK` and runs before public
-    // allocation succeeds.
-    unsafe {
-        *MAPPERS.0.get() = Mappers {
-            physical_to_virtual,
-            virtual_to_physical,
-        };
-    }
-}
-
-fn mappers() -> &'static Mappers {
-    // SAFETY: After `init`, mapper function pointers are immutable.
-    unsafe { &*MAPPERS.0.get() }
+    *MAPPERS.lock() = Mappers {
+        physical_to_virtual,
+        virtual_to_physical,
+    };
 }
 
 fn size_class(size: usize) -> Option<SizeClass> {
@@ -718,12 +701,12 @@ fn no_page_alloc() -> Option<NonNull<u8>> {
 
 fn no_page_free(_: NonNull<u8>) {}
 
-fn identity_physical_to_virtual(address: PhysicalAddress) -> VirtualAddress {
-    VirtualAddress::new(address.get())
+fn identity_physical_to_virtual(address: PhysicalAddress) -> Option<VirtualAddress> {
+    Some(VirtualAddress::new(address.get()))
 }
 
-fn identity_virtual_to_physical(address: VirtualAddress) -> PhysicalAddress {
-    PhysicalAddress::new(address.get())
+fn identity_virtual_to_physical(address: VirtualAddress) -> Option<PhysicalAddress> {
+    Some(PhysicalAddress::new(address.get()))
 }
 
 #[cfg(test)]

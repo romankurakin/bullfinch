@@ -14,22 +14,30 @@ SECTIONS {
     . = __kernel_virt_load;
 
     .text : AT(__kernel_phys_load) {
+        __kernel_text_start = .;
         KEEP(*(.text.boot))
         *(.text*)
     }
 
     /* Vectored stvec mode requires the trap table to be 256-byte aligned. */
-    .trap : ALIGN(256) {
+    .trap ALIGN(256) : {
         __trap_start = .;
         KEEP(*(.trap))
         __trap_end = .;
     }
+    . = ALIGN(4096);
+    __kernel_text_end = .;
 
-    .rodata : {
+    .rodata ALIGN(4096) : {
+        __kernel_rodata_start = .;
         *(.rodata*)
+        *(.eh_frame*)
+        . = ALIGN(4096);
+        __kernel_rodata_end = .;
     }
 
-    .data : {
+    .data ALIGN(4096) : {
+        __kernel_data_start = .;
         . = ALIGN(16);
         __global_pointer$ = . + 0x800;
         *(.sdata*)
@@ -52,4 +60,5 @@ SECTIONS {
 
     . = ALIGN(4096);
     __kernel_end = .;
+    __kernel_data_end = .;
 }

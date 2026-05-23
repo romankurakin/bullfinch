@@ -14,22 +14,30 @@ SECTIONS {
     . = __kernel_virt_load;
 
     .text : AT(__kernel_phys_load) {
+        __kernel_text_start = .;
         KEEP(*(.text.boot))
         *(.text*)
     }
 
     /* VBAR_EL1 requires the vector table to be 2 KiB aligned. */
-    .vectors : ALIGN(2048) {
+    .vectors ALIGN(2048) : {
         __vectors_start = .;
         KEEP(*(.vectors))
         __vectors_end = .;
     }
+    . = ALIGN(4096);
+    __kernel_text_end = .;
 
-    .rodata : {
+    .rodata ALIGN(4096) : {
+        __kernel_rodata_start = .;
         *(.rodata*)
+        *(.eh_frame*)
+        . = ALIGN(4096);
+        __kernel_rodata_end = .;
     }
 
-    .data : {
+    .data ALIGN(4096) : {
+        __kernel_data_start = .;
         *(.data*)
     }
 
@@ -47,4 +55,5 @@ SECTIONS {
 
     . = ALIGN(4096);
     __kernel_end = .;
+    __kernel_data_end = .;
 }

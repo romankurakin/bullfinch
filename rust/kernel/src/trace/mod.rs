@@ -43,6 +43,7 @@ pub struct Ring<const N: usize> {
 
 impl<const N: usize> Ring<N> {
     pub const fn new() -> Self {
+        assert!(N > 0);
         Self {
             events: [TraceEvent::EMPTY; N],
             cursor: 0,
@@ -52,7 +53,7 @@ impl<const N: usize> Ring<N> {
 
     pub fn emit(&mut self, event: TraceEvent) {
         self.events[self.cursor] = event;
-        self.cursor = (self.cursor + 1) & (N - 1);
+        self.cursor = (self.cursor + 1) % N;
         self.len = core::cmp::min(self.len + 1, N);
     }
 
@@ -71,4 +72,4 @@ impl<const N: usize> Default for Ring<N> {
     }
 }
 
-const _: () = assert!(TRACE_EVENTS.is_power_of_two());
+const _: () = assert!(TRACE_EVENTS > 0);

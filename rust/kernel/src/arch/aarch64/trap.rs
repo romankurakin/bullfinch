@@ -54,6 +54,46 @@ __bullfinch_aarch64_trap_vectors:
     .balign 128
 
     .text
+    .macro trap_store_fp_state base, tmp_x, tmp_w
+    stp q0, q1, [\base, #(16 * 0)]
+    stp q2, q3, [\base, #(16 * 2)]
+    stp q4, q5, [\base, #(16 * 4)]
+    stp q6, q7, [\base, #(16 * 6)]
+    stp q8, q9, [\base, #(16 * 8)]
+    stp q10, q11, [\base, #(16 * 10)]
+    stp q12, q13, [\base, #(16 * 12)]
+    stp q14, q15, [\base, #(16 * 14)]
+    stp q16, q17, [\base, #(16 * 16)]
+    stp q18, q19, [\base, #(16 * 18)]
+    stp q20, q21, [\base, #(16 * 20)]
+    stp q22, q23, [\base, #(16 * 22)]
+    stp q24, q25, [\base, #(16 * 24)]
+    stp q26, q27, [\base, #(16 * 26)]
+    stp q28, q29, [\base, #(16 * 28)]
+    stp q30, q31, [\base, #(16 * 30)]
+    mrs \tmp_x, fpsr
+    str \tmp_w, [\base, #{fpsr_offset}]
+    mrs \tmp_x, fpcr
+    str \tmp_w, [\base, #{fpcr_offset}]
+    .endm
+
+    .macro save_user_fp_state_if_enabled
+    mrs x16, spsr_el1
+    and x16, x16, #0xf
+    cbnz x16, 99f
+    mrs x16, cpacr_el1
+    and x16, x16, #{fp_enabled_mask}
+    cmp x16, #{user_fp_enabled}
+    b.ne 99f
+    adrp x16, {trap_fp_scratch}
+    add x16, x16, :lo12:{trap_fp_scratch}
+    add x16, x16, #{scratch_state_offset}
+    trap_store_fp_state x16, x17, w17
+    mov x17, #1
+    strb w17, [x16, #{scratch_saved_relative_offset}]
+99:
+    .endm
+
     .macro save_trap_frame handler
     sub sp, sp, #{frame_size}
     stp x0, x1, [sp, #0]
@@ -65,6 +105,10 @@ __bullfinch_aarch64_trap_vectors:
     stp x12, x13, [sp, #96]
     stp x14, x15, [sp, #112]
     stp x16, x17, [sp, #128]
+    save_user_fp_state_if_enabled
+    mov x16, #{kernel_cpacr}
+    msr cpacr_el1, x16
+    isb
     stp x18, x19, [sp, #144]
     stp x20, x21, [sp, #160]
     stp x22, x23, [sp, #176]
@@ -115,6 +159,10 @@ __bullfinch_aarch64_trap_vectors:
     stp x12, x13, [sp, #96]
     stp x14, x15, [sp, #112]
     stp x16, x17, [sp, #128]
+    save_user_fp_state_if_enabled
+    mov x16, #{kernel_cpacr}
+    msr cpacr_el1, x16
+    isb
     stp x18, x30, [sp, #144]
     mrs x0, elr_el1
     mrs x1, spsr_el1
@@ -144,6 +192,10 @@ rust_aarch64_kernel_trap_entry:
     .global rust_aarch64_kernel_irq_entry
 rust_aarch64_kernel_irq_entry:
     save_irq_frame rust_aarch64_handle_kernel_irq
+    .purgem trap_store_fp_state
+    .purgem save_user_fp_state_if_enabled
+    .purgem save_trap_frame
+    .purgem save_irq_frame
     "#,
     frame_size = const TrapFrame::SIZE,
     link_register_offset = const TrapFrame::LINK_REGISTER_OFFSET,
@@ -151,6 +203,14 @@ rust_aarch64_kernel_irq_entry:
     syndrome_offset = const TrapFrame::SYNDROME_OFFSET,
     irq_frame_size = const IrqFrame::SIZE,
     irq_exception_return_address_offset = const IrqFrame::EXCEPTION_RETURN_ADDRESS_OFFSET,
+    fp_enabled_mask = const super::fp::CPACR_EL1_USER_FP_ENABLED,
+    user_fp_enabled = const super::fp::CPACR_EL1_USER_FP_ENABLED,
+    kernel_cpacr = const super::fp::CPACR_EL1_KERNEL,
+    scratch_state_offset = const super::fp::TrapFpScratch::STATE_OFFSET,
+    scratch_saved_relative_offset = const super::fp::TrapFpScratch::SAVED_FROM_STATE_OFFSET,
+    fpsr_offset = const kernel::fp::UserFpState::FPSR_OFFSET,
+    fpcr_offset = const kernel::fp::UserFpState::FPCR_OFFSET,
+    trap_fp_scratch = sym super::fp::A64_TRAP_FP_SCRATCH,
 );
 
 unsafe extern "C" {
@@ -177,6 +237,7 @@ const _: () = assert!(IrqFrame::SIZE == 176);
 
 #[unsafe(no_mangle)]
 extern "C" fn rust_aarch64_handle_kernel_trap(frame: *mut TrapFrame) {
+    commit_trapped_user_fp_state();
     // SAFETY: Assembly passes a complete `TrapFrame` on the current stack. This
     // trap owns the frame for its full lifetime. Null reaches the halt path
     // without a bad dereference.
@@ -191,5 +252,13 @@ extern "C" fn rust_aarch64_handle_kernel_trap(frame: *mut TrapFrame) {
 
 #[unsafe(no_mangle)]
 extern "C" fn rust_aarch64_handle_kernel_irq() {
+    commit_trapped_user_fp_state();
     crate::runtime::trap::handle_fast_interrupt();
+}
+
+fn commit_trapped_user_fp_state() {
+    if let Some(state) = super::fp::take_trapped_user_state() {
+        kernel::task::save_current_user_fp_state(state)
+            .expect("EL0 FP/SIMD trap implies a current thread");
+    }
 }

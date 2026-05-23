@@ -1,4 +1,4 @@
-[target.aarch64-unknown-none-softfloat]
+[target.aarch64-unknown-none]
 rustflags = [
   "-C", "link-arg=-Trust/kernel/boards/arm64/qemu_virt/kernel.ld",
   "-C", "link-arg=--build-id=none",

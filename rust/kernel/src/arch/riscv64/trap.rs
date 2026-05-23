@@ -14,6 +14,9 @@ use kernel::trap::{
 };
 
 const STVEC_MODE_VECTORED: usize = 1;
+const SSTATUS_SUPERVISOR_PREVIOUS_PRIVILEGE: usize = 1 << 8;
+const SSTATUS_FS_MASK: usize = 0b11 << 13;
+const SSTATUS_FS_DIRTY: usize = 0b11 << 13;
 const FRAME_SIZE_NEGATIVE: isize = -(TrapFrame::SIZE as isize);
 const IRQ_FRAME_SIZE_NEGATIVE: isize = -(IrqFrame::SIZE as isize);
 
@@ -44,6 +47,27 @@ __bullfinch_riscv64_trap_vector:
     .option pop
 
     .text
+    .macro save_user_fp_state_if_dirty status, scratch, tmp
+    andi \scratch, \status, {sstatus_spp}
+    bnez \scratch, 99f
+    li \scratch, {sstatus_fs_mask}
+    and \scratch, \status, \scratch
+    li \tmp, {sstatus_fs_dirty}
+    bne \scratch, \tmp, 98f
+    la \scratch, {trap_fp_scratch}
+    addi \scratch, \scratch, {scratch_state_offset}
+    mv a0, \scratch
+    call {rv64_fp_save}
+    li \tmp, 1
+    sb \tmp, {scratch_saved_relative_offset}(\scratch)
+98:
+    li \scratch, {sstatus_fs_mask}
+    csrc sstatus, \scratch
+    not \scratch, \scratch
+    and \status, \status, \scratch
+99:
+    .endm
+
     .global rust_riscv64_kernel_trap_entry
 rust_riscv64_kernel_trap_entry:
     addi sp, sp, {frame_size_negative}
@@ -83,6 +107,7 @@ rust_riscv64_kernel_trap_entry:
     csrr t0, sepc
     sd t0, {program_counter_offset}(sp)
     csrr t0, sstatus
+    save_user_fp_state_if_dirty t0, t1, t2
     sd t0, {status_offset}(sp)
     csrr t0, scause
     sd t0, {cause_offset}(sp)
@@ -149,6 +174,7 @@ rust_riscv64_kernel_fast_irq_entry:
     csrr t0, sepc
     sd t0, {irq_program_counter_offset}(sp)
     csrr t0, sstatus
+    save_user_fp_state_if_dirty t0, t1, t2
     sd t0, {irq_status_offset}(sp)
     call rust_riscv64_handle_kernel_fast_irq
     ld t0, {irq_program_counter_offset}(sp)
@@ -173,7 +199,11 @@ rust_riscv64_kernel_fast_irq_entry:
     ld t6, 120(sp)
     addi sp, sp, {irq_frame_size}
     sret
+    .purgem save_user_fp_state_if_dirty
     "#,
+    sstatus_spp = const SSTATUS_SUPERVISOR_PREVIOUS_PRIVILEGE,
+    sstatus_fs_mask = const SSTATUS_FS_MASK,
+    sstatus_fs_dirty = const SSTATUS_FS_DIRTY,
     frame_size_negative = const FRAME_SIZE_NEGATIVE,
     frame_size = const TrapFrame::SIZE,
     saved_stack_pointer_offset = const TrapFrame::SAVED_STACK_POINTER_OFFSET,
@@ -186,6 +216,10 @@ rust_riscv64_kernel_fast_irq_entry:
     irq_frame_size = const IrqFrame::SIZE,
     irq_program_counter_offset = const IrqFrame::PROGRAM_COUNTER_OFFSET,
     irq_status_offset = const IrqFrame::STATUS_OFFSET,
+    scratch_state_offset = const super::fp::TrapFpScratch::STATE_OFFSET,
+    scratch_saved_relative_offset = const super::fp::TrapFpScratch::SAVED_FROM_STATE_OFFSET,
+    trap_fp_scratch = sym super::fp::RV64_TRAP_FP_SCRATCH,
+    rv64_fp_save = sym super::fp::rv64_fp_save,
 );
 
 unsafe extern "C" {
@@ -214,6 +248,7 @@ const _: () = assert!(IrqFrame::SIZE == 144);
 
 #[unsafe(no_mangle)]
 extern "C" fn rust_riscv64_handle_kernel_trap(frame: *mut TrapFrame) {
+    commit_trapped_user_fp_state();
     // SAFETY: Assembly passes a complete `TrapFrame` on the current stack. This
     // trap owns the frame for its full lifetime. Null reaches the halt path
     // without a bad dereference.
@@ -232,5 +267,13 @@ extern "C" fn rust_riscv64_handle_kernel_trap(frame: *mut TrapFrame) {
 
 #[unsafe(no_mangle)]
 extern "C" fn rust_riscv64_handle_kernel_fast_irq() {
+    commit_trapped_user_fp_state();
     crate::runtime::trap::handle_fast_interrupt();
+}
+
+fn commit_trapped_user_fp_state() {
+    if let Some(state) = super::fp::take_trapped_user_state() {
+        kernel::task::save_current_user_fp_state(state)
+            .expect("U-mode FP trap implies a current thread");
+    }
 }

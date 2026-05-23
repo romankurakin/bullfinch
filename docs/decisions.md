@@ -1,6 +1,7 @@
 # Design Decisions
 
-Architectural choices made for completed rungs. See `plan.md` for research.
+Architectural choices made for completed rungs and accepted choices for the next
+implementation rung. See `plan.md` for research.
 
 ## Format
 
@@ -124,8 +125,17 @@ direct process switch. 8 bytes cost, avoids later refactor.
 **Single-wait:** One wait pointer over wait block array. Thread receives on
 endpoint OR bound notification—2 primitives instead of 3.
 
-**Rung 8 model:** Processes and threads use opaque IDs for snapshots, owned
-kernel stacks, architecture-neutral contexts, and scheduler-private queues.
-Public code uses handles instead of reaching into the scheduler internals.
+---
+
+## Rung 9: FP/SIMD State
+
+**Kernel FP/SIMD:** EL1 FP/SIMD allowed. Compiler NEON/FP can appear anywhere;
+boundary is user-state save/restore.
+
+**User FP state:** Architecture-native tracking over one generic model. ARM64
+uses software ownership; RISC-V uses `sstatus.FS`.
+
+**Vector extensions:** No SVE, SME, or RVV over partial support. They have
+separate state models.
 
 ---

@@ -52,7 +52,7 @@ hooks-install:
     @prek install -c prek.toml --hook-type pre-commit
     @prek install -c prek.toml --hook-type pre-push
 
-lint: _lint-tools _lint-kernel (_lint-target "aarch64-unknown-none-softfloat") (_lint-target "riscv64gc-unknown-none-elf")
+lint: _lint-tools _lint-kernel (_lint-target "aarch64-unknown-none") (_lint-target "riscv64gc-unknown-none-elf")
 
 _lint-tools:
     @{{clippy}} {{quiet}} -p bullfinch-tools {{warnings}}

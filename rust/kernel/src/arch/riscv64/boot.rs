@@ -12,7 +12,12 @@ use core::arch::naked_asm;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_riscv64_phys_init(dtb_ptr: usize) {
-    crate::startup::init::phys_init(kernel::boot::DeviceTreeBlobPhysicalAddress::new(dtb_ptr));
+    if crate::startup::init::phys_init(kernel::boot::DeviceTreeBlobPhysicalAddress::new(dtb_ptr))
+        .is_err()
+    {
+        crate::console::print_unsafe("\n[PANIC]\nboot: memory map initialization failed\n");
+        crate::hal::cpu::halt();
+    }
 }
 
 #[unsafe(no_mangle)]

@@ -14,6 +14,7 @@ pub enum MapError {
     AlreadyMapped,
     SuperpageConflict,
     OutOfMemory,
+    RangeExceeded,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -67,6 +68,12 @@ impl MappingPermissions {
     pub const KERNEL_READ_EXECUTE: Self = Self {
         writable: false,
         executable: true,
+        user_accessible: false,
+    };
+
+    pub const KERNEL_READ_ONLY: Self = Self {
+        writable: false,
+        executable: false,
         user_accessible: false,
     };
 

@@ -7,7 +7,6 @@ Bullfinch is Rust code first. Keep code explicit, small, and reviewable.
 - Use Rust 2024, `#![no_std]`, and `panic = "abort"` for kernel code.
 - Use `core` by default. Add `alloc` only when allocator initialization makes it
   sound.
-- Keep FP/SIMD disabled or unused until save/restore support exists.
 - Run `just lint` before handing off kernel or tool changes.
 
 ## Rust API Rules
@@ -15,12 +14,39 @@ Bullfinch is Rust code first. Keep code explicit, small, and reviewable.
 - Prefer ownership, borrowing, guards, and `Drop` over raw handles.
 - Prefer newtypes for addresses, page counts, IDs, rights, ticks, frequencies,
   and deadlines.
+- Use `Locked<T>` for mutable global kernel state once normal locking is
+  available. Keep raw `UnsafeCell` for early boot or architecture-local state
+  with a local safety proof.
 - Prefer `Option` for absence and `Result` for recoverable caller errors.
 - Panic only for violated kernel invariants.
+- Use `debug_assert!` for internal consistency after validation. Do not use it
+  as the only check for userspace, firmware, or device input.
 - Keep unsafe implementation details module-private where practical.
 - Expose a safe API only when it is sound for every safe caller.
 - Keep architecture-specific code under `arch/{aarch64,riscv64}`. Portable
   modules should consume architecture-neutral types.
+
+## Assertions
+
+Use three levels of checking:
+
+- `Result`: external input, caller mistakes, and recoverable failures. Examples:
+  malformed DTB data, bad user pointers, invalid handles, and MMIO ranges from
+  firmware.
+- `assert!` or `panic!`: kernel invariants that must hold in release builds.
+  Examples: double-free, corrupted allocator metadata, impossible scheduler
+  state, and stack teardown failures before returning pages to PMM.
+- `debug_assert!` and `debug_assert_eq!`: internal consistency checks that
+  depend on runtime state and should follow from earlier validation. Examples:
+  ownership-transfer identity, FP status transitions, queue counters, and
+  handle generation math.
+
+A debug assertion may explain why a model is internally coherent, but release
+security must not depend on it.
+
+Prefer build-time or link-time assertions for static facts such as structure
+layout, linker section ordering, page alignment, and constant bounds. Use a
+runtime debug assertion only when the property cannot be checked before boot.
 
 ## Modules
 

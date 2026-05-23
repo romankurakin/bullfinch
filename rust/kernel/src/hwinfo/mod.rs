@@ -5,11 +5,13 @@
 
 use crate::{
     boot::DeviceTreeBlobPhysicalAddress,
-    fdt::{Fdt, Node, cells::read_cells},
+    fdt::{Fdt, FdtError, Node, cells::read_cells},
     limits::{MAX_MEMORY_ARENAS, MAX_RESERVED_REGIONS},
     mmu::address::PhysicalAddress,
     time::Frequency,
 };
+
+type FdtResult<T> = Result<T, FdtError>;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MemoryRegion {
@@ -100,17 +102,17 @@ impl HardwareInfo {
         dtb_phys: DeviceTreeBlobPhysicalAddress,
         fdt: &Fdt<'_>,
         dtb_blob: &[u8],
-    ) -> Self {
+    ) -> FdtResult<Self> {
         let mut info = Self::empty(dtb_phys);
         info.dtb_size = fdt.total_size();
-        info.collect_memory_regions(fdt);
-        info.collect_reserved_regions(fdt, dtb_blob);
-        info.timer_frequency = timer_frequency(fdt);
-        info.cpu_count = cpu_count(fdt);
-        info.features.hardware_random = has_hardware_random(fdt);
-        info.features.interrupt_controller = interrupt_controller_info(fdt);
-        info.uart_base = uart_base(fdt);
-        info
+        info.collect_memory_regions(fdt)?;
+        info.collect_reserved_regions(fdt, dtb_blob)?;
+        info.timer_frequency = timer_frequency(fdt)?;
+        info.cpu_count = cpu_count(fdt)?;
+        info.features.hardware_random = has_hardware_random(fdt)?;
+        info.features.interrupt_controller = interrupt_controller_info(fdt)?;
+        info.uart_base = uart_base(fdt)?;
+        Ok(info)
     }
 
     pub fn memory_regions(&self) -> &[MemoryRegion] {
@@ -152,13 +154,12 @@ impl HardwareInfo {
     ///
     /// The PMM initializes arenas in order. Largest first keeps metadata in the
     /// biggest pool before smaller regions are touched.
-    fn collect_memory_regions(&mut self, fdt: &Fdt<'_>) {
-        let root = fdt.root();
-        let Some(memory) = root.find_node("/memory") else {
-            return;
+    fn collect_memory_regions(&mut self, fdt: &Fdt<'_>) -> FdtResult<()> {
+        let Some(memory) = fdt.find_node("/memory")? else {
+            return Ok(());
         };
-        let Some(reg) = memory.reg() else {
-            return;
+        let Some(reg) = memory.reg()? else {
+            return Ok(());
         };
 
         for entry in reg.iter::<u64, u64>() {
@@ -174,11 +175,12 @@ impl HardwareInfo {
         // Largest first: arena metadata comes from the biggest pool before
         // smaller regions are touched.
         sort_regions_by_size(&mut self.memory_regions[..self.memory_region_count]);
+        Ok(())
     }
 
-    fn collect_reserved_regions(&mut self, fdt: &Fdt<'_>, dtb_blob: &[u8]) {
+    fn collect_reserved_regions(&mut self, fdt: &Fdt<'_>, dtb_blob: &[u8]) -> FdtResult<()> {
         self.collect_memory_reservation_block(fdt, dtb_blob);
-        self.collect_reserved_memory_node(fdt);
+        self.collect_reserved_memory_node(fdt)
     }
 
     fn collect_memory_reservation_block(&mut self, fdt: &Fdt<'_>, dtb_blob: &[u8]) {
@@ -210,14 +212,14 @@ impl HardwareInfo {
         self.dropped_reserved_regions = self.dropped_reserved_regions.saturating_add(1);
     }
 
-    fn collect_reserved_memory_node(&mut self, fdt: &Fdt<'_>) {
-        let root = fdt.root();
-        let Some(parent) = root.find_node("/reserved-memory") else {
-            return;
+    fn collect_reserved_memory_node(&mut self, fdt: &Fdt<'_>) -> FdtResult<()> {
+        let Some(parent) = fdt.find_node("/reserved-memory")? else {
+            return Ok(());
         };
 
-        for child in parent.children().iter() {
-            let Some(reg) = child.reg() else {
+        for child in parent.children()?.iter() {
+            let child = child?;
+            let Some(reg) = child.reg()? else {
                 continue;
             };
             for entry in reg.iter::<u64, u64>() {
@@ -230,6 +232,7 @@ impl HardwareInfo {
                 self.push_reserved_region(region);
             }
         }
+        Ok(())
     }
 }
 
@@ -259,53 +262,67 @@ fn sort_regions_by_size(regions: &mut [MemoryRegion]) {
     }
 }
 
-fn timer_frequency(fdt: &Fdt<'_>) -> Option<Frequency> {
-    let cpus = fdt.root().find_node("/cpus")?;
-    let prop = cpus.raw_property("timebase-frequency")?;
-    parse_timer_frequency(prop.value).and_then(Frequency::try_from_hz)
+fn timer_frequency(fdt: &Fdt<'_>) -> FdtResult<Option<Frequency>> {
+    let Some(cpus) = fdt.find_node("/cpus")? else {
+        return Ok(None);
+    };
+    let Some(prop) = cpus.raw_property("timebase-frequency")? else {
+        return Ok(None);
+    };
+    Ok(parse_timer_frequency(prop.value).and_then(Frequency::try_from_hz))
 }
 
 fn parse_timer_frequency(prop: &[u8]) -> Option<u64> {
     match prop.len() {
-        0..=3 => None,
-        4..=7 => read_cells(prop, 1),
-        _ => read_cells(prop, 2),
+        4 => read_cells(prop, 1),
+        8 => read_cells(prop, 2),
+        _ => None,
     }
 }
 
-fn cpu_count(fdt: &Fdt<'_>) -> usize {
-    let Some(cpus) = fdt.root().find_node("/cpus") else {
-        return 0;
+fn cpu_count(fdt: &Fdt<'_>) -> FdtResult<usize> {
+    let Some(cpus) = fdt.find_node("/cpus")? else {
+        return Ok(0);
     };
 
-    cpus.children()
-        .iter()
-        .filter(|node| node.name().name == "cpu")
-        .count()
+    let mut count = 0usize;
+    for child in cpus.children()?.iter() {
+        let child = child?;
+        if child.name()?.name == "cpu" {
+            count += 1;
+        }
+    }
+    Ok(count)
 }
 
-fn first_cpu_node<'a>(fdt: &Fdt<'a>) -> Option<Node<'a>> {
-    fdt.root()
-        .find_node("/cpus")?
-        .children()
-        .iter()
-        .find(|node| node.name().name == "cpu")
+fn first_cpu_node<'a>(fdt: &Fdt<'a>) -> FdtResult<Option<Node<'a>>> {
+    let Some(cpus) = fdt.find_node("/cpus")? else {
+        return Ok(None);
+    };
+    for child in cpus.children()?.iter() {
+        let child = child?;
+        if child.name()?.name == "cpu" {
+            return Ok(Some(child));
+        }
+    }
+    Ok(None)
 }
 
-fn has_hardware_random(fdt: &Fdt<'_>) -> bool {
-    let Some(cpu) = first_cpu_node(fdt) else {
-        return false;
+fn has_hardware_random(fdt: &Fdt<'_>) -> FdtResult<bool> {
+    let Some(cpu) = first_cpu_node(fdt)? else {
+        return Ok(false);
     };
 
-    if let Some(prop) = cpu.raw_property("riscv,isa-extensions")
+    if let Some(prop) = cpu.raw_property("riscv,isa-extensions")?
         && has_string_list_entry(prop.value, "zkr")
     {
-        return true;
+        return Ok(true);
     }
 
-    cpu.raw_property("riscv,isa")
+    Ok(cpu
+        .raw_property("riscv,isa")?
         .map(|prop| isa_string_has_extension(trim_prop_string(prop.value), "zkr"))
-        .unwrap_or(false)
+        .unwrap_or(false))
 }
 
 fn has_string_list_entry(prop: &[u8], entry: &str) -> bool {
@@ -343,23 +360,29 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
-fn interrupt_controller_info(fdt: &Fdt<'_>) -> Option<InterruptControllerInfo> {
-    find_compatible(fdt, &["arm,gic-v3"])
-        .and_then(|node| parse_gic_regs(node, 3))
-        .or_else(|| {
-            find_compatible(fdt, &["arm,cortex-a15-gic", "arm,gic-400"])
-                .and_then(|node| parse_gic_regs(node, 2))
-        })
+fn interrupt_controller_info(fdt: &Fdt<'_>) -> FdtResult<Option<InterruptControllerInfo>> {
+    if let Some(node) = find_compatible(fdt, &["arm,gic-v3"])? {
+        return parse_gic_regs(node, 3);
+    }
+    find_compatible(fdt, &["arm,cortex-a15-gic", "arm,gic-400"])?
+        .map(|node| parse_gic_regs(node, 2))
+        .unwrap_or(Ok(None))
 }
 
-fn parse_gic_regs(node: Node<'_>, version: u8) -> Option<InterruptControllerInfo> {
-    let reg = node.reg()?;
+fn parse_gic_regs(node: Node<'_>, version: u8) -> FdtResult<Option<InterruptControllerInfo>> {
+    let Some(reg) = node.reg()? else {
+        return Ok(None);
+    };
     let mut entries = reg.iter::<u64, u64>();
-    let distributor = entries.next()?.ok()?;
+    let Some(Ok(distributor)) = entries.next() else {
+        return Ok(None);
+    };
     let second = entries.next().and_then(Result::ok);
-    let distributor_base = PhysicalAddress::try_from_u64(distributor.address)?;
+    let Some(distributor_base) = PhysicalAddress::try_from_u64(distributor.address) else {
+        return Ok(None);
+    };
 
-    match version {
+    Ok(match version {
         2 => Some(InterruptControllerInfo::GicV2 {
             distributor_base,
             cpu_interface_base: second
@@ -371,23 +394,30 @@ fn parse_gic_regs(node: Node<'_>, version: u8) -> Option<InterruptControllerInfo
                 .and_then(|entry| PhysicalAddress::try_from_u64(entry.address)),
         }),
         _ => None,
-    }
+    })
 }
 
-fn uart_base(fdt: &Fdt<'_>) -> Option<PhysicalAddress> {
-    find_compatible(fdt, &["arm,pl011", "ns16550a"]).and_then(device_base)
+fn uart_base(fdt: &Fdt<'_>) -> FdtResult<Option<PhysicalAddress>> {
+    find_compatible(fdt, &["arm,pl011", "ns16550a"])?
+        .map(device_base)
+        .unwrap_or(Ok(None))
 }
 
-fn device_base(node: Node<'_>) -> Option<PhysicalAddress> {
-    node.reg()?
-        .iter::<u64, u64>()
-        .next()?
+fn device_base(node: Node<'_>) -> FdtResult<Option<PhysicalAddress>> {
+    let Some(reg) = node.reg()? else {
+        return Ok(None);
+    };
+    let Some(entry) = reg.iter::<u64, u64>().next() else {
+        return Ok(None);
+    };
+    Ok(entry
         .ok()
-        .and_then(|entry| PhysicalAddress::try_from_u64(entry.address))
+        .and_then(|entry| PhysicalAddress::try_from_u64(entry.address)))
 }
 
-fn find_compatible<'a>(fdt: &Fdt<'a>, compatible: &[&str]) -> Option<Node<'a>> {
-    fdt.root().all_compatible(compatible).next()
+fn find_compatible<'a>(fdt: &Fdt<'a>, compatible: &[&str]) -> FdtResult<Option<Node<'a>>> {
+    let mut nodes = fdt.all_compatible(compatible)?;
+    nodes.next().transpose()
 }
 
 #[cfg(test)]
@@ -451,6 +481,9 @@ mod tests {
             parse_timer_frequency(&[0x00, 0x00, 0x00, 0x02, 0x54, 0x0b, 0xe4, 0x00]),
             Some(10_000_000_000)
         );
+        assert_eq!(parse_timer_frequency(&[0x01, 0x02, 0x03]), None);
+        assert_eq!(parse_timer_frequency(&[0x01, 0x02, 0x03, 0x04, 0x05]), None);
+        assert_eq!(parse_timer_frequency(&[0; 9]), None);
         assert_eq!(parse_timer_frequency(&[0x01, 0x02]), None);
     }
 
@@ -464,9 +497,10 @@ mod tests {
     #[test]
     fn extracts_boot_hardware_info_from_fdt() {
         let blob = test_dtb();
-        let fdt = Fdt::new_unaligned(&blob).unwrap();
+        let fdt = Fdt::new_unaligned_fallible(&blob).unwrap();
         let hw =
-            HardwareInfo::from_fdt(DeviceTreeBlobPhysicalAddress::new(0x4800_0000), &fdt, &blob);
+            HardwareInfo::from_fdt(DeviceTreeBlobPhysicalAddress::new(0x4800_0000), &fdt, &blob)
+                .unwrap();
 
         assert_eq!(hw.dtb_phys, DeviceTreeBlobPhysicalAddress::new(0x4800_0000));
         assert_eq!(hw.dtb_size, blob.len());
@@ -507,9 +541,10 @@ mod tests {
         dtb.end_node();
 
         let blob = dtb.finish();
-        let fdt = Fdt::new_unaligned(&blob).unwrap();
+        let fdt = Fdt::new_unaligned_fallible(&blob).unwrap();
         let hw =
-            HardwareInfo::from_fdt(DeviceTreeBlobPhysicalAddress::new(0x4800_0000), &fdt, &blob);
+            HardwareInfo::from_fdt(DeviceTreeBlobPhysicalAddress::new(0x4800_0000), &fdt, &blob)
+                .unwrap();
 
         assert_eq!(
             hw.reserved_regions(),
@@ -531,9 +566,10 @@ mod tests {
         dtb.end_node();
 
         let blob = dtb.finish();
-        let fdt = Fdt::new_unaligned(&blob).unwrap();
+        let fdt = Fdt::new_unaligned_fallible(&blob).unwrap();
         let hw =
-            HardwareInfo::from_fdt(DeviceTreeBlobPhysicalAddress::new(0x4800_0000), &fdt, &blob);
+            HardwareInfo::from_fdt(DeviceTreeBlobPhysicalAddress::new(0x4800_0000), &fdt, &blob)
+                .unwrap();
 
         assert_eq!(hw.reserved_regions().len(), MAX_RESERVED_REGIONS);
         assert_eq!(hw.dropped_reserved_regions, 1);

@@ -4,7 +4,11 @@
 //! paths. Keep critical sections short and never hold them across operations
 //! that can block.
 
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::{
+    cell::UnsafeCell,
+    ops::{Deref, DerefMut},
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
+};
 
 const TICKET_SHIFT: u32 = 16;
 
@@ -84,6 +88,7 @@ impl TicketLock {
 
     fn release(&self) {
         let state = self.state.load(Ordering::Relaxed);
+        // Unlocking an unlocked ticket lock is a caller-side lock invariant bug.
         debug_assert_ne!(
             state as u16,
             (state >> TICKET_SHIFT) as u16,
@@ -133,6 +138,7 @@ impl SpinLock {
     }
 
     fn unlock(&self) {
+        // Debug ownership tracking catches unmatched unlocks before touching the ticket.
         debug_assert!(
             self.held.load(Ordering::Relaxed),
             "spinlock: release called when lock is not held"
@@ -183,6 +189,61 @@ impl Drop for SpinLockGuard<'_> {
     }
 }
 
+/// Mutable global state protected by a spin lock.
+pub struct Locked<T> {
+    lock: SpinLock,
+    value: UnsafeCell<T>,
+}
+
+// SAFETY: `Locked` gives access to `T` only while its spin lock is held. Moving
+// `T` between CPUs through the guard is sound when `T: Send`.
+unsafe impl<T: Send> Sync for Locked<T> {}
+
+impl<T> Locked<T> {
+    pub const fn new(value: T) -> Self {
+        Self {
+            lock: SpinLock::new(),
+            value: UnsafeCell::new(value),
+        }
+    }
+
+    pub fn lock(&self) -> LockedGuard<'_, T> {
+        LockedGuard {
+            _guard: self.lock.guard(),
+            value: self.value.get(),
+        }
+    }
+
+    pub fn try_lock(&self) -> Option<LockedGuard<'_, T>> {
+        Some(LockedGuard {
+            _guard: self.lock.try_guard()?,
+            value: self.value.get(),
+        })
+    }
+}
+
+#[must_use = "dropping the guard releases the lock"]
+pub struct LockedGuard<'a, T> {
+    _guard: SpinLockGuard<'a>,
+    value: *mut T,
+}
+
+impl<T> Deref for LockedGuard<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: The guard holds the lock, and shared access does not mutate `T`.
+        unsafe { &*self.value }
+    }
+}
+
+impl<T> DerefMut for LockedGuard<'_, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: The guard holds the lock, giving exclusive mutable access.
+        unsafe { &mut *self.value }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,5 +285,15 @@ mod tests {
         let guard = lock.guard();
         assert!(lock.try_guard().is_none());
         drop(guard);
+    }
+
+    #[test]
+    fn locked_serializes_mutation() {
+        let locked = Locked::new(1usize);
+        {
+            let mut guard = locked.lock();
+            *guard += 1;
+        }
+        assert_eq!(*locked.lock(), 2);
     }
 }

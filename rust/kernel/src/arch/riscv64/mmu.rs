@@ -45,7 +45,22 @@ pub type PageTableAllocator = fn() -> Option<VirtualAddress>;
 static ROOT_TABLE: BootPageTable = BootPageTable::empty();
 static IDENTITY_L2_TABLE: BootPageTable = BootPageTable::empty();
 static PHYSMAP_L2_TABLE: BootPageTable = BootPageTable::empty();
+static IDENTITY_KERNEL_L1_TABLE: BootPageTable = BootPageTable::empty();
+static PHYSMAP_KERNEL_L1_TABLE: BootPageTable = BootPageTable::empty();
+static IDENTITY_KERNEL_L0_TABLES: [BootPageTable; ENTRIES_PER_PAGE_TABLE] =
+    [const { BootPageTable::empty() }; ENTRIES_PER_PAGE_TABLE];
+static PHYSMAP_KERNEL_L0_TABLES: [BootPageTable; ENTRIES_PER_PAGE_TABLE] =
+    [const { BootPageTable::empty() }; ENTRIES_PER_PAGE_TABLE];
 static PHYSMAP_END_GB: BootCounter = BootCounter::new(0);
+
+unsafe extern "C" {
+    static __kernel_text_start: u8;
+    static __kernel_text_end: u8;
+    static __kernel_rodata_start: u8;
+    static __kernel_rodata_end: u8;
+    static __kernel_data_start: u8;
+    static __kernel_data_end: u8;
+}
 
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -159,19 +174,33 @@ impl BootCounter {
     }
 }
 
-pub fn physical_to_virtual(address: PhysicalAddress) -> VirtualAddress {
+fn physical_to_virtual(address: PhysicalAddress) -> VirtualAddress {
     VirtualAddress::new(address.get().wrapping_add(KERNEL_VIRTUAL_BASE))
 }
 
-pub fn virtual_to_physical(address: VirtualAddress) -> PhysicalAddress {
+pub(crate) fn try_physical_to_virtual(address: PhysicalAddress) -> Option<VirtualAddress> {
+    let mapped_bytes = PHYSMAP_END_GB.get().checked_mul(GIGAPAGE)?;
+    (address.get() < mapped_bytes).then(|| physical_to_virtual(address))
+}
+
+fn virtual_to_physical(address: VirtualAddress) -> PhysicalAddress {
     PhysicalAddress::new(address.get().wrapping_sub(KERNEL_VIRTUAL_BASE))
+}
+
+pub(crate) fn try_virtual_to_physical(address: VirtualAddress) -> Option<PhysicalAddress> {
+    let mapped_bytes = PHYSMAP_END_GB.get().checked_mul(GIGAPAGE)?;
+    let offset = address.get().checked_sub(KERNEL_VIRTUAL_BASE)?;
+    (offset < mapped_bytes).then(|| PhysicalAddress::new(offset))
 }
 
 pub const fn kernel_stack_region_base() -> VirtualAddress {
     VirtualAddress::new(KERNEL_VIRTUAL_BASE + KERNEL_STACK_REGION_OFFSET)
 }
 
-pub fn init(kernel_load: PhysicalAddress, dtb: DeviceTreeBlobPhysicalAddress) {
+pub fn init(
+    kernel_load: PhysicalAddress,
+    dtb: DeviceTreeBlobPhysicalAddress,
+) -> Result<(), MapError> {
     let map_start = if dtb.get() == 0 {
         kernel_load.get()
     } else {
@@ -188,7 +217,9 @@ pub fn init(kernel_load: PhysicalAddress, dtb: DeviceTreeBlobPhysicalAddress) {
     );
     let start_gb = map_start / GIGAPAGE;
     let end_gb = map_end.div_ceil(GIGAPAGE);
-    validate_boot_range(start_gb, end_gb);
+    validate_boot_range(start_gb, end_gb)?;
+    let kernel_gb = kernel_load.get() / GIGAPAGE;
+    let kernel_image = kernel_image_layout();
 
     // SAFETY: Early boot is single-hart. These static tables are exclusively
     // initialized here before interrupts are enabled.
@@ -203,15 +234,34 @@ pub fn init(kernel_load: PhysicalAddress, dtb: DeviceTreeBlobPhysicalAddress) {
         identity.entries.fill(PageTableEntry::INVALID);
         physmap.entries.fill(PageTableEntry::INVALID);
 
-        identity.entries[0] = kernel_leaf(PhysicalAddress::ZERO, false);
-        physmap.entries[0] = kernel_leaf(PhysicalAddress::ZERO, false);
+        identity.entries[0] =
+            kernel_leaf(PhysicalAddress::ZERO, MappingPermissions::KERNEL_READ_WRITE);
+        physmap.entries[0] =
+            kernel_leaf(PhysicalAddress::ZERO, MappingPermissions::KERNEL_READ_WRITE);
         for gb in start_gb..end_gb {
             if gb == 0 {
                 continue;
             }
             let address = PhysicalAddress::new(gb * GIGAPAGE);
-            identity.entries[gb] = kernel_leaf(address, true);
-            physmap.entries[gb] = kernel_leaf(address, true);
+            if gb == kernel_gb {
+                map_kernel_gb_split(
+                    identity,
+                    gb,
+                    &IDENTITY_KERNEL_L1_TABLE,
+                    &IDENTITY_KERNEL_L0_TABLES,
+                    kernel_image,
+                )?;
+                map_kernel_gb_split(
+                    physmap,
+                    gb,
+                    &PHYSMAP_KERNEL_L1_TABLE,
+                    &PHYSMAP_KERNEL_L0_TABLES,
+                    kernel_image,
+                )?;
+            } else {
+                identity.entries[gb] = kernel_leaf(address, MappingPermissions::KERNEL_READ_WRITE);
+                physmap.entries[gb] = kernel_leaf(address, MappingPermissions::KERNEL_READ_WRITE);
+            }
         }
         root.entries[0] = PageTableEntry::branch(static_physical_address(
             IDENTITY_L2_TABLE.get().cast_const(),
@@ -230,6 +280,7 @@ pub fn init(kernel_load: PhysicalAddress, dtb: DeviceTreeBlobPhysicalAddress) {
     }
 
     TranslationLookasideBuffer::flush_all();
+    Ok(())
 }
 
 pub fn post_mmu_init() {
@@ -259,7 +310,10 @@ pub fn expand_physmap(max_end: PhysicalAddress) {
             if gb == 0 {
                 continue;
             }
-            physmap.entries[gb] = kernel_leaf(PhysicalAddress::new(gb * GIGAPAGE), true);
+            physmap.entries[gb] = kernel_leaf(
+                PhysicalAddress::new(gb * GIGAPAGE),
+                MappingPermissions::KERNEL_READ_WRITE,
+            );
         }
     }
     if new_end > current {
@@ -568,9 +622,9 @@ pub unsafe fn unmap_page(
     }
     let physical = slot.output_address().ok_or(UnmapError::NotMapped)?;
     *slot = PageTableEntry::INVALID;
-    // The invalid PTE must be ordered before later translations of this page.
-    cpu::fence_rw_rw();
-    TranslationLookasideBuffer::flush_address(virtual_address);
+    // Kernel mappings are global. Use the full fence until user/non-global
+    // address spaces can choose a narrower scope by PTE.
+    TranslationLookasideBuffer::flush_all();
     Ok(physical)
 }
 
@@ -587,15 +641,8 @@ impl TranslationLookasideBuffer {
     pub fn flush_address(address: VirtualAddress) {
         cpu::fence_rw_rw();
         // SAFETY: The address-scoped form orders writes for one local page. Remote
-        // shootdown belongs to the later SMP rung.
-        //
-        // NOTE: Per the RISC-V Privileged Spec (section 4.2.1), an implementation
-        // is permitted to skip global PTEs when given the address-scoped form
-        // with ASID=zero. Boot mappings are GLOBAL, so any unmap path that hits
-        // a kernel-global page must use `flush_all` instead. Today the only
-        // mappings that exist are kernel-global, so `unmap_page` is unreachable;
-        // when user mappings land this will need to branch on globality.
-        // TODO(user-mappings): once non-global PTEs exist, pick scope by PTE.
+        // shootdown belongs to the later SMP rung. `rs2=x0` covers all address
+        // spaces for this virtual page, including global mappings.
         unsafe {
             asm!(
                 "sfence.vma {address}, zero",
@@ -645,19 +692,116 @@ fn static_physical_address<T>(ptr: *const T) -> PhysicalAddress {
     }
 }
 
-fn kernel_leaf(address: PhysicalAddress, executable: bool) -> PageTableEntry {
+#[derive(Clone, Copy)]
+struct KernelImageLayout {
+    text: PhysicalRange,
+    rodata: PhysicalRange,
+    data: PhysicalRange,
+}
+
+#[derive(Clone, Copy)]
+struct PhysicalRange {
+    start: usize,
+    end: usize,
+}
+
+fn kernel_image_layout() -> KernelImageLayout {
+    KernelImageLayout {
+        text: PhysicalRange::from_symbols(
+            core::ptr::addr_of!(__kernel_text_start),
+            core::ptr::addr_of!(__kernel_text_end),
+        ),
+        rodata: PhysicalRange::from_symbols(
+            core::ptr::addr_of!(__kernel_rodata_start),
+            core::ptr::addr_of!(__kernel_rodata_end),
+        ),
+        data: PhysicalRange::from_symbols(
+            core::ptr::addr_of!(__kernel_data_start),
+            core::ptr::addr_of!(__kernel_data_end),
+        ),
+    }
+}
+
+impl PhysicalRange {
+    fn from_symbols(start: *const u8, end: *const u8) -> Self {
+        Self {
+            start: static_physical_address(start).get(),
+            end: static_physical_address(end).get(),
+        }
+    }
+
+    const fn contains(self, physical: usize) -> bool {
+        physical >= self.start && physical < self.end
+    }
+}
+
+fn kernel_image_permissions(
+    physical: PhysicalAddress,
+    layout: KernelImageLayout,
+) -> MappingPermissions {
+    let address = physical.get();
+    if layout.text.contains(address) {
+        MappingPermissions::KERNEL_READ_EXECUTE
+    } else if layout.rodata.contains(address) {
+        MappingPermissions::KERNEL_READ_ONLY
+    } else {
+        MappingPermissions::KERNEL_READ_WRITE
+    }
+}
+
+unsafe fn map_kernel_gb_split(
+    l2_table: &mut PageTable,
+    gb: usize,
+    l1_table: &BootPageTable,
+    l0_tables: &[BootPageTable; ENTRIES_PER_PAGE_TABLE],
+    layout: KernelImageLayout,
+) -> Result<(), MapError> {
+    // SAFETY: Early boot has exclusive ownership of the static split tables.
+    let l1 = unsafe { &mut *l1_table.get() };
+    l1.entries.fill(PageTableEntry::INVALID);
+    for (l1_index, l0_table) in l0_tables.iter().enumerate() {
+        // SAFETY: Each static L0 table is initialized exactly once here before
+        // the branch descriptor that reaches it is installed.
+        let l0 = unsafe { &mut *l0_table.get() };
+        l0.entries.fill(PageTableEntry::INVALID);
+        l1.entries[l1_index] =
+            PageTableEntry::branch(static_physical_address(l0_table.get().cast_const()))
+                .ok_or(MapError::NotAligned)?;
+
+        for l0_index in 0..ENTRIES_PER_PAGE_TABLE {
+            let physical =
+                PhysicalAddress::new(gb * GIGAPAGE + l1_index * MEGAPAGE + l0_index * PAGE_SIZE);
+            l0.entries[l0_index] =
+                kernel_page(physical, kernel_image_permissions(physical, layout));
+        }
+    }
+    l2_table.entries[gb] =
+        PageTableEntry::branch(static_physical_address(l1_table.get().cast_const()))
+            .ok_or(MapError::NotAligned)?;
+    Ok(())
+}
+
+fn kernel_leaf(address: PhysicalAddress, permissions: MappingPermissions) -> PageTableEntry {
     PageTableEntry::from_mapping(
         MappingIntent::new(
             address,
             MappingSize::Block1G,
             MemoryKind::Normal,
-            MappingPermissions {
-                writable: true,
-                executable,
-                user_accessible: false,
-            },
+            permissions,
         )
         .expect("boot gigapage is aligned"),
+    )
+}
+
+fn kernel_page(address: PhysicalAddress, permissions: MappingPermissions) -> PageTableEntry {
+    PageTableEntry::from_mapping(
+        MappingIntent::new(
+            address,
+            MappingSize::Page4K,
+            MemoryKind::Normal,
+            permissions,
+        )
+        .expect("boot page is aligned"),
     )
 }
 
@@ -681,10 +825,11 @@ fn physical_page_number(address: PhysicalAddress) -> Option<u64> {
     )
 }
 
-fn validate_boot_range(start_gb: usize, end_gb: usize) {
+fn validate_boot_range(start_gb: usize, end_gb: usize) -> Result<(), MapError> {
     if start_gb > end_gb || end_gb > MAX_BOOT_GIGAPAGES {
-        panic!("mmu: boot physical range exceeds RISC-V boot page table");
+        return Err(MapError::RangeExceeded);
     }
+    Ok(())
 }
 
 const _: () = assert!(core::mem::size_of::<PageTableEntry>() == 8);

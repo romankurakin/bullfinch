@@ -9,6 +9,7 @@ pub mod clock;
 pub mod context;
 pub mod cpu;
 pub mod fdt;
+pub mod fp;
 pub mod hwinfo;
 pub mod limits;
 pub mod mmu;

@@ -63,16 +63,16 @@ pub mod mmu {
     pub const KERNEL_PHYSICAL_LOAD: PhysicalAddress =
         PhysicalAddress::new(crate::arch::mmu::KERNEL_PHYSICAL_LOAD);
 
-    pub fn physical_to_virtual(address: PhysicalAddress) -> VirtualAddress {
-        crate::arch::mmu::physical_to_virtual(address)
+    pub fn try_physical_to_virtual(address: PhysicalAddress) -> Option<VirtualAddress> {
+        crate::arch::mmu::try_physical_to_virtual(address)
     }
 
-    pub fn virtual_to_physical(address: VirtualAddress) -> PhysicalAddress {
-        crate::arch::mmu::virtual_to_physical(address)
+    pub fn try_virtual_to_physical(address: VirtualAddress) -> Option<PhysicalAddress> {
+        crate::arch::mmu::try_virtual_to_physical(address)
     }
 
-    pub fn init(dtb: DeviceTreeBlobPhysicalAddress) {
-        crate::arch::mmu::init(KERNEL_PHYSICAL_LOAD, dtb);
+    pub fn init(dtb: DeviceTreeBlobPhysicalAddress) -> Result<(), MapError> {
+        crate::arch::mmu::init(KERNEL_PHYSICAL_LOAD, dtb)
     }
 
     pub fn post_mmu_init() {
@@ -107,8 +107,11 @@ pub mod mmu {
 
     fn allocate_page_table() -> Option<VirtualAddress> {
         let page = pmm::alloc_page()?;
-        let physical = page.leak_physical()?;
-        let virtual_address = physical_to_virtual(physical);
+        let physical = page.physical_address()?;
+        let virtual_address = try_physical_to_virtual(physical)?;
+        let transferred = page.into_physical()?;
+        // The transfer must preserve the page identity checked before mapper lookup.
+        debug_assert_eq!(transferred, physical);
         // SAFETY: PMM just gave this page to the page-table allocator. The
         // physmap covers PMM pages, and no other owner can observe initialized
         // table entries until the caller installs the descriptor.

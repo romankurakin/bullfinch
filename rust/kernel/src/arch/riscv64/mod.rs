@@ -1,6 +1,7 @@
 mod boot;
 pub mod console;
 pub mod cpu;
+pub mod fp;
 pub mod interrupt;
 pub mod mmu;
 mod sbi;

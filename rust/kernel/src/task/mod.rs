@@ -4,18 +4,16 @@
 //! keeps ownership local to the scheduler and avoids exporting raw thread
 //! pointers before the context-switching rung grows real stacks.
 
-use core::{
-    num::NonZeroU32,
-    sync::atomic::{AtomicUsize, Ordering},
-};
+use core::{mem::ManuallyDrop, num::NonZeroU32};
 
 use crate::{
     clock,
     context::Context,
+    fp::{ThreadFpState, UserFpState},
     limits::MAX_TASKS,
     mmu::{MapError, PAGE_SIZE, PhysicalAddress, UnmapError, VirtualAddress},
     pmm::{self, PageRun},
-    sync::SpinLock,
+    sync::Locked,
     trace::{Ring, TRACE_EVENTS, TraceEvent, TraceKind},
 };
 
@@ -31,8 +29,10 @@ const KERNEL_STACK_GUARD_SIZE: usize = PAGE_SIZE;
 const KERNEL_STACK_SLOT_SIZE: usize = KERNEL_STACK_GUARD_SIZE + KERNEL_STACK_SIZE;
 const KERNEL_STACK_REGION_SIZE: usize = 1 << 30;
 const MAX_KERNEL_STACK_SLOTS: usize = KERNEL_STACK_REGION_SIZE / KERNEL_STACK_SLOT_SIZE;
+const STACK_SLOT_WORD_BITS: usize = usize::BITS as usize;
+const STACK_SLOT_WORDS: usize = MAX_KERNEL_STACK_SLOTS.div_ceil(STACK_SLOT_WORD_BITS);
 
-static NEXT_STACK_SLOT: AtomicUsize = AtomicUsize::new(0);
+static STACK_SLOTS: Locked<StackSlots> = Locked::new(StackSlots::new());
 
 pub type KernelStackRegionBase = fn() -> VirtualAddress;
 pub type MapKernelStackPage = fn(VirtualAddress, PhysicalAddress) -> Result<(), MapError>;
@@ -49,10 +49,67 @@ pub enum StackError {
 }
 
 pub struct KernelStack {
-    pages: PageRun,
+    pages: ManuallyDrop<PageRun>,
+    slot: ManuallyDrop<Option<KernelStackSlot>>,
     base: VirtualAddress,
     size: usize,
     unmap: Option<UnmapKernelStackPage>,
+}
+
+struct StackSlots {
+    words: [usize; STACK_SLOT_WORDS],
+}
+
+impl StackSlots {
+    const fn new() -> Self {
+        Self {
+            words: [0; STACK_SLOT_WORDS],
+        }
+    }
+
+    fn alloc(&mut self) -> Option<usize> {
+        for (word_index, word) in self.words.iter_mut().enumerate() {
+            if *word == usize::MAX {
+                continue;
+            }
+            let bit = (!*word).trailing_zeros() as usize;
+            let slot = word_index * STACK_SLOT_WORD_BITS + bit;
+            if slot >= MAX_KERNEL_STACK_SLOTS {
+                return None;
+            }
+            *word |= 1usize << bit;
+            return Some(slot);
+        }
+        None
+    }
+
+    fn free(&mut self, slot: usize) {
+        let word = slot / STACK_SLOT_WORD_BITS;
+        let bit = slot % STACK_SLOT_WORD_BITS;
+        let mask = 1usize << bit;
+        assert!(self.words[word] & mask != 0, "task: stack slot double-free");
+        self.words[word] &= !mask;
+    }
+}
+
+struct KernelStackSlot {
+    index: usize,
+}
+
+impl KernelStackSlot {
+    fn alloc() -> Option<Self> {
+        STACK_SLOTS.lock().alloc().map(|index| Self { index })
+    }
+
+    const fn index(&self) -> usize {
+        self.index
+    }
+}
+
+impl Drop for KernelStackSlot {
+    fn drop(&mut self) {
+        STACK_SLOTS.lock().free(self.index);
+    }
 }
 
 impl KernelStack {
@@ -61,16 +118,14 @@ impl KernelStack {
         map_page: MapKernelStackPage,
         unmap_page: UnmapKernelStackPage,
     ) -> Result<Self, StackError> {
-        let slot = NEXT_STACK_SLOT.fetch_add(1, Ordering::Relaxed);
-        if slot >= MAX_KERNEL_STACK_SLOTS {
-            return Err(StackError::RegionExhausted);
-        }
+        let slot = KernelStackSlot::alloc().ok_or(StackError::RegionExhausted)?;
 
         let pages = pmm::alloc_contiguous(KERNEL_STACK_PAGES, PAGE_ALIGNMENT_LOG2)
             .ok_or(StackError::OutOfMemory)?;
         let base = stack_region_base()
             .checked_add(
-                slot.checked_mul(KERNEL_STACK_SLOT_SIZE)
+                slot.index()
+                    .checked_mul(KERNEL_STACK_SLOT_SIZE)
                     .and_then(|offset| offset.checked_add(KERNEL_STACK_GUARD_SIZE))
                     .ok_or(StackError::RegionExhausted)?,
             )
@@ -79,21 +134,22 @@ impl KernelStack {
         let mut mapped_pages = 0usize;
         while mapped_pages < KERNEL_STACK_PAGES {
             let Some(physical) = pages.physical_address(mapped_pages) else {
-                rollback_stack_mapping(base, mapped_pages, unmap_page);
+                rollback_stack_mapping_best_effort(base, mapped_pages, unmap_page);
                 return Err(StackError::AddressNotMapped);
             };
             let virtual_address = base
                 .checked_add(mapped_pages * PAGE_SIZE)
                 .ok_or(StackError::RegionExhausted)?;
             if let Err(error) = map_page(virtual_address, physical) {
-                rollback_stack_mapping(base, mapped_pages, unmap_page);
+                rollback_stack_mapping_best_effort(base, mapped_pages, unmap_page);
                 return Err(StackError::Map(error));
             }
             mapped_pages += 1;
         }
 
         Ok(Self {
-            pages,
+            pages: ManuallyDrop::new(pages),
+            slot: ManuallyDrop::new(Some(slot)),
             base,
             size: KERNEL_STACK_SIZE,
             unmap: Some(unmap_page),
@@ -112,7 +168,8 @@ impl KernelStack {
     #[cfg(test)]
     fn new_for_test(base: VirtualAddress, size: usize) -> Self {
         Self {
-            pages: PageRun::new_for_test(),
+            pages: ManuallyDrop::new(PageRun::new_for_test()),
+            slot: ManuallyDrop::new(None),
             base,
             size,
             unmap: None,
@@ -135,13 +192,19 @@ impl KernelStack {
 impl Drop for KernelStack {
     fn drop(&mut self) {
         if let Some(unmap_page) = self.unmap {
-            rollback_stack_mapping(self.base, KERNEL_STACK_PAGES, unmap_page);
+            unmap_stack_mapping_strict(self.base, KERNEL_STACK_PAGES, unmap_page);
         }
-        let _ = self.pages.count();
+        // SAFETY: `pages` is dropped exactly once here after the virtual stack
+        // aliases are gone. If strict unmapping panics, the run and stack slot
+        // stay leaked instead of being reused with stale mappings.
+        unsafe { ManuallyDrop::drop(&mut self.pages) };
+        // SAFETY: The slot is released exactly once, after stale aliases have
+        // been removed and the physical pages have been returned.
+        unsafe { ManuallyDrop::drop(&mut self.slot) };
     }
 }
 
-fn rollback_stack_mapping(
+fn rollback_stack_mapping_best_effort(
     base: VirtualAddress,
     mapped_pages: usize,
     unmap_page: UnmapKernelStackPage,
@@ -155,6 +218,21 @@ fn rollback_stack_mapping(
     }
 }
 
+fn unmap_stack_mapping_strict(
+    base: VirtualAddress,
+    mapped_pages: usize,
+    unmap_page: UnmapKernelStackPage,
+) {
+    let mut index = mapped_pages;
+    while index > 0 {
+        index -= 1;
+        let virtual_address = base
+            .checked_add(index * PAGE_SIZE)
+            .expect("kernel stack mapping address overflow during teardown");
+        unmap_page(virtual_address).expect("kernel stack unmap failed during teardown");
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InitError {
     ProcessTableFull,
@@ -165,6 +243,7 @@ pub enum InitError {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ScheduleError {
     NotInitialized,
+    NoCurrentThread,
     UnknownThread,
     ZeroWeight,
 }
@@ -189,12 +268,16 @@ impl ThreadId {
     }
 }
 
+/// Bootstrap-only authority for creating initial kernel threads.
+///
+/// This is not a capability handle. Later user-space process and service
+/// creation should go through the handle table and rights checks.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct KernelProcess {
+pub struct BootstrapProcess {
     id: ProcessId,
 }
 
-impl KernelProcess {
+impl BootstrapProcess {
     pub fn spawn(
         self,
         weight: NonZeroU32,
@@ -202,8 +285,9 @@ impl KernelProcess {
         entry: ThreadEntry,
         arg: usize,
     ) -> Result<ThreadId, InitError> {
-        let _guard = SCHEDULER_LOCK.guard();
-        scheduler().create_thread_with_stack(self.id, weight, false, stack, entry, arg)
+        SCHEDULER
+            .lock()
+            .create_thread_with_stack(self.id, weight, false, stack, entry, arg)
     }
 }
 
@@ -316,6 +400,7 @@ struct Thread {
     process: ProcessId,
     state: ThreadState,
     context: Context,
+    fp: ThreadFpState,
     stack: Option<KernelStack>,
     blocked_on: Option<WaitToken>,
     weight: NonZeroU32,
@@ -343,6 +428,7 @@ impl Thread {
             process,
             state: ThreadState::Ready,
             context,
+            fp: ThreadFpState::new(),
             stack,
             blocked_on: None,
             weight,
@@ -396,7 +482,7 @@ impl<const THREADS: usize, const PROCESSES: usize> Scheduler<THREADS, PROCESSES>
     }
 
     fn init(&mut self) -> Result<(), InitError> {
-        *self = Self::new();
+        self.reset();
         let kernel = self.create_process()?;
         let idle = self.create_thread(kernel, NonZeroU32::new(SCHED_MIN_WEIGHT).unwrap(), true)?;
         self.idle = Some(idle);
@@ -414,7 +500,7 @@ impl<const THREADS: usize, const PROCESSES: usize> Scheduler<THREADS, PROCESSES>
         entry: ThreadEntry,
         arg: usize,
     ) -> Result<(), InitError> {
-        *self = Self::new();
+        self.reset();
         let kernel = self.create_process()?;
         let idle = self.create_thread_with_stack(
             kernel,
@@ -441,6 +527,22 @@ impl<const THREADS: usize, const PROCESSES: usize> Scheduler<THREADS, PROCESSES>
         };
         *slot = Some(Process::new(id));
         Ok(id)
+    }
+
+    fn reset(&mut self) {
+        for thread in &mut self.threads {
+            *thread = None;
+        }
+        self.processes = [None; PROCESSES];
+        self.boot_context = Context::empty();
+        self.next_thread_id = 1;
+        self.next_process_id = 1;
+        self.current = None;
+        self.idle = None;
+        self.min_virtual_runtime = 0;
+        self.need_reschedule = false;
+        self.initialized = false;
+        self.trace = Ring::new();
     }
 
     fn create_thread(
@@ -705,17 +807,10 @@ impl<const THREADS: usize, const PROCESSES: usize> Default for Scheduler<THREADS
     }
 }
 
-struct SchedulerCell(core::cell::UnsafeCell<Scheduler<MAX_TASKS, MAX_PROCESSES>>);
-
-// SAFETY: Access to the global scheduler is serialized by `SCHEDULER_LOCK`.
-unsafe impl Sync for SchedulerCell {}
-
-static SCHEDULER: SchedulerCell = SchedulerCell(core::cell::UnsafeCell::new(Scheduler::new()));
-static SCHEDULER_LOCK: SpinLock = SpinLock::new();
+static SCHEDULER: Locked<Scheduler<MAX_TASKS, MAX_PROCESSES>> = Locked::new(Scheduler::new());
 
 pub fn init() -> Result<(), InitError> {
-    let _guard = SCHEDULER_LOCK.guard();
-    scheduler().init()
+    SCHEDULER.lock().init()
 }
 
 pub fn init_with_idle_thread(
@@ -723,15 +818,11 @@ pub fn init_with_idle_thread(
     entry: ThreadEntry,
     arg: usize,
 ) -> Result<(), InitError> {
-    let _guard = SCHEDULER_LOCK.guard();
-    scheduler().init_with_idle_thread(stack, entry, arg)
+    SCHEDULER.lock().init_with_idle_thread(stack, entry, arg)
 }
 
 pub fn enter_idle(switch_context: ContextSwitch) -> Result<(), ScheduleError> {
-    let pair = {
-        let _guard = SCHEDULER_LOCK.guard();
-        scheduler().enter_idle_contexts()?
-    };
+    let pair = { SCHEDULER.lock().enter_idle_contexts()? };
     // SAFETY: The scheduler returned the boot context it owns.
     let old = unsafe { &mut *pair.old };
     // SAFETY: The new context belongs to the idle thread and has a live
@@ -743,10 +834,7 @@ pub fn enter_idle(switch_context: ContextSwitch) -> Result<(), ScheduleError> {
 }
 
 pub fn preempt_from_trap(switch_context: ContextSwitch) -> Result<(), ScheduleError> {
-    let Some(pair) = ({
-        let _guard = SCHEDULER_LOCK.guard();
-        scheduler().preempt_contexts()?
-    }) else {
+    let Some(pair) = ({ SCHEDULER.lock().preempt_contexts()? }) else {
         return Ok(());
     };
     // SAFETY: The scheduler returned the outgoing thread context it owns.
@@ -760,32 +848,42 @@ pub fn preempt_from_trap(switch_context: ContextSwitch) -> Result<(), ScheduleEr
 }
 
 pub fn tick(elapsed_ticks: u64) {
-    let _guard = SCHEDULER_LOCK.guard();
-    let _ = scheduler().tick(elapsed_ticks);
+    let _ = SCHEDULER.lock().tick(elapsed_ticks);
 }
 
 pub fn maybe_reschedule() -> Option<Switch> {
-    let _guard = SCHEDULER_LOCK.guard();
-    scheduler().maybe_reschedule()
+    SCHEDULER.lock().maybe_reschedule()
 }
 
 pub fn current() -> Option<ThreadSnapshot> {
-    let _guard = SCHEDULER_LOCK.guard();
-    scheduler().current()
+    SCHEDULER.lock().current()
 }
 
-pub fn kernel_process() -> Option<KernelProcess> {
-    let _guard = SCHEDULER_LOCK.guard();
-    scheduler()
+pub fn save_current_user_fp_state(state: UserFpState) -> Result<(), ScheduleError> {
+    let mut scheduler = SCHEDULER.lock();
+    let current = scheduler.current.ok_or(ScheduleError::NoCurrentThread)?;
+    let thread = scheduler
+        .thread_mut(current)
+        .ok_or(ScheduleError::UnknownThread)?;
+    // The scheduler's current ID must resolve to that same thread entry.
+    debug_assert_eq!(thread.id, current);
+    thread.fp.save_user_state(state);
+    Ok(())
+}
+
+/// Returns the initial kernel process while bootstrapping kernel-owned threads.
+pub fn bootstrap_process() -> Option<BootstrapProcess> {
+    SCHEDULER
+        .lock()
         .processes
         .iter()
         .flatten()
         .next()
-        .map(|process| KernelProcess { id: process.id })
+        .map(|process| BootstrapProcess { id: process.id })
 }
 
 pub fn create_thread_with_stack(
-    process: KernelProcess,
+    process: BootstrapProcess,
     weight: NonZeroU32,
     stack: KernelStack,
     entry: ThreadEntry,
@@ -795,13 +893,7 @@ pub fn create_thread_with_stack(
 }
 
 pub fn trace_len() -> usize {
-    let _guard = SCHEDULER_LOCK.guard();
-    scheduler().trace_len()
-}
-
-fn scheduler() -> &'static mut Scheduler<MAX_TASKS, MAX_PROCESSES> {
-    // SAFETY: Callers hold `SCHEDULER_LOCK`.
-    unsafe { &mut *SCHEDULER.0.get() }
+    SCHEDULER.lock().trace_len()
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 ---
 name: os-source-search
-description: Search reference OS source code online (Linux, xv6, seL4, MINIX3, Fuchsia/Zircon, FreeBSD). Use when looking up implementation patterns, understanding how production or teaching OSes handle specific features, or finding reference code for scheduler, memory management, IPC, drivers, syscalls.
+description: Search reference OS source code online (Linux, xv6, seL4, MINIX3, Fuchsia/Zircon, FreeBSD, Zephyr). Use when looking up implementation patterns, understanding how production or teaching OSes handle specific features, or finding reference code for scheduler, memory management, IPC, drivers, syscalls.
 ---
 
 # OS Source Search Skill
@@ -47,6 +47,12 @@ userspace servers).
 - **CGit**: `https://cgit.freebsd.org/src/tree/sys` — Official source browser
 - **GitHub mirror**: `https://github.com/freebsd/freebsd-src`
 
+**Zephyr:**
+
+- **GitHub**: `https://github.com/zephyrproject-rtos/zephyr`
+- **Docs**: `https://docs.zephyrproject.org/latest`
+
+
 ## Search Patterns
 
 ### Using WebFetch for specific files
@@ -69,6 +75,9 @@ WebFetch: https://fuchsia.googlesource.com/fuchsia/+/refs/heads/main/zircon/kern
 
 # FreeBSD
 WebFetch: https://raw.githubusercontent.com/freebsd/freebsd-src/main/sys/kern/sched_ule.c
+
+# Zephyr 
+WebFetch: https://raw.githubusercontent.com/zephyrproject-rtos/zephyr/main/arch/arm64/core/fpu.c
 ```
 
 ### Using WebSearch for discovery
@@ -91,4 +100,16 @@ WebSearch: "zircon site:fuchsia.googlesource.com <feature>"
 
 # FreeBSD
 WebSearch: "freebsd site:cgit.freebsd.org <feature>"
+
+# Zephyr
+WebSearch: "zephyr site:github.com/zephyrproject-rtos/zephyr <feature>"
+WebSearch: "zephyr ARM64 FPU sharing FP SIMD trap CPACR_EL1"
 ```
+
+### Zephyr FP/SIMD Notes
+
+Use Zephyr as a reference when the target permits compiler-generated ARM64
+FP/SIMD in kernel code. Its ARM64 floating point service documents shared FP
+register mode, lazy ownership, FP/SIMD trap handling, and context switch hooks.
+Look at `z_arm64_fpu_trap()`, `z_arm64_fpu_thread_context_switch()`,
+`z_arm64_fpu_save()`, and `z_arm64_fpu_restore()` first.

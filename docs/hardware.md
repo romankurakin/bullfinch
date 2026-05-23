@@ -16,11 +16,6 @@ Use `-cpu max` for all extensions or specific core (`cortex-a72`, `neoverse-n1`)
 Supported: ASIMD, FP16, Crypto, CRC32, LSE, RAS, SVE, PAC, BTI, MTE (needs
 `-machine mte=on`)
 
-The kernel currently targets `aarch64-unknown-none-softfloat`. This is
-intentional: normal kernel code is FP/SIMD-free, and the soft-float ABI prevents
-LLVM from treating NEON/FP as part of the baseline kernel ABI. Use explicit
-guarded FP/SIMD paths later if a hot kernel routine needs them.
-
 ## QEMU virt (RISC-V)
 
 Use `-cpu max` or `-cpu rv64,v=true,zba=true,...`

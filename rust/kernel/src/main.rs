@@ -66,14 +66,17 @@ pub fn kernel_main(info: BootInfo) -> ! {
         &hardware,
         hal::mmu::KERNEL_PHYSICAL_LOAD,
         kernel_physical_end(),
-        hal::mmu::physical_to_virtual,
+        hal::mmu::try_physical_to_virtual,
     )
     .unwrap_or_else(|_| {
         out.print("\n[PANIC]\npmm: initialization failed\n");
         hal::cpu::halt();
     });
     startup::log::pmm();
-    kernel::allocator::init(hal::mmu::physical_to_virtual, hal::mmu::virtual_to_physical);
+    kernel::allocator::init(
+        hal::mmu::try_physical_to_virtual,
+        hal::mmu::try_virtual_to_physical,
+    );
     kernel::allocator::boot_probe().unwrap_or_else(|_| {
         out.print("\n[PANIC]\nallocator: initialization failed\n");
         hal::cpu::halt();
@@ -115,7 +118,8 @@ pub fn kernel_main(info: BootInfo) -> ! {
 
 fn kernel_physical_end() -> PhysicalAddress {
     let end_virtual = core::ptr::addr_of!(__kernel_end) as usize;
-    hal::mmu::virtual_to_physical(kernel::mmu::VirtualAddress::new(end_virtual))
+    hal::mmu::try_virtual_to_physical(kernel::mmu::VirtualAddress::new(end_virtual))
+        .expect("kernel end is covered by the physmap")
 }
 
 fn enter_idle_thread(out: &mut console::Console) -> ! {

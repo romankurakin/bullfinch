@@ -4,9 +4,9 @@
 //! kernel code sees one local DTB type.
 
 pub use ::fdt::FdtError;
-use ::fdt::parsing::{Panic, unaligned::UnalignedParser};
+use ::fdt::parsing::{NoPanic, unaligned::UnalignedParser};
 
-pub type Parser<'a> = (UnalignedParser<'a>, Panic);
+pub type Parser<'a> = (UnalignedParser<'a>, NoPanic);
 pub type Fdt<'a> = ::fdt::Fdt<'a, Parser<'a>>;
 pub type Node<'a> = ::fdt::nodes::Node<'a, Parser<'a>>;
 
@@ -37,12 +37,12 @@ mod tests {
 
     #[test]
     fn parses_minimal_dtb() {
-        let dtb = Fdt::new_unaligned(MINIMAL_DTB).unwrap();
+        let dtb = Fdt::new_unaligned_fallible(MINIMAL_DTB).unwrap();
         assert_eq!(dtb.header().boot_cpuid, 7);
     }
 
     #[test]
     fn rejects_invalid_dtb() {
-        assert!(Fdt::new_unaligned(&MINIMAL_DTB[..8]).is_err());
+        assert!(Fdt::new_unaligned_fallible(&MINIMAL_DTB[..8]).is_err());
     }
 }

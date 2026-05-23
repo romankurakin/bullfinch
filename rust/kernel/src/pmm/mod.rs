@@ -11,7 +11,7 @@ use crate::{
     hwinfo::{HardwareInfo, MemoryRegion},
     limits::{MAX_MEMORY_ARENAS, MAX_RESERVED_REGIONS},
     mmu::{PAGE_SIZE, PhysicalAddress, VirtualAddress},
-    sync::SpinLock,
+    sync::Locked,
 };
 
 const INVALID_ARENA_INDEX: u8 = u8::MAX;
@@ -259,7 +259,7 @@ fn ranges_overlap_or_touch(
     left_start <= right_end && right_start <= left_end
 }
 
-type PhysicalToVirtual = fn(PhysicalAddress) -> VirtualAddress;
+type PhysicalToVirtual = fn(PhysicalAddress) -> Option<VirtualAddress>;
 
 struct PhysicalMemoryManager {
     arenas: [Arena; MAX_MEMORY_ARENAS],
@@ -272,6 +272,11 @@ struct PhysicalMemoryManager {
     free_pages: usize,
     initialized: bool,
 }
+
+// SAFETY: PMM metadata pointers refer to arena metadata owned by the manager.
+// Access to the manager is serialized by `Locked`, so moving the manager between
+// CPUs does not permit unsynchronized metadata access.
+unsafe impl Send for PhysicalMemoryManager {}
 
 impl PhysicalMemoryManager {
     const fn empty() -> Self {
@@ -443,10 +448,8 @@ impl PhysicalMemoryManager {
         let metadata_physical = self
             .find_metadata_range(aligned_base, total_pages, metadata_pages)?
             .ok_or(InitError::MetadataAddressUnavailable)?;
-        let metadata_virtual = physical_to_virtual(metadata_physical);
-        if metadata_virtual.get() == 0 {
-            return Err(InitError::AddressNotMapped);
-        }
+        let metadata_virtual =
+            physical_to_virtual(metadata_physical).ok_or(InitError::AddressNotMapped)?;
 
         let storage = PageStorage {
             ptr: metadata_virtual.get() as *mut Page,
@@ -803,8 +806,10 @@ impl AllocatedPage {
     /// Page tables and slab pages outlive the immediate allocation scope. They
     /// are still PMM-owned memory, but the owner is recorded by that subsystem
     /// rather than this RAII value.
-    pub fn leak_physical(self) -> Option<PhysicalAddress> {
+    pub fn into_physical(self) -> Option<PhysicalAddress> {
         let physical = self.physical_address();
+        // AllocatedPage handles should always resolve before ownership transfer.
+        debug_assert!(physical.is_some());
         let _this = ManuallyDrop::new(self);
         physical
     }
@@ -868,13 +873,7 @@ impl Drop for PageRun {
     }
 }
 
-struct ManagerCell(core::cell::UnsafeCell<PhysicalMemoryManager>);
-
-// SAFETY: Access to the manager is serialized by `PMM_LOCK`.
-unsafe impl Sync for ManagerCell {}
-
-static PMM: ManagerCell = ManagerCell(core::cell::UnsafeCell::new(PhysicalMemoryManager::empty()));
-static PMM_LOCK: SpinLock = SpinLock::new();
+static PMM: Locked<PhysicalMemoryManager> = Locked::new(PhysicalMemoryManager::empty());
 
 pub fn init(
     info: &HardwareInfo,
@@ -882,49 +881,43 @@ pub fn init(
     kernel_end: PhysicalAddress,
     physical_to_virtual: PhysicalToVirtual,
 ) -> Result<(), InitError> {
-    let _guard = PMM_LOCK.guard();
-    manager().init(info, kernel_start, kernel_end, physical_to_virtual)
+    PMM.lock()
+        .init(info, kernel_start, kernel_end, physical_to_virtual)
 }
 
 pub fn alloc_page() -> Option<AllocatedPage> {
-    let _guard = PMM_LOCK.guard();
-    let pmm = manager();
-    assert_initialized(pmm);
+    let mut pmm = PMM.lock();
+    assert_initialized(&pmm);
     pmm.alloc_page().map(|handle| AllocatedPage { handle })
 }
 
 fn free_page_handle(page: PageHandle) {
-    let _guard = PMM_LOCK.guard();
-    let pmm = manager();
-    assert_initialized(pmm);
+    let mut pmm = PMM.lock();
+    assert_initialized(&pmm);
     pmm.free_page(page);
 }
 
 pub fn alloc_contiguous(count: usize, alignment_log2: u8) -> Option<PageRun> {
-    let _guard = PMM_LOCK.guard();
-    let pmm = manager();
-    assert_initialized(pmm);
+    let mut pmm = PMM.lock();
+    assert_initialized(&pmm);
     pmm.alloc_contiguous(count, alignment_log2)
 }
 
 fn free_contiguous_parts(head: PageHandle, count: usize) -> Result<(), FreeContiguousError> {
-    let _guard = PMM_LOCK.guard();
-    let pmm = manager();
-    assert_initialized(pmm);
+    let mut pmm = PMM.lock();
+    assert_initialized(&pmm);
     pmm.free_contiguous(head, count)
 }
 
 fn page_to_physical_handle(page: PageHandle) -> Option<PhysicalAddress> {
-    let _guard = PMM_LOCK.guard();
-    let pmm = manager();
-    assert_initialized(pmm);
+    let pmm = PMM.lock();
+    assert_initialized(&pmm);
     pmm.arena_for(page)?.page_to_physical(page)
 }
 
 pub(crate) fn free_physical_page(physical: PhysicalAddress) {
-    let _guard = PMM_LOCK.guard();
-    let pmm = manager();
-    assert_initialized(pmm);
+    let mut pmm = PMM.lock();
+    assert_initialized(&pmm);
     let handle = pmm
         .arena_for_physical(physical)
         .and_then(|arena| arena.physical_to_page(physical))
@@ -933,27 +926,19 @@ pub(crate) fn free_physical_page(physical: PhysicalAddress) {
 }
 
 pub fn total_pages() -> usize {
-    let _guard = PMM_LOCK.guard();
-    manager().total_pages
+    PMM.lock().total_pages
 }
 
 pub fn free_pages() -> usize {
-    let _guard = PMM_LOCK.guard();
-    manager().free_pages
+    PMM.lock().free_pages
 }
 
 pub fn arena_count() -> usize {
-    let _guard = PMM_LOCK.guard();
-    manager().arena_count
+    PMM.lock().arena_count
 }
 
 fn assert_initialized(pmm: &PhysicalMemoryManager) {
     assert!(pmm.initialized, "pmm: not initialized");
-}
-
-fn manager() -> &'static mut PhysicalMemoryManager {
-    // SAFETY: Callers hold `PMM_LOCK`.
-    unsafe { &mut *PMM.0.get() }
 }
 
 #[cfg(test)]
