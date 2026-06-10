@@ -1,14 +1,34 @@
 //! Borrowed Device Tree view.
 //!
-//! The `fdt` crate provides the parser. This module fixes the parser mode so
-//! kernel code sees one local DTB type.
+//! `dtoolkit` provides the parser. This module keeps parser-specific type
+//! names behind one local DTB API.
 
-pub use ::fdt::FdtError;
-use ::fdt::parsing::{NoPanic, unaligned::UnalignedParser};
+pub use dtoolkit::fdt::{Fdt, FdtNode as Node};
 
-pub type Parser<'a> = (UnalignedParser<'a>, NoPanic);
-pub type Fdt<'a> = ::fdt::Fdt<'a, Parser<'a>>;
-pub type Node<'a> = ::fdt::nodes::Node<'a, Parser<'a>>;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FdtError {
+    Parse,
+    Property,
+    Standard,
+}
+
+impl From<dtoolkit::error::FdtParseError> for FdtError {
+    fn from(_: dtoolkit::error::FdtParseError) -> Self {
+        Self::Parse
+    }
+}
+
+impl From<dtoolkit::error::PropertyError> for FdtError {
+    fn from(_: dtoolkit::error::PropertyError) -> Self {
+        Self::Property
+    }
+}
+
+impl From<dtoolkit::error::StandardError> for FdtError {
+    fn from(_: dtoolkit::error::StandardError) -> Self {
+        Self::Standard
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -37,12 +57,12 @@ mod tests {
 
     #[test]
     fn parses_minimal_dtb() {
-        let dtb = Fdt::new_unaligned_fallible(MINIMAL_DTB).unwrap();
-        assert_eq!(dtb.header().boot_cpuid, 7);
+        let dtb = Fdt::new(MINIMAL_DTB).unwrap();
+        assert_eq!(dtb.boot_cpuid_phys(), 7);
     }
 
     #[test]
     fn rejects_invalid_dtb() {
-        assert!(Fdt::new_unaligned_fallible(&MINIMAL_DTB[..8]).is_err());
+        assert!(Fdt::new(&MINIMAL_DTB[..8]).is_err());
     }
 }

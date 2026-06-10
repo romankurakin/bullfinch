@@ -29,6 +29,8 @@ mod host {
             Self
         }
 
+        pub fn enable_user_state(&mut self) {}
+
         pub fn save_user_state(&mut self, _: UserFpState) {}
     }
 

@@ -5,13 +5,17 @@
 
 use crate::{
     boot::DeviceTreeBlobPhysicalAddress,
-    fdt::{Fdt, FdtError, Node, cells::read_cells},
+    fdt::{
+        Fdt, FdtError, Node, NodeAccess as _, NodeStandard as _, PropertyAccess as _, Reg,
+        cells::read_cells,
+    },
     limits::{MAX_MEMORY_ARENAS, MAX_RESERVED_REGIONS},
     mmu::address::PhysicalAddress,
     time::Frequency,
 };
 
 type FdtResult<T> = Result<T, FdtError>;
+const MAX_COMPATIBLE_SEARCH_DEPTH: usize = 32;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MemoryRegion {
@@ -98,15 +102,11 @@ impl HardwareInfo {
         }
     }
 
-    pub fn from_fdt(
-        dtb_phys: DeviceTreeBlobPhysicalAddress,
-        fdt: &Fdt<'_>,
-        dtb_blob: &[u8],
-    ) -> FdtResult<Self> {
+    pub fn from_fdt(dtb_phys: DeviceTreeBlobPhysicalAddress, fdt: &Fdt<'_>) -> FdtResult<Self> {
         let mut info = Self::empty(dtb_phys);
-        info.dtb_size = fdt.total_size();
+        info.dtb_size = fdt.data().len();
         info.collect_memory_regions(fdt)?;
-        info.collect_reserved_regions(fdt, dtb_blob)?;
+        info.collect_reserved_regions(fdt)?;
         info.timer_frequency = timer_frequency(fdt)?;
         info.cpu_count = cpu_count(fdt)?;
         info.features.hardware_random = has_hardware_random(fdt)?;
@@ -155,21 +155,25 @@ impl HardwareInfo {
     /// The PMM initializes arenas in order. Largest first keeps metadata in the
     /// biggest pool before smaller regions are touched.
     fn collect_memory_regions(&mut self, fdt: &Fdt<'_>) -> FdtResult<()> {
-        let Some(memory) = fdt.find_node("/memory")? else {
-            return Ok(());
-        };
-        let Some(reg) = memory.reg()? else {
-            return Ok(());
-        };
-
-        for entry in reg.iter::<u64, u64>() {
-            let Ok(entry) = entry else {
+        // Firmware may describe RAM as several `memory@X` nodes rather than
+        // one `/memory` node with several `reg` entries; thus we walk every
+        // child of the root and take each node named "memory".
+        for node in fdt.root().children() {
+            if node.name_without_address() != "memory" {
+                continue;
+            }
+            let Some(reg) = node.reg()? else {
                 continue;
             };
-            let Some(region) = MemoryRegion::from_fdt_reg(entry.address, entry.len) else {
-                continue;
-            };
-            self.push_memory_region(region);
+            for entry in reg {
+                match region_from_reg(entry) {
+                    Some(region) => self.push_memory_region(region),
+                    None => {
+                        self.dropped_memory_regions =
+                            self.dropped_memory_regions.saturating_add(1);
+                    }
+                }
+            }
         }
 
         // Largest first: arena metadata comes from the biggest pool before
@@ -178,55 +182,40 @@ impl HardwareInfo {
         Ok(())
     }
 
-    fn collect_reserved_regions(&mut self, fdt: &Fdt<'_>, dtb_blob: &[u8]) -> FdtResult<()> {
-        self.collect_memory_reservation_block(fdt, dtb_blob);
+    fn collect_reserved_regions(&mut self, fdt: &Fdt<'_>) -> FdtResult<()> {
+        self.collect_memory_reservation_block(fdt);
         self.collect_reserved_memory_node(fdt)
     }
 
-    fn collect_memory_reservation_block(&mut self, fdt: &Fdt<'_>, dtb_blob: &[u8]) {
-        let offset = fdt.header().memory_reserve_map_offset as usize;
-        let Some(mut block) = dtb_blob.get(offset..) else {
-            self.dropped_reserved_regions = self.dropped_reserved_regions.saturating_add(1);
-            return;
-        };
-
-        while block.len() >= 16 {
-            let Some(address) = read_be_u64(block) else {
-                break;
-            };
-            let Some(size) = read_be_u64(&block[8..]) else {
-                break;
-            };
-            if address == 0 && size == 0 {
-                return;
-            }
-            let Some(region) = MemoryRegion::from_fdt_reg(address, size) else {
+    fn collect_memory_reservation_block(&mut self, fdt: &Fdt<'_>) {
+        for reservation in fdt.memory_reservations() {
+            let Some(region) =
+                MemoryRegion::from_fdt_reg(reservation.address(), reservation.size())
+            else {
                 self.dropped_reserved_regions = self.dropped_reserved_regions.saturating_add(1);
-                block = &block[16..];
                 continue;
             };
             self.push_reserved_region(region);
-            block = &block[16..];
         }
-
-        self.dropped_reserved_regions = self.dropped_reserved_regions.saturating_add(1);
     }
 
     fn collect_reserved_memory_node(&mut self, fdt: &Fdt<'_>) -> FdtResult<()> {
-        let Some(parent) = fdt.find_node("/reserved-memory")? else {
+        let Some(parent) = fdt.find_node("/reserved-memory") else {
             return Ok(());
         };
 
-        for child in parent.children()?.iter() {
-            let child = child?;
+        for child in parent.children() {
             let Some(reg) = child.reg()? else {
                 continue;
             };
-            for entry in reg.iter::<u64, u64>() {
-                let Ok(entry) = entry else {
-                    continue;
-                };
-                let Some(region) = MemoryRegion::from_fdt_reg(entry.address, entry.len) else {
+            for entry in reg {
+                let Some(region) = region_from_reg(entry) else {
+                    // Count what we cannot parse. If a reserved entry were
+                    // dropped silently, the PMM could hand firmware-owned
+                    // memory to the allocator; the counter lets boot refuse
+                    // to continue instead.
+                    self.dropped_reserved_regions =
+                        self.dropped_reserved_regions.saturating_add(1);
                     continue;
                 };
                 self.push_reserved_region(region);
@@ -236,17 +225,10 @@ impl HardwareInfo {
     }
 }
 
-fn read_be_u64(bytes: &[u8]) -> Option<u64> {
-    Some(u64::from_be_bytes([
-        *bytes.first()?,
-        *bytes.get(1)?,
-        *bytes.get(2)?,
-        *bytes.get(3)?,
-        *bytes.get(4)?,
-        *bytes.get(5)?,
-        *bytes.get(6)?,
-        *bytes.get(7)?,
-    ]))
+fn region_from_reg(entry: Reg<'_>) -> Option<MemoryRegion> {
+    let address = entry.address::<u64>().ok()?;
+    let size = entry.size::<u64>().ok()?;
+    MemoryRegion::from_fdt_reg(address, size)
 }
 
 // Insertion sort is fine: MAX_MEMORY_ARENAS is 4 and this runs once at boot.
@@ -263,13 +245,13 @@ fn sort_regions_by_size(regions: &mut [MemoryRegion]) {
 }
 
 fn timer_frequency(fdt: &Fdt<'_>) -> FdtResult<Option<Frequency>> {
-    let Some(cpus) = fdt.find_node("/cpus")? else {
+    let Some(cpus) = fdt.find_node("/cpus") else {
         return Ok(None);
     };
-    let Some(prop) = cpus.raw_property("timebase-frequency")? else {
+    let Some(prop) = cpus.property("timebase-frequency") else {
         return Ok(None);
     };
-    Ok(parse_timer_frequency(prop.value).and_then(Frequency::try_from_hz))
+    Ok(parse_timer_frequency(prop.value()).and_then(Frequency::try_from_hz))
 }
 
 fn parse_timer_frequency(prop: &[u8]) -> Option<u64> {
@@ -281,14 +263,13 @@ fn parse_timer_frequency(prop: &[u8]) -> Option<u64> {
 }
 
 fn cpu_count(fdt: &Fdt<'_>) -> FdtResult<usize> {
-    let Some(cpus) = fdt.find_node("/cpus")? else {
+    let Some(cpus) = fdt.find_node("/cpus") else {
         return Ok(0);
     };
 
     let mut count = 0usize;
-    for child in cpus.children()?.iter() {
-        let child = child?;
-        if child.name()?.name == "cpu" {
+    for child in cpus.children() {
+        if child.name_without_address() == "cpu" {
             count += 1;
         }
     }
@@ -296,12 +277,11 @@ fn cpu_count(fdt: &Fdt<'_>) -> FdtResult<usize> {
 }
 
 fn first_cpu_node<'a>(fdt: &Fdt<'a>) -> FdtResult<Option<Node<'a>>> {
-    let Some(cpus) = fdt.find_node("/cpus")? else {
+    let Some(cpus) = fdt.find_node("/cpus") else {
         return Ok(None);
     };
-    for child in cpus.children()?.iter() {
-        let child = child?;
-        if child.name()?.name == "cpu" {
+    for child in cpus.children() {
+        if child.name_without_address() == "cpu" {
             return Ok(Some(child));
         }
     }
@@ -313,15 +293,15 @@ fn has_hardware_random(fdt: &Fdt<'_>) -> FdtResult<bool> {
         return Ok(false);
     };
 
-    if let Some(prop) = cpu.raw_property("riscv,isa-extensions")?
-        && has_string_list_entry(prop.value, "zkr")
+    if let Some(prop) = cpu.property("riscv,isa-extensions")
+        && has_string_list_entry(prop.value(), "zkr")
     {
         return Ok(true);
     }
 
     Ok(cpu
-        .raw_property("riscv,isa")?
-        .map(|prop| isa_string_has_extension(trim_prop_string(prop.value), "zkr"))
+        .property("riscv,isa")
+        .map(|prop| isa_string_has_extension(trim_prop_string(prop.value()), "zkr"))
         .unwrap_or(false))
 }
 
@@ -373,25 +353,21 @@ fn parse_gic_regs(node: Node<'_>, version: u8) -> FdtResult<Option<InterruptCont
     let Some(reg) = node.reg()? else {
         return Ok(None);
     };
-    let mut entries = reg.iter::<u64, u64>();
-    let Some(Ok(distributor)) = entries.next() else {
+    let mut entries = reg.filter_map(region_from_reg);
+    let Some(distributor) = entries.next() else {
         return Ok(None);
     };
-    let second = entries.next().and_then(Result::ok);
-    let Some(distributor_base) = PhysicalAddress::try_from_u64(distributor.address) else {
-        return Ok(None);
-    };
+    let second = entries.next();
+    let distributor_base = distributor.base;
 
     Ok(match version {
         2 => Some(InterruptControllerInfo::GicV2 {
             distributor_base,
-            cpu_interface_base: second
-                .and_then(|entry| PhysicalAddress::try_from_u64(entry.address)),
+            cpu_interface_base: second.map(|entry| entry.base),
         }),
         3 => Some(InterruptControllerInfo::GicV3 {
             distributor_base,
-            redistributor_base: second
-                .and_then(|entry| PhysicalAddress::try_from_u64(entry.address)),
+            redistributor_base: second.map(|entry| entry.base),
         }),
         _ => None,
     })
@@ -407,17 +383,39 @@ fn device_base(node: Node<'_>) -> FdtResult<Option<PhysicalAddress>> {
     let Some(reg) = node.reg()? else {
         return Ok(None);
     };
-    let Some(entry) = reg.iter::<u64, u64>().next() else {
+    let Some(region) = reg.filter_map(region_from_reg).next() else {
         return Ok(None);
     };
-    Ok(entry
-        .ok()
-        .and_then(|entry| PhysicalAddress::try_from_u64(entry.address)))
+    Ok(Some(region.base))
 }
 
 fn find_compatible<'a>(fdt: &Fdt<'a>, compatible: &[&str]) -> FdtResult<Option<Node<'a>>> {
-    let mut nodes = fdt.all_compatible(compatible)?;
-    nodes.next().transpose()
+    Ok(find_compatible_below(
+        fdt.root(),
+        compatible,
+        MAX_COMPATIBLE_SEARCH_DEPTH,
+    ))
+}
+
+fn find_compatible_below<'a>(
+    node: Node<'a>,
+    compatible: &[&str],
+    depth_remaining: usize,
+) -> Option<Node<'a>> {
+    if compatible.iter().any(|filter| node.is_compatible(filter)) {
+        return Some(node);
+    }
+    if depth_remaining == 0 {
+        return None;
+    }
+    for child in node.children() {
+        if let Some(match_node) =
+            find_compatible_below(child, compatible, depth_remaining.saturating_sub(1))
+        {
+            return Some(match_node);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -497,10 +495,9 @@ mod tests {
     #[test]
     fn extracts_boot_hardware_info_from_fdt() {
         let blob = test_dtb();
-        let fdt = Fdt::new_unaligned_fallible(&blob).unwrap();
+        let fdt = Fdt::new(&blob).unwrap();
         let hw =
-            HardwareInfo::from_fdt(DeviceTreeBlobPhysicalAddress::new(0x4800_0000), &fdt, &blob)
-                .unwrap();
+            HardwareInfo::from_fdt(DeviceTreeBlobPhysicalAddress::new(0x4800_0000), &fdt).unwrap();
 
         assert_eq!(hw.dtb_phys, DeviceTreeBlobPhysicalAddress::new(0x4800_0000));
         assert_eq!(hw.dtb_size, blob.len());
@@ -534,6 +531,39 @@ mod tests {
     }
 
     #[test]
+    fn collects_regions_from_multiple_memory_nodes() {
+        let mut dtb = DtbBuilder::new();
+        dtb.begin_node("");
+        dtb.prop_u32("#address-cells", 2);
+        dtb.prop_u32("#size-cells", 2);
+        dtb.begin_node("memory@80000000");
+        dtb.prop_str("device_type", "memory");
+        dtb.prop_cells("reg", &[0, 0x8000_0000, 0, 0x0800_0000]);
+        dtb.end_node();
+        dtb.begin_node("memory@100000000");
+        dtb.prop_str("device_type", "memory");
+        dtb.prop_cells("reg", &[1, 0, 0, 0x0400_0000]);
+        dtb.end_node();
+        dtb.end_node();
+
+        let blob = dtb.finish();
+        let fdt = Fdt::new(&blob).unwrap();
+        let hw =
+            HardwareInfo::from_fdt(DeviceTreeBlobPhysicalAddress::new(0x4800_0000), &fdt).unwrap();
+
+        assert_eq!(hw.memory_regions().len(), 2);
+        assert_eq!(hw.total_memory, 0x0c00_0000);
+        assert_eq!(hw.dropped_memory_regions, 0);
+        assert_eq!(
+            hw.memory_regions()[1],
+            MemoryRegion {
+                base: PhysicalAddress::new(0x1_0000_0000),
+                size: 0x0400_0000,
+            }
+        );
+    }
+
+    #[test]
     fn extracts_header_memory_reservations_from_fdt() {
         let mut dtb = DtbBuilder::new();
         dtb.reserve(0x8100_0000, 0x20_0000);
@@ -541,10 +571,9 @@ mod tests {
         dtb.end_node();
 
         let blob = dtb.finish();
-        let fdt = Fdt::new_unaligned_fallible(&blob).unwrap();
+        let fdt = Fdt::new(&blob).unwrap();
         let hw =
-            HardwareInfo::from_fdt(DeviceTreeBlobPhysicalAddress::new(0x4800_0000), &fdt, &blob)
-                .unwrap();
+            HardwareInfo::from_fdt(DeviceTreeBlobPhysicalAddress::new(0x4800_0000), &fdt).unwrap();
 
         assert_eq!(
             hw.reserved_regions(),
@@ -566,10 +595,9 @@ mod tests {
         dtb.end_node();
 
         let blob = dtb.finish();
-        let fdt = Fdt::new_unaligned_fallible(&blob).unwrap();
+        let fdt = Fdt::new(&blob).unwrap();
         let hw =
-            HardwareInfo::from_fdt(DeviceTreeBlobPhysicalAddress::new(0x4800_0000), &fdt, &blob)
-                .unwrap();
+            HardwareInfo::from_fdt(DeviceTreeBlobPhysicalAddress::new(0x4800_0000), &fdt).unwrap();
 
         assert_eq!(hw.reserved_regions().len(), MAX_RESERVED_REGIONS);
         assert_eq!(hw.dropped_reserved_regions, 1);

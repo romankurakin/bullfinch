@@ -859,6 +859,18 @@ pub fn current() -> Option<ThreadSnapshot> {
     SCHEDULER.lock().current()
 }
 
+pub fn enable_current_user_fp_state() -> Result<ThreadFpState, ScheduleError> {
+    let mut scheduler = SCHEDULER.lock();
+    let current = scheduler.current.ok_or(ScheduleError::NoCurrentThread)?;
+    let thread = scheduler
+        .thread_mut(current)
+        .ok_or(ScheduleError::UnknownThread)?;
+    // The scheduler's current ID must resolve to that same thread entry.
+    debug_assert_eq!(thread.id, current);
+    thread.fp.enable_user_state();
+    Ok(thread.fp)
+}
+
 pub fn save_current_user_fp_state(state: UserFpState) -> Result<(), ScheduleError> {
     let mut scheduler = SCHEDULER.lock();
     let current = scheduler.current.ok_or(ScheduleError::NoCurrentThread)?;

@@ -11,7 +11,7 @@ name = "kernel"
 path = "src/lib.rs"
 
 [dependencies]
-fdt = { version = "0.2.0-alpha2", default-features = false }
+dtoolkit = { version = "0.1.1", default-features = false }
 
 [[bin]]
 name = "kernel"

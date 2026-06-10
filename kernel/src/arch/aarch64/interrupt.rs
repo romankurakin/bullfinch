@@ -108,7 +108,13 @@ pub fn handle_timer_interrupt(_: Option<kernel::trap::cause::TrapCause>) -> bool
         return false;
     };
     if is_gic_special_interrupt(intid) {
-        return false;
+        // A special INTID (1023 means spurious) tells us the interrupt went
+        // away between assertion and acknowledge. Nothing is active, and the
+        // GIC architecture requires no EOI for these IDs; thus the right
+        // response is to do nothing and resume the interrupted context.
+        // Returning true reports the IRQ as handled, because a spurious
+        // interrupt is an architecturally normal event, not an error.
+        return true;
     }
     if intid == TIMER_PPI {
         crate::runtime::clock::handle_timer_irq();

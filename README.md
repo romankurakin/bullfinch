@@ -19,7 +19,7 @@ just lint             # run Clippy across tools and kernel targets
 
 - Rust toolchain with Cargo, rustfmt, and Clippy
 - Rust targets: `aarch64-unknown-none-softfloat`,
-  `riscv64gc-unknown-none-elf`
+  `riscv64imac-unknown-none-elf`
 - just
 - prek
 - QEMU
@@ -27,7 +27,7 @@ just lint             # run Clippy across tools and kernel targets
 
 ## Layout
 
-- `rust/kernel/` contains the freestanding kernel crate.
+- `kernel/` contains the freestanding kernel crate.
 - `tools/xtask/` contains the Rust developer tooling used by `just`.
 - `docs/` contains design notes, style rules, test guidance, and references.
 

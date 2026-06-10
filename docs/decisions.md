@@ -39,7 +39,8 @@ board doesn't require modifying kernel code.
 sizes. Common code can inspect registers without conditionals.
 
 **IRQ fast path:** Partial IRQ frames (176/144 bytes) over full 288-byte trap
-frames. Lower interrupt latency while restores IRQ state.
+frames. Lower interrupt latency; exception return still restores interrupt
+state.
 
 **Assembly layout:** Frame sizes and field offsets over unchecked
 hardcoded offsets. Layout drift fails at build time.
@@ -48,8 +49,10 @@ hardcoded offsets. Layout drift fails at build time.
 
 ## Rung 3: MMU and Abstraction Layer
 
-**Virtual address size:** 39-bit on ARM64, Sv48 on RISC-V over larger options.
-Simpler page tables, sufficient for educational kernel.
+**Virtual address size:** 39-bit on ARM64 and Sv48 on RISC-V over uniform
+three-level paging. Both give the kernel half the same 512 x 1 GiB slot layout
+(Sv39's upper half has only 256), so one physmap and stack-region geometry
+serves both architectures.
 
 **Higher-half kernel:** Simultaneous identity + higher-half mapping over
 sequential setup. Single page table switch, identity removed after jump.
@@ -85,8 +88,10 @@ O(1) allocation and free, simpler than buddy while handling fragmentation.
 **Metadata placement:** Highest safe arena span over beginning. Keeps low
 addresses free for legacy DMA while avoiding firmware and kernel reservations.
 
-**Debug:** Poison fills (0xDE) over zeroing. Use-after-free causes predictable
-corruption (0xDEDEDEDE), making bugs obvious instead of silent.
+**Debug:** Poison fills (0xDE) in debug builds over zeroing. Use-after-free
+causes predictable corruption (0xDEDEDEDE), making bugs obvious instead of
+silent. Release builds skip the per-free memset, matching Linux's opt-in page
+poisoning.
 
 **Contiguous free:** Caller-owned length (Zircon) over PMM-stored length (Linux
 compound pages). PMM validates head flag and page state; the caller owns the
@@ -129,8 +134,10 @@ endpoint OR bound notification—2 primitives instead of 3.
 
 ## Rung 9: FP/SIMD State
 
-**Kernel FP/SIMD:** EL1 FP/SIMD allowed. Compiler NEON/FP can appear anywhere;
-boundary is user-state save/restore.
+**Kernel FP/SIMD:** Soft-float kernel targets over kernel-mode FP/SIMD. Kernel
+FP would force every trap frame and context switch to save the FP register
+file; soft-float removes the state to protect, and hardware traps catch
+accidental kernel FP use. Reverts the earlier "EL1 FP/SIMD allowed" choice.
 
 **User FP state:** Architecture-native tracking over one generic model. ARM64
 uses software ownership; RISC-V uses `sstatus.FS`.

@@ -1,7 +1,8 @@
 //! Flattened Device Tree cell parsing.
 //!
-//! DTB numeric properties are big-endian arrays of 32-bit cells. The `fdt`
-//! parser iterates structured `reg` values; this module reads scalar values.
+//! DTB numeric properties are big-endian arrays of 32-bit cells. The parser
+//! provides structured helpers for some properties; this module reads scalar
+//! values used by Bullfinch policy.
 
 use core::convert::TryInto;
 

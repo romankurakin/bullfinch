@@ -1,7 +1,12 @@
 //! ARM64 FP/SIMD controls.
 //!
-//! The normal AArch64 target may emit FP/SIMD in EL1. User FP/SIMD state is
-//! protected at exception and context-switch boundaries.
+//! The kernel is built for `aarch64-unknown-none-softfloat`, and thus compiled
+//! kernel code never touches the FP/SIMD registers. The register file belongs
+//! to user threads alone: the trap path saves it at exception entry and
+//! restores it at exception return. While the kernel runs, CPACR_EL1 keeps
+//! FP/SIMD trapped at both EL0 and EL1; if kernel code ever executes an FP
+//! instruction by mistake, it faults immediately instead of silently
+//! corrupting user state.
 
 #![allow(
     dead_code,
@@ -13,17 +18,25 @@ use core::{
     cell::UnsafeCell,
 };
 
-use kernel::fp::UserFpState;
+use kernel::fp::{ThreadFpState, UserFpState};
 
 const CPACR_EL1_FPEN_SHIFT: usize = 20;
 const CPACR_EL1_FPEN_MASK: usize = 0b11 << CPACR_EL1_FPEN_SHIFT;
-const CPACR_EL1_FPEN_EL0_TRAPPED: usize = 0b01 << CPACR_EL1_FPEN_SHIFT;
+const CPACR_EL1_FPEN_ALL_TRAPPED: usize = 0b00 << CPACR_EL1_FPEN_SHIFT;
 const CPACR_EL1_FPEN_ENABLED: usize = 0b11 << CPACR_EL1_FPEN_SHIFT;
 const CPACR_EL1_ZEN_MASK: usize = 0b11 << 16;
 const CPACR_EL1_SMEN_MASK: usize = 0b11 << 24;
 const CPACR_EL1_UNSUPPORTED_VECTOR_MASK: usize = CPACR_EL1_ZEN_MASK | CPACR_EL1_SMEN_MASK;
 
-pub const CPACR_EL1_KERNEL: usize = CPACR_EL1_FPEN_EL0_TRAPPED;
+/// FPEN=00 traps FP/SIMD at both EL0 and EL1. The kernel is soft-float, so
+/// any FP/SIMD access at EL1 is a bug; trapping it turns silent corruption
+/// into a visible fault. Trap entry saves user FP state before switching
+/// CPACR_EL1 to this value, and trap exit raises FPEN again only for the
+/// restore sequence.
+pub const CPACR_EL1_KERNEL: usize = CPACR_EL1_FPEN_ALL_TRAPPED;
+/// FPEN=11 is the only encoding that lets EL0 use FP/SIMD, and it untraps EL1
+/// as a side effect. The kernel therefore keeps this window small: it spans
+/// only the user restore sequence and the return to EL0.
 pub const CPACR_EL1_USER_FP_ENABLED: usize = CPACR_EL1_FPEN_ENABLED;
 
 #[repr(C, align(16))]
@@ -124,7 +137,7 @@ a64_fp_restore:
 
 unsafe extern "C" {
     fn a64_fp_save(state: *mut UserFpState);
-    fn a64_fp_restore(state: *const UserFpState);
+    pub(super) fn a64_fp_restore(state: *const UserFpState);
 }
 
 pub fn disable_fp_simd() {
@@ -136,6 +149,31 @@ pub fn disable_fp_simd() {
 pub fn enable_user_fp_simd() {
     let next = (read_cpacr_el1() & !CPACR_EL1_UNSUPPORTED_VECTOR_MASK) | CPACR_EL1_USER_FP_ENABLED;
     write_cpacr_el1(next);
+}
+
+pub fn prepare_user_restore(thread: &ThreadFpState) {
+    let Some(state) = thread.user_state() else {
+        clear_pending_user_restore();
+        return;
+    };
+    if !thread.user_enabled() {
+        clear_pending_user_restore();
+        return;
+    }
+
+    // SAFETY: Trap exit is the only consumer of this single-core scratch slot.
+    // It runs after this Rust handler returns and clears the flag before `eret`.
+    unsafe {
+        *A64_TRAP_FP_SCRATCH.state.get() = *state;
+        *A64_TRAP_FP_SCRATCH.saved.get() = 1;
+    }
+}
+
+pub fn clear_pending_user_restore() {
+    // SAFETY: This flag is local to the parked-single-core trap path.
+    unsafe {
+        *A64_TRAP_FP_SCRATCH.saved.get() = 0;
+    }
 }
 
 /// Saves the current CPU FP/SIMD register file into `state`.

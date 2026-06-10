@@ -536,8 +536,8 @@ impl Arch {
 
     fn rust_target(self) -> &'static str {
         match self {
-            Self::Arm64 => "aarch64-unknown-none",
-            Self::Riscv64 => "riscv64gc-unknown-none-elf",
+            Self::Arm64 => "aarch64-unknown-none-softfloat",
+            Self::Riscv64 => "riscv64imac-unknown-none-elf",
         }
     }
 }

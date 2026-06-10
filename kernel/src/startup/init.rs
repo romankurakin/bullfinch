@@ -6,11 +6,8 @@
 //! the DTB, discovers hardware, and expands the physmap to cover RAM.
 
 use kernel::{
-    boot::DeviceTreeBlobPhysicalAddress,
-    fdt::{Fdt, FdtError},
-    hwinfo::HardwareInfo,
-    limits::DEVICE_TREE_BLOB_MAX_SIZE,
-    mmu::PhysicalAddress,
+    boot::DeviceTreeBlobPhysicalAddress, fdt::Fdt, hwinfo::HardwareInfo,
+    limits::DEVICE_TREE_BLOB_MAX_SIZE, mmu::PhysicalAddress,
 };
 
 use crate::{hal, startup::log as boot_log};
@@ -72,7 +69,7 @@ fn read_hardware_info(dtb: DeviceTreeBlobPhysicalAddress) -> Result<HardwareInfo
 
     let blob = DeviceTreeBlob::new(dtb)?;
     let fdt = blob.as_fdt()?;
-    HardwareInfo::from_fdt(dtb, &fdt, blob.data).map_err(|_| BootError::DeviceTreeParse)
+    HardwareInfo::from_fdt(dtb, &fdt).map_err(|_| BootError::DeviceTreeParse)
 }
 
 struct DeviceTreeBlob {
@@ -118,10 +115,6 @@ impl DeviceTreeBlob {
     }
 
     fn as_fdt(&self) -> Result<Fdt<'_>, BootError> {
-        Fdt::new_unaligned_fallible(self.data).map_err(map_fdt_error)
+        Fdt::new(self.data).map_err(|_| BootError::DeviceTreeHeader)
     }
-}
-
-fn map_fdt_error(_: FdtError) -> BootError {
-    BootError::DeviceTreeHeader
 }

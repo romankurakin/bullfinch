@@ -17,6 +17,7 @@ use crate::{
 const INVALID_ARENA_INDEX: u8 = u8::MAX;
 const INVALID_PAGE_INDEX: u32 = u32::MAX;
 const KERNEL_RESERVE_PAD: usize = 2 * 1024 * 1024;
+const PAGE_POISON: u8 = 0xde;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InitError {
@@ -261,6 +262,12 @@ fn ranges_overlap_or_touch(
 
 type PhysicalToVirtual = fn(PhysicalAddress) -> Option<VirtualAddress>;
 
+/// Placeholder mapper used before `init` provides the real physmap. With no
+/// mapping there is nothing to poison, so freed pages are left untouched.
+fn no_mapping(_: PhysicalAddress) -> Option<VirtualAddress> {
+    None
+}
+
 struct PhysicalMemoryManager {
     arenas: [Arena; MAX_MEMORY_ARENAS],
     arena_count: usize,
@@ -270,6 +277,7 @@ struct PhysicalMemoryManager {
     free_tail: PageHandle,
     total_pages: usize,
     free_pages: usize,
+    physical_to_virtual: PhysicalToVirtual,
     initialized: bool,
 }
 
@@ -289,6 +297,7 @@ impl PhysicalMemoryManager {
             free_tail: PageHandle::NONE,
             total_pages: 0,
             free_pages: 0,
+            physical_to_virtual: no_mapping,
             initialized: false,
         }
     }
@@ -305,6 +314,7 @@ impl PhysicalMemoryManager {
         physical_to_virtual: PhysicalToVirtual,
     ) -> Result<(), InitError> {
         self.reset();
+        self.physical_to_virtual = physical_to_virtual;
         if info.dropped_reserved_regions != 0 {
             return Err(InitError::DroppedReservedRegions);
         }
@@ -621,8 +631,35 @@ impl PhysicalMemoryManager {
         }
         metadata.state = PageState::Free;
         metadata.contiguous_head = false;
+        self.poison_page(page);
         self.push_free(page);
         self.free_pages += 1;
+    }
+
+    /// Fill a freed page with poison in debug builds. A stale pointer into the
+    /// page now reads 0xdede... instead of plausible old data; thus a
+    /// use-after-free shows up as predictable garbage rather than silent
+    /// reuse. The write costs a page-sized memset on every free, so release
+    /// builds skip it.
+    fn poison_page(&self, page: PageHandle) {
+        if !cfg!(debug_assertions) {
+            return;
+        }
+        let Some(arena) = self.arena_for(page) else {
+            return;
+        };
+        let Some(physical) = arena.page_to_physical(page) else {
+            return;
+        };
+        let Some(virtual_address) = (self.physical_to_virtual)(physical) else {
+            return;
+        };
+        // SAFETY: `free_page` validated the page as an allocated arena page
+        // that the caller owned exclusively, and the physmap covers every
+        // arena page, so this write cannot alias live kernel data.
+        unsafe {
+            core::ptr::write_bytes(virtual_address.get() as *mut u8, PAGE_POISON, PAGE_SIZE);
+        }
     }
 
     fn alloc_contiguous(&mut self, count: usize, alignment_log2: u8) -> Option<PageRun> {
@@ -1024,6 +1061,46 @@ mod tests {
         core::mem::forget(run);
         pmm.free_contiguous(head, count).unwrap();
         assert_eq!(pmm.free_pages, 8);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn poisons_freed_pages() {
+        #[repr(align(4096))]
+        struct Backing([u8; PAGE_SIZE * 2]);
+
+        fn identity(address: PhysicalAddress) -> Option<VirtualAddress> {
+            Some(VirtualAddress::new(address.get()))
+        }
+
+        let mut backing = Backing([0xaa; PAGE_SIZE * 2]);
+        let base = backing.0.as_mut_ptr() as usize;
+        let mut pages = [Page::default(); 2];
+        let mut pmm = PhysicalMemoryManager::empty();
+        pmm.physical_to_virtual = identity;
+        pmm.arenas[0] = Arena {
+            base: PhysicalAddress::new(base),
+            page_count: 2,
+            pages: PageStorage {
+                ptr: pages.as_mut_ptr(),
+                len: pages.len(),
+                arena_index: 0,
+            },
+        };
+        pmm.arena_count = 1;
+        pmm.build_free_list();
+        pmm.initialized = true;
+
+        let page = pmm.alloc_page().unwrap();
+        let physical = pmm.arenas[0].page_to_physical(page).unwrap();
+        pmm.free_page(page);
+
+        let offset = physical.get() - base;
+        assert!(
+            backing.0[offset..offset + PAGE_SIZE]
+                .iter()
+                .all(|byte| *byte == PAGE_POISON)
+        );
     }
 
     #[test]

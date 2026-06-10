@@ -10,7 +10,7 @@ use core::{
     cell::UnsafeCell,
 };
 
-use kernel::fp::{FpStatus, UserFpState};
+use kernel::fp::{FpStatus, ThreadFpState, UserFpState};
 
 #[repr(C, align(16))]
 pub struct TrapFpScratch {
@@ -40,6 +40,11 @@ pub(super) static RV64_TRAP_FP_SCRATCH: TrapFpScratch = TrapFpScratch::new();
 
 global_asm!(
     r#"
+    # The kernel target is rv64imac, so the assembler rejects FP instructions
+    # by default. Enable F and D for this block alone; the compiler still
+    # cannot emit FP anywhere in kernel code.
+    .option push
+    .option arch, +f, +d
     .text
     .macro rv64_store_fp_state base
     .irp n, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
@@ -77,13 +82,14 @@ rv64_fp_restore:
 
     .purgem rv64_store_fp_state
     .purgem rv64_load_fp_state
+    .option pop
     "#,
     fcsr_offset = const UserFpState::FCSR_OFFSET,
 );
 
 unsafe extern "C" {
     pub(super) fn rv64_fp_save(state: *mut UserFpState);
-    fn rv64_fp_restore(state: *const UserFpState);
+    pub(super) fn rv64_fp_restore(state: *const UserFpState);
 }
 
 pub fn current_status() -> FpStatus {
@@ -105,6 +111,36 @@ pub fn set_status(status: FpStatus) {
 
 pub fn disable_scalar_fp() {
     set_status(FpStatus::Off);
+}
+
+pub fn prepare_user_restore(thread: &ThreadFpState) {
+    match thread.restore_status() {
+        None => clear_pending_user_restore(),
+        Some(FpStatus::Initial) => {
+            let zero = UserFpState::zeroed();
+            prepare_restore_state(&zero, FpStatus::Initial);
+        }
+        Some(FpStatus::Clean) => prepare_restore_state(thread.user_state(), FpStatus::Clean),
+        Some(FpStatus::Off | FpStatus::Dirty) => {
+            unreachable!("thread FP restore status excludes off/dirty")
+        }
+    }
+}
+
+fn prepare_restore_state(state: &UserFpState, status: FpStatus) {
+    // SAFETY: Trap exit is the only consumer of this single-hart scratch slot.
+    // It runs after this Rust handler returns and clears the status before `sret`.
+    unsafe {
+        *RV64_TRAP_FP_SCRATCH.state.get() = *state;
+        *RV64_TRAP_FP_SCRATCH.saved.get() = status as u8;
+    }
+}
+
+pub fn clear_pending_user_restore() {
+    // SAFETY: This status byte is local to the parked-single-hart trap path.
+    unsafe {
+        *RV64_TRAP_FP_SCRATCH.saved.get() = 0;
+    }
 }
 
 /// Saves the current scalar FP register file into `state`.

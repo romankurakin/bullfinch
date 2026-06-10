@@ -35,9 +35,16 @@ pub unsafe extern "C" fn _start() -> ! {
     naked_asm!(
         "
         mov x19, x0
+        // Park every core whose full affinity is not 0.0.0.0. Checking Aff0
+        // alone is not enough: core 0 of a second cluster has Aff1 != 0 but
+        // Aff0 == 0, and thus would race the boot core through this path.
+        // The two masks cover Aff2:Aff1:Aff0 in bits [23:0] and Aff3 in bits
+        // [39:32], skipping the MT, U, and RES1 bits between them.
         mrs x1, mpidr_el1
-        and x1, x1, #0xff
-        cbnz x1, 2f
+        and x2, x1, #0xffffff
+        cbnz x2, 2f
+        and x2, x1, #0xff00000000
+        cbnz x2, 2f
 
         adrp x0, __stack_top
         add x0, x0, :lo12:__stack_top

@@ -1,6 +1,5 @@
 # Build artifacts
 target/
-rust/kernel/target/
 
 # Local caches and tools
 .cache/

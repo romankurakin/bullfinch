@@ -123,7 +123,7 @@ controller config (GIC/PLIC), peripheral addresses.
 **Research:**
 
 - Devicetree Specification defines node structure, properties, and bindings
-- `repnop/fdt` provides a small zero-dependency parser suitable for `no_std`
+- `google/dtoolkit` provides a `no_std`, no-alloc read-only FDT parser
 - Linux: drivers/of/ shows mature DTB parsing and driver matching
 - Zircon: board drivers parse DTB to configure platform-specific hardware
 - FreeBSD: FDT support in sys/dev/fdt/ for BSD-style implementation
@@ -187,9 +187,11 @@ preemption via timer interrupts.
 
 ### Rung 9: FP/SIMD State
 
-**Implement:** User FP/SIMD state for ARM64 NEON/FP and RISC-V scalar FP. ARM64
-uses `aarch64-unknown-none`: EL1 FP/SIMD is allowed, EL0 FP/SIMD is saved at
-kernel entry. SVE, SME, and RVV are out of scope.
+**Implement:** User FP/SIMD state for ARM64 NEON/FP and RISC-V scalar FP. The
+kernel builds soft-float (`aarch64-unknown-none-softfloat`,
+`riscv64imac-unknown-none-elf`), so kernel code never executes FP/SIMD; the
+trap path saves user state at kernel entry and restores it at exception
+return. SVE, SME, and RVV are out of scope.
 
 **Questions:**
 
@@ -197,7 +199,6 @@ kernel entry. SVE, SME, and RVV are out of scope.
 
 **Research:**
 
-- See `fp-simd.md` for the full design note and references
 - ARM ARM and AAPCS64 for NEON/FP state
 - RISC-V Privileged Spec and psABI for scalar FP state
 - Zephyr ARM64 FP/SIMD sharing model

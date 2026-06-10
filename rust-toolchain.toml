@@ -2,7 +2,7 @@
 channel = "stable"
 components = ["clippy", "rustfmt"]
 targets = [
-  "aarch64-unknown-none",
-  "riscv64gc-unknown-none-elf",
+  "aarch64-unknown-none-softfloat",
+  "riscv64imac-unknown-none-elf",
 ]
 profile = "minimal"

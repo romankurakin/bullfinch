@@ -100,7 +100,11 @@ impl<T> Pool<T> {
         if core::mem::size_of::<SlabHeader>() > pool.object_size() {
             return Err(PoolInitError::Header);
         }
-        if pool.objects_per_slab() <= 1 {
+        let objects = pool.objects_per_slab();
+        // Slot tracking is a fixed-size bitmap. A layout that needs more
+        // slots than the bitmap can index would corrupt the slab, so reject
+        // it here instead.
+        if objects <= 1 || objects > MAX_BITMAP_WORDS * 64 {
             return Err(PoolInitError::Object);
         }
         Ok(pool)
@@ -379,13 +383,9 @@ impl<T> Pool<T> {
         if usable_start >= PAGE_SIZE {
             return 0;
         }
-        let object_size = self.object_size();
-        let mut objects = (PAGE_SIZE - usable_start) / object_size;
-        while objects > 0 && usable_start + objects * object_size + MAX_BITMAP_WORDS * 8 > PAGE_SIZE
-        {
-            objects -= 1;
-        }
-        objects
+        // The allocation bitmap lives inside the slot 0 header, so every byte
+        // after `usable_start` is object storage.
+        (PAGE_SIZE - usable_start) / self.object_size()
     }
 
     fn slab_cookie(&self, page_addr: usize) -> usize {
@@ -849,19 +849,47 @@ mod tests {
         // SAFETY: Error path test passes the metadata slot intentionally.
         assert_eq!(unsafe { pool.free(metadata) }, Err(FreeError::MetadataSlot));
 
-        let out_of_bounds = NonNull::new(
+        // The 64-byte class packs the page exactly, so one past the last slot
+        // lands on the next page; thus the back-pointer check rejects it as a
+        // foreign slab rather than an out-of-range slot index.
+        let next_page = NonNull::new(
             (storage_base + pool.capacity_per_slab() * pool.aligned_size())
                 as *mut MaybeUninit<TestObject>,
         )
         .unwrap();
-        // SAFETY: Error path test passes an out of bounds slot intentionally.
-        let out_of_bounds_result = unsafe { pool.free(out_of_bounds) };
-        assert_eq!(out_of_bounds_result, Err(FreeError::OutOfBounds));
+        // SAFETY: Error path test passes a pointer outside the slab page.
+        let next_page_result = unsafe { pool.free(next_page) };
+        assert_eq!(next_page_result, Err(FreeError::InvalidSlab));
 
         // SAFETY: `object` came from this pool and has not been freed.
         unsafe { pool.free(object) }.unwrap();
         // SAFETY: Error path test intentionally repeats the free.
         assert_eq!(unsafe { pool.free(object) }, Err(FreeError::DoubleFree));
+    }
+
+    #[repr(C)]
+    struct WideObject {
+        value: u64,
+        padding: [u8; 760],
+    }
+
+    #[test]
+    fn rejects_in_page_pointer_past_last_slot() {
+        TEST_STATE.with_borrow_mut(TestState::reset);
+        // 768-byte objects leave tail slack in the page, so an aligned in-page
+        // pointer past the last slot exists and must fail the slot bound.
+        let mut pool = Pool::<WideObject>::new(test_alloc_page, test_free_page, 7);
+        let object = pool.alloc().unwrap();
+        let page_base = (object.as_ptr() as usize) & !(PAGE_SIZE - 1);
+        let past_last =
+            page_base + pool.usable_start() + pool.capacity_per_slab() * pool.aligned_size();
+        assert!(past_last < page_base + PAGE_SIZE);
+
+        let probe = NonNull::new(past_last as *mut MaybeUninit<WideObject>).unwrap();
+        // SAFETY: Error path test passes an in-page slot index past capacity.
+        assert_eq!(unsafe { pool.free(probe) }, Err(FreeError::OutOfBounds));
+        // SAFETY: `object` came from this pool and is freed once.
+        unsafe { pool.free(object) }.unwrap();
     }
 
     #[test]

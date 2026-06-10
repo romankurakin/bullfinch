@@ -844,14 +844,32 @@ fn write_ttbr1(address: PhysicalAddress) {
     cpu::instruction_barrier();
 }
 
+const SCTLR_EL1_MMU_ENABLE: u64 = 1 << 0;
+const SCTLR_EL1_DATA_CACHE_ENABLE: u64 = 1 << 2;
+const SCTLR_EL1_INSTRUCTION_CACHE_ENABLE: u64 = 1 << 12;
+
 fn enable_mmu() {
     let mut control: u64;
-    // SAFETY: SCTLR_EL1 is local CPU state. Setting M enables translation after
-    // MAIR/TCR/TTBR are valid and TLBs have been invalidated.
+    // SAFETY: SCTLR_EL1 is local CPU state. Setting M enables translation
+    // after MAIR/TCR/TTBR are valid and the TLBs have been invalidated. C and
+    // I enable the caches in the same write; this is sound because
+    // translation now supplies the Normal WBWA attributes from MAIR, and all
+    // pre-MMU stores were non-cacheable, so no stale dirty lines exist. IC
+    // IALLU then discards any instruction-cache state left from before this
+    // point. QEMU does not model caches, but real hardware requires this.
     unsafe {
         asm!("mrs {control}, sctlr_el1", control = out(reg) control, options(nostack, preserves_flags));
-        control |= 1;
-        asm!("msr sctlr_el1, {control}", control = in(reg) control, options(nostack, preserves_flags));
+        control |= SCTLR_EL1_MMU_ENABLE
+            | SCTLR_EL1_DATA_CACHE_ENABLE
+            | SCTLR_EL1_INSTRUCTION_CACHE_ENABLE;
+        asm!(
+            "ic iallu",
+            "dsb nsh",
+            "isb",
+            "msr sctlr_el1, {control}",
+            control = in(reg) control,
+            options(nostack, preserves_flags)
+        );
     }
     cpu::instruction_barrier();
 }
