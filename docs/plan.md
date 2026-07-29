@@ -13,7 +13,7 @@ Capabilities-based security. WebAssembly userspace.
 - [x] Rung 6: Physical Memory Allocator
 - [x] Rung 7: Kernel Object Allocator
 - [x] Rung 8: Task Structures and Scheduler
-- [ ] Rung 9: FP/SIMD State
+- [x] Rung 9: FP/SIMD State
 - [ ] Rung 10: Per-Task Virtual Memory
 - [ ] Rung 11: Symmetric Multiprocessing
 - [ ] Rung 12: Tickless Scheduling
@@ -190,12 +190,11 @@ preemption via timer interrupts.
 **Implement:** User FP/SIMD state for ARM64 NEON/FP and RISC-V scalar FP. The
 kernel builds soft-float (`aarch64-unknown-none-softfloat`,
 `riscv64imac-unknown-none-elf`), so kernel code never executes FP/SIMD; the
-trap path saves user state at kernel entry and restores it at exception
-return. SVE, SME, and RVV are out of scope.
-
-**Questions:**
-
-- Should user FP be enabled by default or allocated on a first-use trap?
+trap path disables kernel access without spilling the resident user state.
+First use initializes a thread's state, and an actual thread switch transfers
+ownership by saving the outgoing state and restoring the incoming state. On
+RISC-V, clean state does not need to be saved. SVE, SME, and RVV are out of
+scope.
 
 **Research:**
 
@@ -232,6 +231,8 @@ IPI for TLB shootdown.
 - Per-CPU data structures: static array or dynamic?
 - Load balancing between CPUs?
 - Which locks need to be SMP-aware?
+- Do measured FP-heavy workloads justify per-CPU lazy FP ownership and its
+  cross-CPU migration protocol over eager transfer at each thread switch?
 
 **Research:**
 
@@ -345,7 +346,9 @@ space.
 ### Rung 18: Synchronous IPC
 
 **Implement:** Synchronous message passing, send/receive/call primitives.
-Receive wakes on endpoint OR bound notification.
+Receive wakes on endpoint OR bound notification. Route blocking and yielding
+trap switches through the same paired integer and FP ownership transfer as
+timer preemption.
 
 **Questions:**
 
@@ -444,7 +447,8 @@ binding to threads for multiplexed receive.
 
 ### Rung 24: Process Creation
 
-**Implement:** Spawn syscall, explicit capability passing.
+**Implement:** Spawn syscall, explicit capability passing. Add a cross-thread
+FP isolation regression on both architectures once two user threads can run.
 
 **Questions:**
 

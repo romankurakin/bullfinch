@@ -107,7 +107,7 @@ impl HardwareInfo {
         info.dtb_size = fdt.data().len();
         info.collect_memory_regions(fdt)?;
         info.collect_reserved_regions(fdt)?;
-        info.timer_frequency = timer_frequency(fdt)?;
+        info.timer_frequency = timer_frequency(fdt);
         info.cpu_count = cpu_count(fdt)?;
         info.features.hardware_random = has_hardware_random(fdt)?;
         info.features.interrupt_controller = interrupt_controller_info(fdt)?;
@@ -159,7 +159,7 @@ impl HardwareInfo {
         // one `/memory` node with several `reg` entries; thus we walk every
         // child of the root and take each node named "memory".
         for node in fdt.root().children() {
-            if node.name_without_address() != "memory" {
+            if node.name_without_address() != "memory" || !node_is_available(node)? {
                 continue;
             }
             let Some(reg) = node.reg()? else {
@@ -169,8 +169,7 @@ impl HardwareInfo {
                 match region_from_reg(entry) {
                     Some(region) => self.push_memory_region(region),
                     None => {
-                        self.dropped_memory_regions =
-                            self.dropped_memory_regions.saturating_add(1);
+                        self.dropped_memory_regions = self.dropped_memory_regions.saturating_add(1);
                     }
                 }
             }
@@ -205,6 +204,9 @@ impl HardwareInfo {
         };
 
         for child in parent.children() {
+            if !node_is_available(child)? {
+                continue;
+            }
             let Some(reg) = child.reg()? else {
                 continue;
             };
@@ -214,8 +216,7 @@ impl HardwareInfo {
                     // dropped silently, the PMM could hand firmware-owned
                     // memory to the allocator; the counter lets boot refuse
                     // to continue instead.
-                    self.dropped_reserved_regions =
-                        self.dropped_reserved_regions.saturating_add(1);
+                    self.dropped_reserved_regions = self.dropped_reserved_regions.saturating_add(1);
                     continue;
                 };
                 self.push_reserved_region(region);
@@ -244,14 +245,10 @@ fn sort_regions_by_size(regions: &mut [MemoryRegion]) {
     }
 }
 
-fn timer_frequency(fdt: &Fdt<'_>) -> FdtResult<Option<Frequency>> {
-    let Some(cpus) = fdt.find_node("/cpus") else {
-        return Ok(None);
-    };
-    let Some(prop) = cpus.property("timebase-frequency") else {
-        return Ok(None);
-    };
-    Ok(parse_timer_frequency(prop.value()).and_then(Frequency::try_from_hz))
+fn timer_frequency(fdt: &Fdt<'_>) -> Option<Frequency> {
+    let cpus = fdt.find_node("/cpus")?;
+    let prop = cpus.property("timebase-frequency")?;
+    parse_timer_frequency(prop.value()).and_then(Frequency::try_from_hz)
 }
 
 fn parse_timer_frequency(prop: &[u8]) -> Option<u64> {
@@ -269,7 +266,7 @@ fn cpu_count(fdt: &Fdt<'_>) -> FdtResult<usize> {
 
     let mut count = 0usize;
     for child in cpus.children() {
-        if child.name_without_address() == "cpu" {
+        if child.name_without_address() == "cpu" && node_is_available(child)? {
             count += 1;
         }
     }
@@ -281,7 +278,7 @@ fn first_cpu_node<'a>(fdt: &Fdt<'a>) -> FdtResult<Option<Node<'a>>> {
         return Ok(None);
     };
     for child in cpus.children() {
-        if child.name_without_address() == "cpu" {
+        if child.name_without_address() == "cpu" && node_is_available(child)? {
             return Ok(Some(child));
         }
     }
@@ -301,8 +298,7 @@ fn has_hardware_random(fdt: &Fdt<'_>) -> FdtResult<bool> {
 
     Ok(cpu
         .property("riscv,isa")
-        .map(|prop| isa_string_has_extension(trim_prop_string(prop.value()), "zkr"))
-        .unwrap_or(false))
+        .is_some_and(|prop| isa_string_has_extension(trim_prop_string(prop.value()), "zkr")))
 }
 
 fn has_string_list_entry(prop: &[u8], entry: &str) -> bool {
@@ -312,6 +308,13 @@ fn has_string_list_entry(prop: &[u8], entry: &str) -> bool {
 
 fn trim_prop_string(prop: &[u8]) -> &[u8] {
     prop.split(|byte| *byte == 0).next().unwrap_or(prop)
+}
+
+fn node_is_available(node: Node<'_>) -> FdtResult<bool> {
+    let Some(status) = node.property("status") else {
+        return Ok(true);
+    };
+    Ok(matches!(status.as_str()?, "ok" | "okay"))
 }
 
 fn isa_string_has_extension(isa: &[u8], ext: &str) -> bool {
@@ -345,8 +348,7 @@ fn interrupt_controller_info(fdt: &Fdt<'_>) -> FdtResult<Option<InterruptControl
         return parse_gic_regs(node, 3);
     }
     find_compatible(fdt, &["arm,cortex-a15-gic", "arm,gic-400"])?
-        .map(|node| parse_gic_regs(node, 2))
-        .unwrap_or(Ok(None))
+        .map_or(Ok(None), |node| parse_gic_regs(node, 2))
 }
 
 fn parse_gic_regs(node: Node<'_>, version: u8) -> FdtResult<Option<InterruptControllerInfo>> {
@@ -374,48 +376,45 @@ fn parse_gic_regs(node: Node<'_>, version: u8) -> FdtResult<Option<InterruptCont
 }
 
 fn uart_base(fdt: &Fdt<'_>) -> FdtResult<Option<PhysicalAddress>> {
-    find_compatible(fdt, &["arm,pl011", "ns16550a"])?
-        .map(device_base)
-        .unwrap_or(Ok(None))
+    find_compatible(fdt, &["arm,pl011", "ns16550a"])?.map_or(Ok(None), device_base)
 }
 
 fn device_base(node: Node<'_>) -> FdtResult<Option<PhysicalAddress>> {
-    let Some(reg) = node.reg()? else {
+    let Some(mut reg) = node.reg()? else {
         return Ok(None);
     };
-    let Some(region) = reg.filter_map(region_from_reg).next() else {
+    let Some(region) = reg.find_map(region_from_reg) else {
         return Ok(None);
     };
     Ok(Some(region.base))
 }
 
 fn find_compatible<'a>(fdt: &Fdt<'a>, compatible: &[&str]) -> FdtResult<Option<Node<'a>>> {
-    Ok(find_compatible_below(
-        fdt.root(),
-        compatible,
-        MAX_COMPATIBLE_SEARCH_DEPTH,
-    ))
+    find_compatible_below(fdt.root(), compatible, MAX_COMPATIBLE_SEARCH_DEPTH)
 }
 
 fn find_compatible_below<'a>(
     node: Node<'a>,
     compatible: &[&str],
     depth_remaining: usize,
-) -> Option<Node<'a>> {
+) -> FdtResult<Option<Node<'a>>> {
+    if !node_is_available(node)? {
+        return Ok(None);
+    }
     if compatible.iter().any(|filter| node.is_compatible(filter)) {
-        return Some(node);
+        return Ok(Some(node));
     }
     if depth_remaining == 0 {
-        return None;
+        return Ok(None);
     }
     for child in node.children() {
         if let Some(match_node) =
-            find_compatible_below(child, compatible, depth_remaining.saturating_sub(1))
+            find_compatible_below(child, compatible, depth_remaining.saturating_sub(1))?
         {
-            return Some(match_node);
+            return Ok(Some(match_node));
         }
     }
-    None
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -560,6 +559,108 @@ mod tests {
                 base: PhysicalAddress::new(0x1_0000_0000),
                 size: 0x0400_0000,
             }
+        );
+    }
+
+    #[test]
+    fn skips_unavailable_hardware_nodes() {
+        let mut dtb = DtbBuilder::new();
+        dtb.begin_node("");
+        dtb.prop_u32("#address-cells", 2);
+        dtb.prop_u32("#size-cells", 2);
+        dtb.begin_node("memory@80000000");
+        dtb.prop_str("status", "disabled");
+        dtb.prop_cells("reg", &[0, 0x8000_0000, 0, 0x0800_0000]);
+        dtb.end_node();
+        dtb.begin_node("memory@90000000");
+        dtb.prop_str("status", "okay");
+        dtb.prop_cells("reg", &[0, 0x9000_0000, 0, 0x0400_0000]);
+        dtb.end_node();
+        dtb.begin_node("cpus");
+        dtb.begin_node("cpu@0");
+        dtb.prop_str("status", "disabled");
+        dtb.end_node();
+        dtb.begin_node("cpu@1");
+        dtb.end_node();
+        dtb.end_node();
+        dtb.begin_node("serial@10000000");
+        dtb.prop_str("status", "reserved");
+        dtb.prop_str_list("compatible", &["ns16550a"]);
+        dtb.prop_cells("reg", &[0, 0x1000_0000, 0, 0x100]);
+        dtb.end_node();
+        dtb.end_node();
+
+        let blob = dtb.finish();
+        let fdt = Fdt::new(&blob).unwrap();
+        let hw =
+            HardwareInfo::from_fdt(DeviceTreeBlobPhysicalAddress::new(0x4800_0000), &fdt).unwrap();
+
+        assert_eq!(
+            hw.memory_regions(),
+            &[MemoryRegion {
+                base: PhysicalAddress::new(0x9000_0000),
+                size: 0x0400_0000,
+            }]
+        );
+        assert_eq!(hw.cpu_count, 1);
+        assert_eq!(hw.uart_base, None);
+    }
+
+    #[test]
+    fn classifies_node_status_fail_closed() {
+        let mut dtb = DtbBuilder::new();
+        dtb.begin_node("");
+        for (name, status) in [
+            ("okay", Some("okay")),
+            ("legacy-ok", Some("ok")),
+            ("disabled", Some("disabled")),
+            ("failed", Some("fail-needs-probe")),
+            ("unknown", Some("vendor-state")),
+            ("missing", None),
+        ] {
+            dtb.begin_node(name);
+            if let Some(status) = status {
+                dtb.prop_str("status", status);
+            }
+            dtb.end_node();
+        }
+        dtb.end_node();
+
+        let blob = dtb.finish();
+        let fdt = Fdt::new(&blob).unwrap();
+        for (path, expected) in [
+            ("/okay", true),
+            ("/legacy-ok", true),
+            ("/disabled", false),
+            ("/failed", false),
+            ("/unknown", false),
+            ("/missing", true),
+        ] {
+            assert_eq!(
+                node_is_available(fdt.find_node(path).unwrap()),
+                Ok(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_node_status() {
+        let mut dtb = DtbBuilder::new();
+        dtb.begin_node("");
+        dtb.prop_u32("#address-cells", 2);
+        dtb.prop_u32("#size-cells", 2);
+        dtb.begin_node("memory@80000000");
+        dtb.prop("status", b"okay");
+        dtb.prop_cells("reg", &[0, 0x8000_0000, 0, 0x0800_0000]);
+        dtb.end_node();
+        dtb.end_node();
+
+        let blob = dtb.finish();
+        let fdt = Fdt::new(&blob).unwrap();
+        assert_eq!(
+            HardwareInfo::from_fdt(DeviceTreeBlobPhysicalAddress::new(0x4800_0000), &fdt)
+                .unwrap_err(),
+            FdtError::MalformedProperty
         );
     }
 

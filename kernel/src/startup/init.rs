@@ -6,8 +6,11 @@
 //! the DTB, discovers hardware, and expands the physmap to cover RAM.
 
 use kernel::{
-    boot::DeviceTreeBlobPhysicalAddress, fdt::Fdt, hwinfo::HardwareInfo,
-    limits::DEVICE_TREE_BLOB_MAX_SIZE, mmu::PhysicalAddress,
+    boot::DeviceTreeBlobPhysicalAddress,
+    fdt::{Fdt, FdtError},
+    hwinfo::HardwareInfo,
+    limits::DEVICE_TREE_BLOB_MAX_SIZE,
+    mmu::{MapError, PhysicalAddress},
 };
 
 use crate::{hal, startup::log as boot_log};
@@ -15,13 +18,24 @@ use crate::{hal, startup::log as boot_log};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BootError {
     MissingDeviceTree,
-    DeviceTreeHeader,
-    DeviceTreeParse,
+    DeviceTree(FdtError),
     DeviceTreeTooLarge,
     DeviceTreeMagic,
     DeviceTreeMisaligned,
     DeviceTreeAddressNotMapped,
-    MemoryMap,
+    MemoryMap(MapError),
+}
+
+impl From<FdtError> for BootError {
+    fn from(error: FdtError) -> Self {
+        Self::DeviceTree(error)
+    }
+}
+
+impl From<MapError> for BootError {
+    fn from(error: MapError) -> Self {
+        Self::MemoryMap(error)
+    }
 }
 
 /// Magic value at byte offset 0 of every flat device-tree blob.
@@ -37,7 +51,8 @@ pub fn phys_init(dtb: DeviceTreeBlobPhysicalAddress) -> Result<(), BootError> {
     boot_log::uart();
     hal::trap::init();
     boot_log::trap();
-    hal::mmu::init(dtb).map_err(|_| BootError::MemoryMap)
+    hal::mmu::init(dtb)?;
+    Ok(())
 }
 
 /// Phase two: virtual boot.
@@ -69,7 +84,8 @@ fn read_hardware_info(dtb: DeviceTreeBlobPhysicalAddress) -> Result<HardwareInfo
 
     let blob = DeviceTreeBlob::new(dtb)?;
     let fdt = blob.as_fdt()?;
-    HardwareInfo::from_fdt(dtb, &fdt).map_err(|_| BootError::DeviceTreeParse)
+    let hardware = HardwareInfo::from_fdt(dtb, &fdt)?;
+    Ok(hardware)
 }
 
 struct DeviceTreeBlob {
@@ -115,6 +131,7 @@ impl DeviceTreeBlob {
     }
 
     fn as_fdt(&self) -> Result<Fdt<'_>, BootError> {
-        Fdt::new(self.data).map_err(|_| BootError::DeviceTreeHeader)
+        let fdt = Fdt::new(self.data).map_err(FdtError::from)?;
+        Ok(fdt)
     }
 }

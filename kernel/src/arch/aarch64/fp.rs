@@ -1,17 +1,11 @@
 //! ARM64 FP/SIMD controls.
 //!
 //! The kernel is built for `aarch64-unknown-none-softfloat`, and thus compiled
-//! kernel code never touches the FP/SIMD registers. The register file belongs
-//! to user threads alone: the trap path saves it at exception entry and
-//! restores it at exception return. While the kernel runs, CPACR_EL1 keeps
-//! FP/SIMD trapped at both EL0 and EL1; if kernel code ever executes an FP
-//! instruction by mistake, it faults immediately instead of silently
-//! corrupting user state.
-
-#![allow(
-    dead_code,
-    reason = "Rung 9 wires state helpers before full user return paths consume them"
-)]
+//! kernel code never touches the FP/SIMD registers. Trap entry disables access
+//! without spilling the resident user register file. A real thread switch
+//! saves the outgoing owner and restores the incoming owner; returning to the
+//! same thread only re-enables access. While the kernel runs, CPACR_EL1 keeps
+//! FP/SIMD trapped at both EL0 and EL1, so accidental kernel FP use faults.
 
 use core::{
     arch::{asm, global_asm},
@@ -30,36 +24,33 @@ const CPACR_EL1_UNSUPPORTED_VECTOR_MASK: usize = CPACR_EL1_ZEN_MASK | CPACR_EL1_
 
 /// FPEN=00 traps FP/SIMD at both EL0 and EL1. The kernel is soft-float, so
 /// any FP/SIMD access at EL1 is a bug; trapping it turns silent corruption
-/// into a visible fault. Trap entry saves user FP state before switching
-/// CPACR_EL1 to this value, and trap exit raises FPEN again only for the
-/// restore sequence.
+/// into a visible fault. Trap entry preserves the resident user register file
+/// and switches CPACR_EL1 to this value; a real thread switch temporarily
+/// raises FPEN for the ownership transfer.
 pub const CPACR_EL1_KERNEL: usize = CPACR_EL1_FPEN_ALL_TRAPPED;
 /// FPEN=11 is the only encoding that lets EL0 use FP/SIMD, and it untraps EL1
-/// as a side effect. The kernel therefore keeps this window small: it spans
-/// only the user restore sequence and the return to EL0.
+/// as a side effect. EL1 uses it only during explicit state transfers; trap
+/// exit also installs it for an enabled EL0 thread, and the next entry closes
+/// EL1 access before running Rust code.
 pub const CPACR_EL1_USER_FP_ENABLED: usize = CPACR_EL1_FPEN_ENABLED;
 
 #[repr(C, align(16))]
 pub struct TrapFpScratch {
-    state: UnsafeCell<UserFpState>,
-    saved: UnsafeCell<u8>,
+    return_enabled: UnsafeCell<u8>,
 }
 
 // SAFETY: ARM64 boot parks secondary CPUs, so current trap handling is UP.
-// Trap entry writes this scratch area before Rust runs, and Rust drains it on
-// the same CPU before normal trap handling continues. TODO(smp): replace this
-// with per-CPU scratch storage before secondary CPUs can enter EL0.
+// Trap entry records whether the interrupted user context owned the resident
+// register file, and trap exit consumes it on the same CPU. TODO(smp): replace
+// this with per-CPU scratch storage before secondary CPUs can enter EL0.
 unsafe impl Sync for TrapFpScratch {}
 
 impl TrapFpScratch {
-    pub const STATE_OFFSET: usize = core::mem::offset_of!(Self, state);
-    pub const SAVED_OFFSET: usize = core::mem::offset_of!(Self, saved);
-    pub const SAVED_FROM_STATE_OFFSET: usize = Self::SAVED_OFFSET - Self::STATE_OFFSET;
+    pub const RETURN_ENABLED_OFFSET: usize = core::mem::offset_of!(Self, return_enabled);
 
     const fn new() -> Self {
         Self {
-            state: UnsafeCell::new(UserFpState::zeroed()),
-            saved: UnsafeCell::new(0),
+            return_enabled: UnsafeCell::new(0),
         }
     }
 }
@@ -151,29 +142,53 @@ pub fn enable_user_fp_simd() {
     write_cpacr_el1(next);
 }
 
-pub fn prepare_user_restore(thread: &ThreadFpState) {
-    let Some(state) = thread.user_state() else {
-        clear_pending_user_restore();
-        return;
-    };
-    if !thread.user_enabled() {
-        clear_pending_user_restore();
-        return;
-    }
-
-    // SAFETY: Trap exit is the only consumer of this single-core scratch slot.
-    // It runs after this Rust handler returns and clears the flag before `eret`.
-    unsafe {
-        *A64_TRAP_FP_SCRATCH.state.get() = *state;
-        *A64_TRAP_FP_SCRATCH.saved.get() = 1;
-    }
+pub fn activate_user_state(thread: &ThreadFpState) {
+    let state = thread
+        .user_state()
+        .expect("enabled ARM64 FP state must have a saved image");
+    enable_user_fp_simd();
+    // SAFETY: First-use handling owns the current CPU register file and will
+    // return to this same thread after access is disabled for the kernel again.
+    unsafe { restore_current_state(state) };
+    disable_fp_simd();
+    set_return_enabled(true);
 }
 
-pub fn clear_pending_user_restore() {
-    // SAFETY: This flag is local to the parked-single-core trap path.
-    unsafe {
-        *A64_TRAP_FP_SCRATCH.saved.get() = 0;
+/// Transfers the resident FP/SIMD register file at a scheduler context switch.
+///
+/// # Safety
+///
+/// Trap entry must have recorded the outgoing user access state and disabled
+/// FP/SIMD. `old` and `new` must be the scheduler's actual switch pair.
+pub unsafe fn context_switch(old: &mut ThreadFpState, new: &ThreadFpState) {
+    let old_is_resident = return_enabled();
+    debug_assert_eq!(old_is_resident, old.user_enabled());
+    let new_state = if new.user_enabled() {
+        Some(
+            new.user_state()
+                .expect("enabled ARM64 FP state must have a saved image"),
+        )
+    } else {
+        None
+    };
+
+    if old_is_resident || new_state.is_some() {
+        enable_user_fp_simd();
     }
+    if old_is_resident {
+        old.save_user_state_with(|state| {
+            // SAFETY: The outgoing thread owns the resident register file and
+            // FP/SIMD access was enabled immediately above.
+            unsafe { save_current_state(state) };
+        });
+    }
+    if let Some(state) = new_state {
+        // SAFETY: The scheduler selected `new`, and FP/SIMD access is enabled
+        // only for this restore window before the integer context switch.
+        unsafe { restore_current_state(state) };
+    }
+    disable_fp_simd();
+    set_return_enabled(new_state.is_some());
 }
 
 /// Saves the current CPU FP/SIMD register file into `state`.
@@ -198,20 +213,18 @@ pub unsafe fn restore_current_state(state: &UserFpState) {
     unsafe { a64_fp_restore(state) };
 }
 
-pub fn take_trapped_user_state() -> Option<UserFpState> {
-    // SAFETY: Trap entry wrote the flag and state before calling Rust.
-    let saved = unsafe { *A64_TRAP_FP_SCRATCH.saved.get() };
-    if saved == 0 {
-        return None;
-    }
+fn return_enabled() -> bool {
+    // SAFETY: Trap entry is the single producer and the current trap handler is
+    // the single consumer while secondary CPUs remain parked.
+    unsafe { *A64_TRAP_FP_SCRATCH.return_enabled.get() != 0 }
+}
 
-    // SAFETY: `saved != 0` means assembly populated the full state image.
-    let state = unsafe { *A64_TRAP_FP_SCRATCH.state.get() };
-    // SAFETY: Clear the single producer/consumer flag after copying.
+fn set_return_enabled(enabled: bool) {
+    // SAFETY: The current trap handler exclusively prepares this CPU's return
+    // state while secondary CPUs remain parked.
     unsafe {
-        *A64_TRAP_FP_SCRATCH.saved.get() = 0;
+        *A64_TRAP_FP_SCRATCH.return_enabled.get() = u8::from(enabled);
     }
-    Some(state)
 }
 
 fn read_cpacr_el1() -> usize {

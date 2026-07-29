@@ -17,10 +17,6 @@ use kernel::trap::{
 
 global_asm!(
     r#"
-    // The kernel target is soft-float, so the assembler rejects FP/SIMD
-    // instructions by default. This directive re-enables them for the
-    // hand-written user state save and restore sequences below.
-    .arch armv8-a+fp+simd
     .section .vectors, "ax"
     .balign 2048
     .global __bullfinch_aarch64_trap_vectors
@@ -62,71 +58,43 @@ __bullfinch_aarch64_trap_vectors:
     .balign 128
 
     .text
-    .macro trap_store_fp_state base, tmp_x, tmp_w
-    stp q0, q1, [\base, #(16 * 0)]
-    stp q2, q3, [\base, #(16 * 2)]
-    stp q4, q5, [\base, #(16 * 4)]
-    stp q6, q7, [\base, #(16 * 6)]
-    stp q8, q9, [\base, #(16 * 8)]
-    stp q10, q11, [\base, #(16 * 10)]
-    stp q12, q13, [\base, #(16 * 12)]
-    stp q14, q15, [\base, #(16 * 14)]
-    stp q16, q17, [\base, #(16 * 16)]
-    stp q18, q19, [\base, #(16 * 18)]
-    stp q20, q21, [\base, #(16 * 20)]
-    stp q22, q23, [\base, #(16 * 22)]
-    stp q24, q25, [\base, #(16 * 24)]
-    stp q26, q27, [\base, #(16 * 26)]
-    stp q28, q29, [\base, #(16 * 28)]
-    stp q30, q31, [\base, #(16 * 30)]
-    mrs \tmp_x, fpsr
-    str \tmp_w, [\base, #{fpsr_offset}]
-    mrs \tmp_x, fpcr
-    str \tmp_w, [\base, #{fpcr_offset}]
-    .endm
-
-    .macro save_user_fp_state_if_enabled
+    .macro record_user_fp_access
     mrs x16, spsr_el1
     and x16, x16, #0xf
-    cbnz x16, 99f
+    cbnz x16, 98f
     mrs x16, cpacr_el1
     and x16, x16, #{fp_enabled_mask}
     cmp x16, #{user_fp_enabled}
-    b.ne 99f
+    cset w17, eq
+    b 99f
+98:
+    mov w17, #0
+99:
     adrp x16, {trap_fp_scratch}
     add x16, x16, :lo12:{trap_fp_scratch}
-    add x16, x16, #{scratch_state_offset}
-    trap_store_fp_state x16, x17, w17
-    mov x17, #1
-    strb w17, [x16, #{scratch_saved_relative_offset}]
-99:
+    strb w17, [x16, #{scratch_return_enabled_offset}]
     .endm
 
-    .macro restore_user_fp_state_for_return status_offset
+    .macro restore_user_fp_access_for_return status_offset
     adrp x16, {trap_fp_scratch}
     add x16, x16, :lo12:{trap_fp_scratch}
-    add x16, x16, #{scratch_state_offset}
     ldr x17, [sp, #\status_offset]
     and x17, x17, #0xf
     cbnz x17, 97f
-    ldrb w17, [x16, #{scratch_saved_relative_offset}]
+    ldrb w17, [x16, #{scratch_return_enabled_offset}]
     cbz w17, 98f
     mov x17, #{user_fp_enabled}
-    msr cpacr_el1, x17
-    isb
-    mov w17, #0
-    strb w17, [x16, #{scratch_saved_relative_offset}]
-    mov x0, x16
-    bl {a64_fp_restore}
     b 99f
 97:
-    mov w17, #0
-    strb w17, [x16, #{scratch_saved_relative_offset}]
 98:
     mov x16, #{kernel_cpacr}
-    msr cpacr_el1, x16
-    isb
+    mov x17, x16
 99:
+    adrp x16, {trap_fp_scratch}
+    add x16, x16, :lo12:{trap_fp_scratch}
+    strb wzr, [x16, #{scratch_return_enabled_offset}]
+    msr cpacr_el1, x17
+    isb
     .endm
 
     .macro save_trap_frame handler
@@ -140,7 +108,7 @@ __bullfinch_aarch64_trap_vectors:
     stp x12, x13, [sp, #96]
     stp x14, x15, [sp, #112]
     stp x16, x17, [sp, #128]
-    save_user_fp_state_if_enabled
+    record_user_fp_access
     mov x16, #{kernel_cpacr}
     msr cpacr_el1, x16
     isb
@@ -160,7 +128,7 @@ __bullfinch_aarch64_trap_vectors:
     stp x0, x1, [sp, #{syndrome_offset}]
     mov x0, sp
     bl \handler
-    restore_user_fp_state_for_return {program_status_offset}
+    restore_user_fp_access_for_return {program_status_offset}
     ldp x0, x1, [sp, #{exception_return_address_offset}]
     msr elr_el1, x0
     msr spsr_el1, x1
@@ -195,7 +163,7 @@ __bullfinch_aarch64_trap_vectors:
     stp x12, x13, [sp, #96]
     stp x14, x15, [sp, #112]
     stp x16, x17, [sp, #128]
-    save_user_fp_state_if_enabled
+    record_user_fp_access
     mov x16, #{kernel_cpacr}
     msr cpacr_el1, x16
     isb
@@ -204,7 +172,7 @@ __bullfinch_aarch64_trap_vectors:
     mrs x1, spsr_el1
     stp x0, x1, [sp, #{irq_exception_return_address_offset}]
     bl \handler
-    restore_user_fp_state_for_return {irq_program_status_offset}
+    restore_user_fp_access_for_return {irq_program_status_offset}
     ldp x0, x1, [sp, #{irq_exception_return_address_offset}]
     msr elr_el1, x0
     msr spsr_el1, x1
@@ -229,9 +197,8 @@ rust_aarch64_kernel_trap_entry:
     .global rust_aarch64_kernel_irq_entry
 rust_aarch64_kernel_irq_entry:
     save_irq_frame rust_aarch64_handle_kernel_irq
-    .purgem trap_store_fp_state
-    .purgem save_user_fp_state_if_enabled
-    .purgem restore_user_fp_state_for_return
+    .purgem record_user_fp_access
+    .purgem restore_user_fp_access_for_return
     .purgem save_trap_frame
     .purgem save_irq_frame
     "#,
@@ -246,12 +213,8 @@ rust_aarch64_kernel_irq_entry:
     fp_enabled_mask = const super::fp::CPACR_EL1_USER_FP_ENABLED,
     user_fp_enabled = const super::fp::CPACR_EL1_USER_FP_ENABLED,
     kernel_cpacr = const super::fp::CPACR_EL1_KERNEL,
-    scratch_state_offset = const super::fp::TrapFpScratch::STATE_OFFSET,
-    scratch_saved_relative_offset = const super::fp::TrapFpScratch::SAVED_FROM_STATE_OFFSET,
-    fpsr_offset = const kernel::fp::UserFpState::FPSR_OFFSET,
-    fpcr_offset = const kernel::fp::UserFpState::FPCR_OFFSET,
+    scratch_return_enabled_offset = const super::fp::TrapFpScratch::RETURN_ENABLED_OFFSET,
     trap_fp_scratch = sym super::fp::A64_TRAP_FP_SCRATCH,
-    a64_fp_restore = sym super::fp::a64_fp_restore,
 );
 
 unsafe extern "C" {
@@ -278,13 +241,12 @@ const _: () = assert!(IrqFrame::SIZE == 176);
 
 #[unsafe(no_mangle)]
 extern "C" fn rust_aarch64_handle_kernel_trap(frame: *mut TrapFrame) {
-    commit_trapped_user_fp_state();
     // SAFETY: Assembly passes a complete `TrapFrame` on the current stack. This
     // trap owns the frame for its full lifetime. Null reaches the halt path
     // without a bad dereference.
     if let Some(frame) = unsafe { frame.as_mut() } {
         if is_user_fp_unavailable(frame) {
-            prepare_current_user_fp_restore();
+            enable_current_user_fp_restore();
             return;
         }
 
@@ -298,27 +260,24 @@ extern "C" fn rust_aarch64_handle_kernel_trap(frame: *mut TrapFrame) {
 
 #[unsafe(no_mangle)]
 extern "C" fn rust_aarch64_handle_kernel_irq() {
-    commit_trapped_user_fp_state();
     crate::runtime::trap::handle_fast_interrupt();
 }
 
-fn commit_trapped_user_fp_state() {
-    if let Some(state) = super::fp::take_trapped_user_state() {
-        kernel::task::save_current_user_fp_state(state)
-            .expect("EL0 FP/SIMD trap implies a current thread");
-    }
-}
-
-fn prepare_current_user_fp_restore() {
-    let state = kernel::task::enable_current_user_fp_state()
+fn enable_current_user_fp_restore() {
+    kernel::task::enable_current_user_fp_state(super::fp::activate_user_state)
         .expect("EL0 FP/SIMD trap implies a current thread");
-    super::fp::prepare_user_restore(&state);
 }
 
 fn is_user_fp_unavailable(frame: &TrapFrame) -> bool {
-    frame.is_from_user()
+    let first_use = frame.is_from_user()
         && matches!(
             TrapFrameSnapshot::cause(frame).kind(),
             TrapKind::FloatingPointUnavailable
-        )
+        );
+    if !first_use {
+        return false;
+    }
+
+    kernel::task::with_current_user_fp_state(|stored| !stored.user_enabled())
+        .expect("EL0 FP/SIMD trap implies a current thread")
 }

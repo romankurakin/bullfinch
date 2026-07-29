@@ -18,17 +18,11 @@ const STVEC_MODE_VECTORED: usize = 1;
 const SSTATUS_SUPERVISOR_PREVIOUS_PRIVILEGE: usize = 1 << 8;
 const SSTATUS_FS_SHIFT: usize = 13;
 const SSTATUS_FS_MASK: usize = 0b11 << 13;
-const SSTATUS_FS_DIRTY: usize = 0b11 << 13;
 const FRAME_SIZE_NEGATIVE: isize = -(TrapFrame::SIZE as isize);
 const IRQ_FRAME_SIZE_NEGATIVE: isize = -(IrqFrame::SIZE as isize);
 
 global_asm!(
     r#"
-    # The kernel target is rv64imac, so the assembler rejects FP instructions
-    # by default. Enable F and D for this block so the user FP save and
-    # restore macros assemble; compiled kernel code remains FP-free.
-    .option push
-    .option arch, +f, +d
     .section .trap, "ax"
     .balign 1024
     .global __bullfinch_riscv64_trap_vector
@@ -54,61 +48,29 @@ __bullfinch_riscv64_trap_vector:
     .option pop
 
     .text
-    # Inline copy of the FP store sequence in fp.rs. Trap entry must not call
-    # rv64_fp_save: the function uses t0 as its fcsr scratch, but at this
-    # point t0 still holds the live sstatus copy that the entry path stores
-    # into the trap frame. A call would also clobber ra before the frame owns
-    # it. Inlining with an explicit temp register avoids both hazards.
-    .macro rv64_trap_store_fp_state base, tmp
-    .irp n, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
-    fsd f\n, (8 * \n)(\base)
-    .endr
-    .irp n, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31
-    fsd f\n, (8 * \n)(\base)
-    .endr
-    csrr \tmp, fcsr
-    sw \tmp, {fcsr_offset}(\base)
-    .endm
-
-    .macro save_user_fp_state_if_dirty status, scratch, tmp
-    andi \scratch, \status, {sstatus_spp}
-    bnez \scratch, 99f
-    li \scratch, {sstatus_fs_mask}
-    and \scratch, \status, \scratch
-    li \tmp, {sstatus_fs_dirty}
-    bne \scratch, \tmp, 98f
+    .macro record_user_fp_status status, scratch, tmp
     la \scratch, {trap_fp_scratch}
-    addi \scratch, \scratch, {scratch_state_offset}
-    rv64_trap_store_fp_state \scratch, \tmp
-    li \tmp, 1
-    sb \tmp, {scratch_saved_relative_offset}(\scratch)
+    sb zero, {scratch_return_status_offset}(\scratch)
+    andi \tmp, \status, {sstatus_spp}
+    bnez \tmp, 98f
+    li \tmp, {sstatus_fs_mask}
+    and \tmp, \status, \tmp
+    srli \tmp, \tmp, {sstatus_fs_shift}
+    sb \tmp, {scratch_return_status_offset}(\scratch)
 98:
     li \scratch, {sstatus_fs_mask}
     csrc sstatus, \scratch
     not \scratch, \scratch
     and \status, \status, \scratch
-99:
     .endm
 
-    .macro restore_user_fp_state_for_return scratch, tmp, status, status_offset
+    .macro restore_user_fp_status_for_return scratch, tmp, status, status_offset
     ld \status, \status_offset(sp)
     andi \scratch, \status, {sstatus_spp}
     bnez \scratch, 98f
     la \scratch, {trap_fp_scratch}
-    lbu \status, {scratch_saved_offset}(\scratch)
-    beqz \status, 99f
-    li \tmp, {sstatus_fs_mask}
-    csrs sstatus, \tmp
-    addi \scratch, \scratch, {scratch_state_offset}
-    mv a0, \scratch
-    # Calling is safe here, unlike at trap entry: rv64_fp_restore clobbers t0
-    # and the call clobbers ra, but both are dead. Every register used after
-    # the call is reloaded first, and the exit paths restore ra from the trap
-    # or IRQ frame once this macro ends.
-    call {rv64_fp_restore}
-    la \scratch, {trap_fp_scratch}
-    lbu \status, {scratch_saved_offset}(\scratch)
-    sb zero, {scratch_saved_offset}(\scratch)
+    lbu \status, {scratch_return_status_offset}(\scratch)
+    sb zero, {scratch_return_status_offset}(\scratch)
     csrr \tmp, sstatus
     li \scratch, {sstatus_fs_mask}
     not \scratch, \scratch
@@ -116,15 +78,11 @@ __bullfinch_riscv64_trap_vector:
     slli \status, \status, {sstatus_fs_shift}
     or \tmp, \tmp, \status
     csrw sstatus, \tmp
-    j 100f
+    j 99f
 98:
     la \scratch, {trap_fp_scratch}
-    sb zero, {scratch_saved_offset}(\scratch)
-    j 100f
+    sb zero, {scratch_return_status_offset}(\scratch)
 99:
-    li \tmp, {sstatus_fs_mask}
-    csrc sstatus, \tmp
-100:
     .endm
 
     .global rust_riscv64_kernel_trap_entry
@@ -166,7 +124,7 @@ rust_riscv64_kernel_trap_entry:
     csrr t0, sepc
     sd t0, {program_counter_offset}(sp)
     csrr t0, sstatus
-    save_user_fp_state_if_dirty t0, t1, t2
+    record_user_fp_status t0, t1, t2
     sd t0, {status_offset}(sp)
     csrr t0, scause
     sd t0, {cause_offset}(sp)
@@ -178,7 +136,7 @@ rust_riscv64_kernel_trap_entry:
     csrw sepc, t0
     ld t0, {status_offset}(sp)
     csrw sstatus, t0
-    restore_user_fp_state_for_return t0, t1, t2, {status_offset}
+    restore_user_fp_status_for_return t0, t1, t2, {status_offset}
     ld x1, 0(sp)
     ld x3, 16(sp)
     ld x4, 24(sp)
@@ -234,14 +192,14 @@ rust_riscv64_kernel_fast_irq_entry:
     csrr t0, sepc
     sd t0, {irq_program_counter_offset}(sp)
     csrr t0, sstatus
-    save_user_fp_state_if_dirty t0, t1, t2
+    record_user_fp_status t0, t1, t2
     sd t0, {irq_status_offset}(sp)
     call rust_riscv64_handle_kernel_fast_irq
     ld t0, {irq_program_counter_offset}(sp)
     csrw sepc, t0
     ld t0, {irq_status_offset}(sp)
     csrw sstatus, t0
-    restore_user_fp_state_for_return t0, t1, t2, {irq_status_offset}
+    restore_user_fp_status_for_return t0, t1, t2, {irq_status_offset}
     ld ra, 0(sp)
     ld t0, 8(sp)
     ld t1, 16(sp)
@@ -260,15 +218,12 @@ rust_riscv64_kernel_fast_irq_entry:
     ld t6, 120(sp)
     addi sp, sp, {irq_frame_size}
     sret
-    .purgem rv64_trap_store_fp_state
-    .purgem save_user_fp_state_if_dirty
-    .purgem restore_user_fp_state_for_return
-    .option pop
+    .purgem record_user_fp_status
+    .purgem restore_user_fp_status_for_return
     "#,
     sstatus_spp = const SSTATUS_SUPERVISOR_PREVIOUS_PRIVILEGE,
     sstatus_fs_shift = const SSTATUS_FS_SHIFT,
     sstatus_fs_mask = const SSTATUS_FS_MASK,
-    sstatus_fs_dirty = const SSTATUS_FS_DIRTY,
     frame_size_negative = const FRAME_SIZE_NEGATIVE,
     frame_size = const TrapFrame::SIZE,
     saved_stack_pointer_offset = const TrapFrame::SAVED_STACK_POINTER_OFFSET,
@@ -281,12 +236,8 @@ rust_riscv64_kernel_fast_irq_entry:
     irq_frame_size = const IrqFrame::SIZE,
     irq_program_counter_offset = const IrqFrame::PROGRAM_COUNTER_OFFSET,
     irq_status_offset = const IrqFrame::STATUS_OFFSET,
-    scratch_state_offset = const super::fp::TrapFpScratch::STATE_OFFSET,
-    scratch_saved_offset = const super::fp::TrapFpScratch::SAVED_OFFSET,
-    scratch_saved_relative_offset = const super::fp::TrapFpScratch::SAVED_FROM_STATE_OFFSET,
-    fcsr_offset = const kernel::fp::UserFpState::FCSR_OFFSET,
+    scratch_return_status_offset = const super::fp::TrapFpScratch::RETURN_STATUS_OFFSET,
     trap_fp_scratch = sym super::fp::RV64_TRAP_FP_SCRATCH,
-    rv64_fp_restore = sym super::fp::rv64_fp_restore,
 );
 
 unsafe extern "C" {
@@ -296,6 +247,7 @@ unsafe extern "C" {
 pub fn init() {
     let vector_base = __bullfinch_riscv64_trap_vector as *const () as usize;
     let stvec = vector_base | STVEC_MODE_VECTORED;
+    let installed: usize;
 
     // SAFETY: `vector_base` names the 1024-byte-aligned `.trap` table emitted
     // above. It covers causes 0-255, and every slot routes through the common
@@ -303,11 +255,14 @@ pub fn init() {
     unsafe {
         asm!(
             "csrw stvec, {stvec}",
+            "csrr {installed}, stvec",
             "fence.i",
             stvec = in(reg) stvec,
+            installed = lateout(reg) installed,
             options(nostack, preserves_flags)
         );
     }
+    assert_eq!(installed, stvec, "riscv64: stvec rejected trap table");
 }
 
 const _: () = assert!(TrapFrame::SIZE == 288);
@@ -315,7 +270,6 @@ const _: () = assert!(IrqFrame::SIZE == 144);
 
 #[unsafe(no_mangle)]
 extern "C" fn rust_riscv64_handle_kernel_trap(frame: *mut TrapFrame) {
-    commit_trapped_user_fp_state();
     // SAFETY: Assembly passes a complete `TrapFrame` on the current stack. This
     // trap owns the frame for its full lifetime. Null reaches the halt path
     // without a bad dereference.
@@ -324,7 +278,7 @@ extern "C" fn rust_riscv64_handle_kernel_trap(frame: *mut TrapFrame) {
             crate::runtime::trap::handle_kernel_interrupt(frame);
         } else {
             if is_user_fp_unavailable(frame) {
-                prepare_current_user_fp_restore();
+                enable_current_user_fp_restore();
                 return;
             }
 
@@ -339,31 +293,26 @@ extern "C" fn rust_riscv64_handle_kernel_trap(frame: *mut TrapFrame) {
 
 #[unsafe(no_mangle)]
 extern "C" fn rust_riscv64_handle_kernel_fast_irq() {
-    commit_trapped_user_fp_state();
     crate::runtime::trap::handle_fast_interrupt();
 }
 
-fn commit_trapped_user_fp_state() {
-    if let Some(state) = super::fp::take_trapped_user_state() {
-        kernel::task::save_current_user_fp_state(state)
-            .expect("U-mode FP trap implies a current thread");
-    }
-}
-
-fn prepare_current_user_fp_restore() {
-    let state = kernel::task::enable_current_user_fp_state()
+fn enable_current_user_fp_restore() {
+    kernel::task::enable_current_user_fp_state(super::fp::activate_user_state)
         .expect("U-mode FP trap implies a current thread");
-    super::fp::prepare_user_restore(&state);
 }
 
 fn is_user_fp_unavailable(frame: &TrapFrame) -> bool {
     // RISC-V reports FP access with sstatus.FS=Off as an illegal instruction.
-    // stval may carry the instruction bits; when it does not, fall through to
-    // the normal trap report instead of guessing from user-controlled state.
-    frame.is_from_user()
-        && matches!(
+    if !frame.is_from_user()
+        || !matches!(
             TrapFrameSnapshot::cause(frame).kind(),
             TrapKind::IllegalInstruction
         )
-        && kernel::fp::instruction_may_access_scalar_fp(frame.fault_addr())
+    {
+        return false;
+    }
+
+    let stored_status = kernel::task::with_current_user_fp_state(kernel::fp::ThreadFpState::status)
+        .expect("U-mode FP trap implies a current thread");
+    kernel::fp::illegal_instruction_may_be_first_fp_use(frame.fault_addr(), stored_status)
 }

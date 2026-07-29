@@ -25,14 +25,14 @@ pub fn advance_tick_state(
     scheduled_tick: Deadline,
     interval: TickInterval,
 ) -> Option<TickAdvance> {
-    let mut elapsed_ticks = 1;
+    let mut elapsed_ticks = 1u64;
     let now = now.get();
     let mut deadline = scheduled_tick.checked_after(interval)?.get();
     let interval = interval.get();
 
     if deadline <= now {
-        let missed = (now - deadline) / interval + 1;
-        elapsed_ticks += missed;
+        let missed = ((now - deadline) / interval).checked_add(1)?;
+        elapsed_ticks = elapsed_ticks.checked_add(missed)?;
         deadline = deadline.checked_add(missed.checked_mul(interval)?)?;
     }
 
@@ -43,15 +43,18 @@ pub fn advance_tick_state(
 }
 
 pub fn ticks_to_ns(ticks: Ticks, frequency: Frequency) -> u64 {
-    ((u128::from(ticks.get()) * 1_000_000_000u128) / u128::from(frequency.get())) as u64
+    u64::try_from((u128::from(ticks.get()) * 1_000_000_000u128) / u128::from(frequency.get()))
+        .unwrap_or(u64::MAX)
 }
 
 pub fn ticks_to_us(ticks: Ticks, frequency: Frequency) -> u64 {
-    ((u128::from(ticks.get()) * 1_000_000u128) / u128::from(frequency.get())) as u64
+    u64::try_from((u128::from(ticks.get()) * 1_000_000u128) / u128::from(frequency.get()))
+        .unwrap_or(u64::MAX)
 }
 
 pub fn ns_to_ticks(ns: u64, frequency: Frequency) -> Ticks {
-    Ticks::new(((u128::from(ns) * u128::from(frequency.get())) / 1_000_000_000u128) as u64)
+    let ticks = (u128::from(ns) * u128::from(frequency.get())) / 1_000_000_000u128;
+    Ticks::new(u64::try_from(ticks).unwrap_or(u64::MAX))
 }
 
 #[cfg(test)]
@@ -98,6 +101,14 @@ mod tests {
     }
 
     #[test]
+    fn rejects_unrepresentable_elapsed_tick_count() {
+        assert_eq!(
+            advance_tick_state(Ticks::new(u64::MAX), Deadline::new(0), interval(1).unwrap()),
+            None
+        );
+    }
+
+    #[test]
     fn rejects_zero_tick_interval() {
         assert_eq!(TickInterval::try_from_ticks(Ticks::ZERO), None);
     }
@@ -107,6 +118,13 @@ mod tests {
         assert_eq!(ticks_to_ns(Ticks::new(1), freq(1_000_000_000)), 1);
         assert_eq!(ticks_to_us(Ticks::new(1_000), freq(1_000_000)), 1_000);
         assert_eq!(ns_to_ticks(1_000_000, freq(1_000_000)), Ticks::new(1_000));
+    }
+
+    #[test]
+    fn saturates_timer_unit_overflow() {
+        assert_eq!(ticks_to_ns(Ticks::new(u64::MAX), freq(1)), u64::MAX);
+        assert_eq!(ticks_to_us(Ticks::new(u64::MAX), freq(1)), u64::MAX);
+        assert_eq!(ns_to_ticks(u64::MAX, freq(u64::MAX)), Ticks::new(u64::MAX));
     }
 
     fn freq(hz: u64) -> Frequency {

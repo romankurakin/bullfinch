@@ -19,8 +19,8 @@ SECTIONS {
         *(.text*)
     }
 
-    /* Vectored stvec mode requires the trap table to be 256-byte aligned. */
-    .trap ALIGN(256) : {
+    /* Match the 256-slot assembly table's requested alignment. */
+    .trap ALIGN(1024) : {
         __trap_start = .;
         KEEP(*(.trap))
         __trap_end = .;

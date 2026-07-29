@@ -9,7 +9,7 @@ use core::{mem::ManuallyDrop, num::NonZeroU32};
 use crate::{
     clock,
     context::Context,
-    fp::{ThreadFpState, UserFpState},
+    fp::ThreadFpState,
     limits::MAX_TASKS,
     mmu::{MapError, PAGE_SIZE, PhysicalAddress, UnmapError, VirtualAddress},
     pmm::{self, PageRun},
@@ -34,11 +34,44 @@ const STACK_SLOT_WORDS: usize = MAX_KERNEL_STACK_SLOTS.div_ceil(STACK_SLOT_WORD_
 
 static STACK_SLOTS: Locked<StackSlots> = Locked::new(StackSlots::new());
 
+fn scaled_vruntime_delta(elapsed_ticks: u64, weight: NonZeroU32) -> u64 {
+    if weight.get() == SCHED_BASE_WEIGHT {
+        return SCHED_TIME_SLICE_NS.saturating_mul(elapsed_ticks);
+    }
+
+    let elapsed_ns = u128::from(SCHED_TIME_SLICE_NS) * u128::from(elapsed_ticks);
+    let scaled = elapsed_ns * u128::from(SCHED_BASE_WEIGHT) / u128::from(weight.get());
+    u64::try_from(scaled).unwrap_or(u64::MAX)
+}
+
 pub type KernelStackRegionBase = fn() -> VirtualAddress;
 pub type MapKernelStackPage = fn(VirtualAddress, PhysicalAddress) -> Result<(), MapError>;
 pub type UnmapKernelStackPage = fn(VirtualAddress) -> Result<PhysicalAddress, UnmapError>;
 pub type ThreadEntry = extern "C" fn(usize) -> !;
 pub type ContextSwitch = unsafe fn(&mut Context, &Context);
+
+/// Architecture operations that jointly transfer FP and integer context at a
+/// trap-return boundary.
+///
+/// A type parameter keeps the calls statically dispatched while bundling the
+/// two halves of one ownership transfer so they cannot be wired independently.
+pub trait TrapContextSwitch {
+    /// Transfers the resident FP register file between scheduler threads.
+    ///
+    /// # Safety
+    ///
+    /// `old` and `new` must be the outgoing and incoming scheduler FP states,
+    /// and trap entry must have disabled kernel FP access.
+    unsafe fn switch_fp(old: &mut ThreadFpState, new: &ThreadFpState);
+
+    /// Transfers the integer context and kernel stack.
+    ///
+    /// # Safety
+    ///
+    /// `old` and `new` must be the matching scheduler context pair, and the
+    /// caller must be returning through an architecture trap frame.
+    unsafe fn switch_integer(old: &mut Context, new: &Context);
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StackError {
@@ -54,6 +87,15 @@ pub struct KernelStack {
     base: VirtualAddress,
     size: usize,
     unmap: Option<UnmapKernelStackPage>,
+}
+
+struct KernelStackBuild {
+    pages: ManuallyDrop<PageRun>,
+    slot: ManuallyDrop<KernelStackSlot>,
+    base: VirtualAddress,
+    mapped_pages: usize,
+    unmap: UnmapKernelStackPage,
+    armed: bool,
 }
 
 struct StackSlots {
@@ -112,6 +154,56 @@ impl Drop for KernelStackSlot {
     }
 }
 
+impl KernelStackBuild {
+    fn new(
+        pages: PageRun,
+        slot: KernelStackSlot,
+        base: VirtualAddress,
+        unmap: UnmapKernelStackPage,
+    ) -> Self {
+        Self {
+            pages: ManuallyDrop::new(pages),
+            slot: ManuallyDrop::new(slot),
+            base,
+            mapped_pages: 0,
+            unmap,
+            armed: true,
+        }
+    }
+
+    fn finish(mut self) -> KernelStack {
+        debug_assert_eq!(self.mapped_pages, KERNEL_STACK_PAGES);
+        self.armed = false;
+        // SAFETY: Disarming the build guard prevents its `Drop` implementation
+        // from touching either value after ownership moves to `KernelStack`.
+        let pages = unsafe { ManuallyDrop::take(&mut self.pages) };
+        // SAFETY: The guard is disarmed and this slot is moved exactly once.
+        let slot = unsafe { ManuallyDrop::take(&mut self.slot) };
+        KernelStack {
+            pages: ManuallyDrop::new(pages),
+            slot: ManuallyDrop::new(Some(slot)),
+            base: self.base,
+            size: KERNEL_STACK_SIZE,
+            unmap: Some(self.unmap),
+        }
+    }
+}
+
+impl Drop for KernelStackBuild {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        unmap_stack_mapping_strict(self.base, self.mapped_pages, self.unmap);
+        // SAFETY: Strict unmapping removed every virtual alias. If it panics,
+        // these lines are not reached and `ManuallyDrop` deliberately leaks
+        // both resources instead of allowing stale mappings to be reused.
+        unsafe { ManuallyDrop::drop(&mut self.pages) };
+        // SAFETY: The slot is released exactly once after all aliases are gone.
+        unsafe { ManuallyDrop::drop(&mut self.slot) };
+    }
+}
+
 impl KernelStack {
     pub fn create_mapped(
         stack_region_base: KernelStackRegionBase,
@@ -119,9 +211,6 @@ impl KernelStack {
         unmap_page: UnmapKernelStackPage,
     ) -> Result<Self, StackError> {
         let slot = KernelStackSlot::alloc().ok_or(StackError::RegionExhausted)?;
-
-        let pages = pmm::alloc_contiguous(KERNEL_STACK_PAGES, PAGE_ALIGNMENT_LOG2)
-            .ok_or(StackError::OutOfMemory)?;
         let base = stack_region_base()
             .checked_add(
                 slot.index()
@@ -130,30 +219,25 @@ impl KernelStack {
                     .ok_or(StackError::RegionExhausted)?,
             )
             .ok_or(StackError::RegionExhausted)?;
+        let pages = pmm::alloc_contiguous(KERNEL_STACK_PAGES, PAGE_ALIGNMENT_LOG2)
+            .ok_or(StackError::OutOfMemory)?;
+        let mut build = KernelStackBuild::new(pages, slot, base, unmap_page);
 
-        let mut mapped_pages = 0usize;
-        while mapped_pages < KERNEL_STACK_PAGES {
-            let Some(physical) = pages.physical_address(mapped_pages) else {
-                rollback_stack_mapping_best_effort(base, mapped_pages, unmap_page);
+        while build.mapped_pages < KERNEL_STACK_PAGES {
+            let index = build.mapped_pages;
+            let Some(physical) = build.pages.physical_address(index) else {
                 return Err(StackError::AddressNotMapped);
             };
             let virtual_address = base
-                .checked_add(mapped_pages * PAGE_SIZE)
+                .checked_add(index * PAGE_SIZE)
                 .ok_or(StackError::RegionExhausted)?;
             if let Err(error) = map_page(virtual_address, physical) {
-                rollback_stack_mapping_best_effort(base, mapped_pages, unmap_page);
                 return Err(StackError::Map(error));
             }
-            mapped_pages += 1;
+            build.mapped_pages += 1;
         }
 
-        Ok(Self {
-            pages: ManuallyDrop::new(pages),
-            slot: ManuallyDrop::new(Some(slot)),
-            base,
-            size: KERNEL_STACK_SIZE,
-            unmap: Some(unmap_page),
-        })
+        Ok(build.finish())
     }
 
     pub fn boot_probe(
@@ -204,20 +288,6 @@ impl Drop for KernelStack {
     }
 }
 
-fn rollback_stack_mapping_best_effort(
-    base: VirtualAddress,
-    mapped_pages: usize,
-    unmap_page: UnmapKernelStackPage,
-) {
-    let mut index = mapped_pages;
-    while index > 0 {
-        index -= 1;
-        if let Some(virtual_address) = base.checked_add(index * PAGE_SIZE) {
-            let _ = unmap_page(virtual_address);
-        }
-    }
-}
-
 fn unmap_stack_mapping_strict(
     base: VirtualAddress,
     mapped_pages: usize,
@@ -245,7 +315,6 @@ pub enum ScheduleError {
     NotInitialized,
     NoCurrentThread,
     UnknownThread,
-    ZeroWeight,
 }
 
 #[repr(transparent)]
@@ -409,9 +478,18 @@ struct Thread {
     idle: bool,
 }
 
+// TODO(smp): replace context-pair extraction with a per-CPU scheduler ownership
+// protocol before another CPU can mutate thread slots after the lock is released.
 struct ContextPair {
     old: *mut Context,
     new: *const Context,
+}
+
+struct TrapContextPair {
+    old: *mut Context,
+    new: *const Context,
+    old_fp: *mut ThreadFpState,
+    new_fp: *const ThreadFpState,
 }
 
 impl Thread {
@@ -613,9 +691,9 @@ impl<const THREADS: usize, const PROCESSES: usize> Scheduler<THREADS, PROCESSES>
         self.threads.iter().flatten().find(|thread| thread.id == id)
     }
 
-    fn tick(&mut self, elapsed_ticks: u64) -> Result<(), ScheduleError> {
+    fn tick(&mut self, elapsed_ticks: u64) -> Result<bool, ScheduleError> {
         if elapsed_ticks == 0 {
-            return Ok(());
+            return Ok(self.need_reschedule);
         }
         if !self.initialized {
             return Err(ScheduleError::NotInitialized);
@@ -625,14 +703,10 @@ impl<const THREADS: usize, const PROCESSES: usize> Scheduler<THREADS, PROCESSES>
             let thread = self
                 .thread_mut(current)
                 .ok_or(ScheduleError::UnknownThread)?;
-            let elapsed_ns = u128::from(SCHED_TIME_SLICE_NS) * u128::from(elapsed_ticks);
-            let weight = u128::from(thread.weight.get());
-            if weight == 0 {
-                return Err(ScheduleError::ZeroWeight);
+            if !thread.idle {
+                let delta = scaled_vruntime_delta(elapsed_ticks, thread.weight);
+                thread.virtual_runtime = thread.virtual_runtime.saturating_add(delta);
             }
-            let scaled = elapsed_ns * u128::from(SCHED_BASE_WEIGHT) / weight;
-            let delta = core::cmp::min(scaled, u128::from(u64::MAX)) as u64;
-            thread.virtual_runtime = thread.virtual_runtime.saturating_add(delta);
             (thread.id, thread.virtual_runtime, thread.idle)
         };
         self.trace(TraceKind::SchedTick, current_id, 0, current_runtime);
@@ -642,7 +716,7 @@ impl<const THREADS: usize, const PROCESSES: usize> Scheduler<THREADS, PROCESSES>
             .map(|thread| (thread.id, thread.virtual_runtime))
         {
             let (_, best_runtime) = best;
-            if current_runtime > best_runtime {
+            if is_idle || current_runtime > best_runtime {
                 self.need_reschedule = true;
             }
             let current_min = if is_idle { u64::MAX } else { current_runtime };
@@ -654,7 +728,7 @@ impl<const THREADS: usize, const PROCESSES: usize> Scheduler<THREADS, PROCESSES>
             self.min_virtual_runtime = current_runtime;
         }
 
-        Ok(())
+        Ok(self.need_reschedule)
     }
 
     #[cfg(test)]
@@ -684,14 +758,6 @@ impl<const THREADS: usize, const PROCESSES: usize> Scheduler<THREADS, PROCESSES>
         Ok(())
     }
 
-    fn maybe_reschedule(&mut self) -> Option<Switch> {
-        if !self.need_reschedule {
-            return None;
-        }
-        self.need_reschedule = false;
-        self.schedule()
-    }
-
     fn trace_len(&self) -> usize {
         self.trace.len()
     }
@@ -701,7 +767,7 @@ impl<const THREADS: usize, const PROCESSES: usize> Scheduler<THREADS, PROCESSES>
             return Err(ScheduleError::NotInitialized);
         }
         let idle = self.idle.ok_or(ScheduleError::NotInitialized)?;
-        let old = &mut self.boot_context as *mut Context;
+        let old = &raw mut self.boot_context;
         let new = {
             let Some(idle_thread) = self.thread_mut(idle) else {
                 return Err(ScheduleError::UnknownThread);
@@ -710,13 +776,13 @@ impl<const THREADS: usize, const PROCESSES: usize> Scheduler<THREADS, PROCESSES>
                 return Err(ScheduleError::UnknownThread);
             }
             idle_thread.state = ThreadState::Running;
-            &idle_thread.context as *const Context
+            &raw const idle_thread.context
         };
         self.current = Some(idle);
         Ok(ContextPair { old, new })
     }
 
-    fn preempt_contexts(&mut self) -> Result<Option<ContextPair>, ScheduleError> {
+    fn preempt_contexts(&mut self) -> Result<Option<TrapContextPair>, ScheduleError> {
         if !self.initialized {
             return Err(ScheduleError::NotInitialized);
         }
@@ -733,19 +799,24 @@ impl<const THREADS: usize, const PROCESSES: usize> Scheduler<THREADS, PROCESSES>
             u64::from(switch.next.get()),
             0,
         );
-        let old = {
+        let (old, old_fp) = {
             let previous = self
                 .thread_mut(switch.previous)
                 .ok_or(ScheduleError::UnknownThread)?;
-            &mut previous.context as *mut Context
+            (&raw mut previous.context, &raw mut previous.fp)
         };
-        let new = {
+        let (new, new_fp) = {
             let next = self
                 .thread(switch.next)
                 .ok_or(ScheduleError::UnknownThread)?;
-            &next.context as *const Context
+            (&raw const next.context, &raw const next.fp)
         };
-        Ok(Some(ContextPair { old, new }))
+        Ok(Some(TrapContextPair {
+            old,
+            new,
+            old_fp,
+            new_fp,
+        }))
     }
 
     fn schedule(&mut self) -> Option<Switch> {
@@ -833,33 +904,53 @@ pub fn enter_idle(switch_context: ContextSwitch) -> Result<(), ScheduleError> {
     Ok(())
 }
 
-pub fn preempt_from_trap(switch_context: ContextSwitch) -> Result<(), ScheduleError> {
+pub fn preempt_from_trap<S: TrapContextSwitch>() -> Result<(), ScheduleError> {
+    // TODO(synchronous-ipc): reuse this paired FP/integer transfer for every
+    // blocking or yielding switch from a syscall trap. No path may switch
+    // stacks while leaving FP ownership attached to the outgoing thread.
     let Some(pair) = ({ SCHEDULER.lock().preempt_contexts()? }) else {
         return Ok(());
     };
+    {
+        // SAFETY: A real scheduler switch returns distinct outgoing and incoming
+        // threads. Trap entry disabled hardware FP access, and interrupts remain
+        // disabled while the architecture transfers their resident FP state.
+        let old_fp = unsafe { &mut *pair.old_fp };
+        // SAFETY: The selected thread remains stored in the scheduler while its
+        // saved FP image is read for the incoming CPU context.
+        let new_fp = unsafe { &*pair.new_fp };
+        // SAFETY: The scheduler proved that these FP states belong to the same
+        // outgoing and incoming threads as the context pair below.
+        // TODO(process-creation): add a QEMU regression that alternates
+        // distinct FP values between two user threads on both architectures.
+        unsafe { S::switch_fp(old_fp, new_fp) };
+    }
     // SAFETY: The scheduler returned the outgoing thread context it owns.
     let old = unsafe { &mut *pair.old };
     // SAFETY: The scheduler returned the selected runnable thread context.
     let new = unsafe { &*pair.new };
     // SAFETY: The trap frame remains on the outgoing thread's stack while this
     // software context switch saves callee-saved state and changes stacks.
-    unsafe { switch_context(old, new) };
+    unsafe { S::switch_integer(old, new) };
     Ok(())
 }
 
-pub fn tick(elapsed_ticks: u64) {
-    let _ = SCHEDULER.lock().tick(elapsed_ticks);
-}
-
-pub fn maybe_reschedule() -> Option<Switch> {
-    SCHEDULER.lock().maybe_reschedule()
+pub fn tick(elapsed_ticks: u64) -> Result<bool, ScheduleError> {
+    SCHEDULER.lock().tick(elapsed_ticks)
 }
 
 pub fn current() -> Option<ThreadSnapshot> {
     SCHEDULER.lock().current()
 }
 
-pub fn enable_current_user_fp_state() -> Result<ThreadFpState, ScheduleError> {
+/// Enables the current thread's saved FP image and inspects it in place.
+///
+/// The callback runs while the scheduler lock is held and must not re-enter
+/// task APIs. Keeping the state borrowed avoids copying the architecture's
+/// entire register image on the first-use trap path.
+pub fn enable_current_user_fp_state(
+    activate: impl FnOnce(&ThreadFpState),
+) -> Result<(), ScheduleError> {
     let mut scheduler = SCHEDULER.lock();
     let current = scheduler.current.ok_or(ScheduleError::NoCurrentThread)?;
     let thread = scheduler
@@ -868,19 +959,24 @@ pub fn enable_current_user_fp_state() -> Result<ThreadFpState, ScheduleError> {
     // The scheduler's current ID must resolve to that same thread entry.
     debug_assert_eq!(thread.id, current);
     thread.fp.enable_user_state();
-    Ok(thread.fp)
+    activate(&thread.fp);
+    Ok(())
 }
 
-pub fn save_current_user_fp_state(state: UserFpState) -> Result<(), ScheduleError> {
-    let mut scheduler = SCHEDULER.lock();
+/// Inspects the current thread's FP state without letting its reference escape
+/// the scheduler lock.
+pub fn with_current_user_fp_state<R>(
+    inspect: impl FnOnce(&ThreadFpState) -> R,
+) -> Result<R, ScheduleError> {
+    let scheduler = SCHEDULER.lock();
     let current = scheduler.current.ok_or(ScheduleError::NoCurrentThread)?;
     let thread = scheduler
-        .thread_mut(current)
+        .threads
+        .iter()
+        .flatten()
+        .find(|thread| thread.id == current)
         .ok_or(ScheduleError::UnknownThread)?;
-    // The scheduler's current ID must resolve to that same thread entry.
-    debug_assert_eq!(thread.id, current);
-    thread.fp.save_user_state(state);
-    Ok(())
+    Ok(inspect(&thread.fp))
 }
 
 /// Returns the initial kernel process while bootstrapping kernel-owned threads.
@@ -975,6 +1071,51 @@ mod tests {
             scheduler.thread(high).unwrap().virtual_runtime,
             SCHED_TIME_SLICE_NS / 2
         );
+    }
+
+    #[test]
+    fn default_weight_uses_unscaled_elapsed_time() {
+        let weight = NonZeroU32::new(SCHED_BASE_WEIGHT).unwrap();
+
+        assert_eq!(scaled_vruntime_delta(3, weight), SCHED_TIME_SLICE_NS * 3);
+    }
+
+    #[test]
+    fn idle_tick_requests_a_switch_without_charging_idle_runtime() {
+        let mut scheduler = Scheduler::<4, 2>::new();
+        scheduler.init().unwrap();
+        let idle = scheduler.idle.unwrap();
+        let process = scheduler.create_process().unwrap();
+        scheduler
+            .create_thread(process, NonZeroU32::new(SCHED_BASE_WEIGHT).unwrap(), false)
+            .unwrap();
+
+        assert!(scheduler.tick(1).unwrap());
+        assert_eq!(scheduler.thread(idle).unwrap().virtual_runtime, 0);
+    }
+
+    #[test]
+    fn preemption_pairs_fp_state_with_the_same_threads_as_integer_contexts() {
+        let mut scheduler = Scheduler::<4, 2>::new();
+        scheduler.init().unwrap();
+        let idle = scheduler.idle.unwrap();
+        let process = scheduler.create_process().unwrap();
+        let next = scheduler
+            .create_thread(process, NonZeroU32::new(SCHED_BASE_WEIGHT).unwrap(), false)
+            .unwrap();
+        scheduler.thread_mut(next).unwrap().fp.enable_user_state();
+        let expected_old_fp = scheduler.thread(idle).unwrap().fp;
+        let expected_new_fp = scheduler.thread(next).unwrap().fp;
+
+        scheduler.need_reschedule = true;
+        let pair = scheduler.preempt_contexts().unwrap().unwrap();
+
+        // SAFETY: The pair points into `scheduler`; it has not been mutated or
+        // moved since `preempt_contexts` returned.
+        assert_eq!(unsafe { *pair.old_fp }, expected_old_fp);
+        // SAFETY: The same scheduler ownership and lifetime argument applies.
+        assert_eq!(unsafe { *pair.new_fp }, expected_new_fp);
+        assert_eq!(scheduler.current, Some(next));
     }
 
     #[test]

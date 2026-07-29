@@ -17,6 +17,7 @@ use crate::{
 const INVALID_ARENA_INDEX: u8 = u8::MAX;
 const INVALID_PAGE_INDEX: u32 = u32::MAX;
 const KERNEL_RESERVE_PAD: usize = 2 * 1024 * 1024;
+const PAGE_ALIGNMENT_LOG2: u8 = PAGE_SIZE.trailing_zeros() as u8;
 const PAGE_POISON: u8 = 0xde;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -117,7 +118,7 @@ impl Arena {
         pages: PageStorage::empty(),
     };
 
-    fn physical_to_page(self, physical: PhysicalAddress) -> Option<PageHandle> {
+    fn physical_to_page(&self, physical: PhysicalAddress) -> Option<PageHandle> {
         if !physical.is_page_aligned() || physical < self.base {
             return None;
         }
@@ -132,7 +133,7 @@ impl Arena {
         ))
     }
 
-    fn page_to_physical(self, page: PageHandle) -> Option<PhysicalAddress> {
+    fn page_to_physical(&self, page: PageHandle) -> Option<PhysicalAddress> {
         if page.arena_index != self.pages.arena_index {
             return None;
         }
@@ -143,40 +144,8 @@ impl Arena {
         self.base.checked_add(index.checked_mul(PAGE_SIZE)?)
     }
 
-    fn contains_page(self, page: PageHandle) -> bool {
+    fn contains_page(&self, page: PageHandle) -> bool {
         page.arena_index == self.pages.arena_index && (page.page_index as usize) < self.page_count
-    }
-
-    /// # Safety
-    ///
-    /// Caller must hold the PMM lock and must not create another live metadata
-    /// reference for the same page while the returned reference is live.
-    unsafe fn page_mut(self, page: PageHandle) -> Option<&'static mut Page> {
-        if !self.contains_page(page) {
-            return None;
-        }
-        // SAFETY: The PMM lock gives exclusive metadata access. `contains_page`
-        // proved that this handle indexes this arena's metadata slice.
-        let ptr = unsafe { self.pages.ptr.add(page.page_index as usize) };
-        // SAFETY: `ptr` points at the checked metadata slot. The caller holds
-        // exclusive mutable access.
-        Some(unsafe { &mut *ptr })
-    }
-
-    /// # Safety
-    ///
-    /// Caller must ensure there is no concurrent mutable metadata access for
-    /// this page while the returned reference is live.
-    unsafe fn page_ref(self, page: PageHandle) -> Option<&'static Page> {
-        if !self.contains_page(page) {
-            return None;
-        }
-        // SAFETY: `contains_page` proved that this handle indexes this arena's
-        // metadata slice.
-        let ptr = unsafe { self.pages.ptr.add(page.page_index as usize) };
-        // SAFETY: `ptr` points at the checked metadata slot. The caller keeps
-        // mutable access away from this reference.
-        Some(unsafe { &*ptr })
     }
 }
 
@@ -200,12 +169,17 @@ impl PageStorage {
     ///
     /// Caller must own the whole metadata range and must ensure it is mapped,
     /// initialized only once, and not aliased by any other slice.
-    unsafe fn as_mut_slice(self) -> &'static mut [Page] {
+    unsafe fn as_mut_slice(&mut self) -> &mut [Page] {
         // SAFETY: Arena initialization owns this metadata range inside the
         // physmap. `len` is the number of `Page` entries reserved for it.
         unsafe { core::slice::from_raw_parts_mut(self.ptr, self.len) }
     }
 }
+
+// SAFETY: Moving this private descriptor does not move or access the metadata
+// it points to. Safe metadata access is exposed only through a borrowed
+// `PhysicalMemoryManager`, and initialization through `as_mut_slice` is unsafe.
+unsafe impl Send for PageStorage {}
 
 #[derive(Clone, Copy)]
 struct ReservedRange {
@@ -280,11 +254,6 @@ struct PhysicalMemoryManager {
     physical_to_virtual: PhysicalToVirtual,
     initialized: bool,
 }
-
-// SAFETY: PMM metadata pointers refer to arena metadata owned by the manager.
-// Access to the manager is serialized by `Locked`, so moving the manager between
-// CPUs does not permit unsynchronized metadata access.
-unsafe impl Send for PhysicalMemoryManager {}
 
 impl PhysicalMemoryManager {
     const fn empty() -> Self {
@@ -461,7 +430,7 @@ impl PhysicalMemoryManager {
         let metadata_virtual =
             physical_to_virtual(metadata_physical).ok_or(InitError::AddressNotMapped)?;
 
-        let storage = PageStorage {
+        let mut storage = PageStorage {
             ptr: metadata_virtual.get() as *mut Page,
             len: total_pages,
             arena_index,
@@ -562,10 +531,9 @@ impl PhysicalMemoryManager {
                 let end_index = (end.get() - arena_start.get()).div_ceil(PAGE_SIZE);
                 for index in start_index..core::cmp::min(end_index, arena.page_count) {
                     let handle = PageHandle::new(arena.pages.arena_index, index as u32);
-                    // SAFETY: The computed index is within `page_count`.
-                    if let Some(page) = unsafe { arena.page_mut(handle) } {
-                        page.state = PageState::Reserved;
-                    }
+                    self.page_mut(handle)
+                        .expect("pmm: reserved-range handle has metadata")
+                        .state = PageState::Reserved;
                 }
             }
         }
@@ -580,22 +548,25 @@ impl PhysicalMemoryManager {
             let arena = self.arenas[arena_index];
             for index in 0..arena.page_count {
                 let handle = PageHandle::new(arena.pages.arena_index, index as u32);
-                // SAFETY: The loop index is within `page_count`.
-                let Some(page) = (unsafe { arena.page_mut(handle) }) else {
-                    continue;
-                };
-                if page.state == PageState::Reserved {
-                    continue;
-                }
-                if self.is_reserved(
-                    arena
-                        .page_to_physical(handle)
-                        .unwrap_or(PhysicalAddress::ZERO),
-                ) {
-                    page.state = PageState::Reserved;
+                let page_state = self
+                    .page(handle)
+                    .expect("pmm: arena loop handle has metadata")
+                    .state;
+                if page_state == PageState::Reserved {
                     continue;
                 }
-                page.state = PageState::Free;
+                let physical = arena
+                    .page_to_physical(handle)
+                    .expect("pmm: arena loop handle has a physical address");
+                if self.is_reserved(physical) {
+                    self.page_mut(handle)
+                        .expect("pmm: reserved page has metadata")
+                        .state = PageState::Reserved;
+                    continue;
+                }
+                self.page_mut(handle)
+                    .expect("pmm: free page has metadata")
+                    .state = PageState::Free;
                 self.push_free(handle);
                 self.free_pages += 1;
             }
@@ -610,20 +581,18 @@ impl PhysicalMemoryManager {
 
     fn alloc_page(&mut self) -> Option<PageHandle> {
         let page = self.pop_free()?;
-        let arena = self.arena_for(page)?;
-        // SAFETY: Free-list handles are inserted only after arena bounds checks.
-        let metadata = unsafe { arena.page_mut(page) }?;
+        let metadata = self
+            .page_mut(page)
+            .expect("pmm: free-list head has metadata");
         metadata.state = PageState::Allocated;
         self.free_pages -= 1;
         Some(page)
     }
 
     fn free_page(&mut self, page: PageHandle) {
-        let arena = self
-            .arena_for(page)
+        let metadata = self
+            .page_mut(page)
             .unwrap_or_else(|| panic!("pmm: address not in any managed arena"));
-        // SAFETY: `arena_for` validated the handle against its arena.
-        let metadata = unsafe { arena.page_mut(page) }.unwrap();
         match metadata.state {
             PageState::Free => panic!("pmm: double-free detected"),
             PageState::Reserved => panic!("pmm: cannot free reserved page"),
@@ -666,6 +635,13 @@ impl PhysicalMemoryManager {
         if count == 0 || alignment_log2 >= usize::BITS as u8 {
             return None;
         }
+        if count == 1 && alignment_log2 <= PAGE_ALIGNMENT_LOG2 {
+            let head = self.alloc_page()?;
+            self.page_mut(head)
+                .expect("pmm: allocated page has metadata")
+                .contiguous_head = true;
+            return Some(PageRun { head, count });
+        }
         let alignment = 1usize << alignment_log2;
         let alignment = core::cmp::max(alignment, PAGE_SIZE);
 
@@ -678,15 +654,18 @@ impl PhysicalMemoryManager {
             let mut run_length = 0usize;
             for index in 0..arena.page_count {
                 let handle = PageHandle::new(arena.pages.arena_index, index as u32);
-                // SAFETY: The loop index is within `page_count`.
-                let page = unsafe { arena.page_ref(handle) }?;
+                let page = self
+                    .page(handle)
+                    .expect("pmm: contiguous scan handle has metadata");
                 if page.state != PageState::Free {
                     run_start = None;
                     run_length = 0;
                     continue;
                 }
                 if run_start.is_none() {
-                    let physical = arena.page_to_physical(handle)?;
+                    let physical = arena
+                        .page_to_physical(handle)
+                        .expect("pmm: contiguous scan handle has a physical address");
                     if physical.get() & (alignment - 1) != 0 {
                         continue;
                     }
@@ -696,17 +675,19 @@ impl PhysicalMemoryManager {
                     run_length += 1;
                 }
                 if run_length >= count {
-                    let start = run_start?;
+                    let start = run_start.expect("pmm: non-empty run has a start");
                     for page_index in start..start + count {
                         let handle = PageHandle::new(arena.pages.arena_index, page_index as u32);
                         self.remove_free(handle);
-                        // SAFETY: The run was checked as free and in-bounds.
-                        let metadata = unsafe { arena.page_mut(handle) }?;
+                        let metadata = self
+                            .page_mut(handle)
+                            .expect("pmm: allocated run page has metadata");
                         metadata.state = PageState::Allocated;
                     }
                     let head = PageHandle::new(arena.pages.arena_index, start as u32);
-                    // SAFETY: `head` is the first page in the allocated run.
-                    unsafe { arena.page_mut(head) }?.contiguous_head = true;
+                    self.page_mut(head)
+                        .expect("pmm: allocated run head has metadata")
+                        .contiguous_head = true;
                     self.free_pages -= count;
                     return Some(PageRun { head, count });
                 }
@@ -726,9 +707,9 @@ impl PhysicalMemoryManager {
         let arena = self
             .arena_for(head)
             .ok_or(FreeContiguousError::AddressNotInArena)?;
-        // SAFETY: `arena_for` checked that `head` belongs to this arena.
-        let head_page =
-            unsafe { arena.page_ref(head) }.ok_or(FreeContiguousError::AddressNotInArena)?;
+        let head_page = self
+            .page(head)
+            .ok_or(FreeContiguousError::AddressNotInArena)?;
         if !head_page.contiguous_head {
             return Err(FreeContiguousError::NotContiguousHead);
         }
@@ -741,9 +722,9 @@ impl PhysicalMemoryManager {
         }
         for index in start..end {
             let handle = PageHandle::new(head.arena_index, index as u32);
-            // SAFETY: The range was checked against `arena.page_count`.
-            let page =
-                unsafe { arena.page_ref(handle) }.ok_or(FreeContiguousError::AddressNotInArena)?;
+            let page = self
+                .page(handle)
+                .ok_or(FreeContiguousError::AddressNotInArena)?;
             if page.state != PageState::Allocated {
                 return Err(FreeContiguousError::NotAllocated);
             }
@@ -751,8 +732,9 @@ impl PhysicalMemoryManager {
                 return Err(FreeContiguousError::InvalidPageState);
             }
         }
-        // SAFETY: The head was checked above and remains in the same arena.
-        unsafe { arena.page_mut(head) }.unwrap().contiguous_head = false;
+        self.page_mut(head)
+            .expect("pmm: contiguous head has metadata")
+            .contiguous_head = false;
         for index in start..end {
             self.free_page(PageHandle::new(head.arena_index, index as u32));
         }
@@ -772,16 +754,34 @@ impl PhysicalMemoryManager {
             .find(|arena| arena.physical_to_page(physical).is_some())
     }
 
+    fn page(&self, handle: PageHandle) -> Option<&Page> {
+        let arena = self.arena_for(handle)?;
+        // SAFETY: `arena_for` bounds-checked the handle. The returned reference
+        // is tied to the shared manager borrow, so safe code cannot overlap it
+        // with mutable metadata access through this manager.
+        Some(unsafe { &*arena.pages.ptr.add(handle.page_index as usize) })
+    }
+
+    #[allow(
+        clippy::needless_pass_by_ref_mut,
+        reason = "the exclusive manager borrow is the aliasing proof for the returned metadata"
+    )]
+    fn page_mut(&mut self, handle: PageHandle) -> Option<&mut Page> {
+        let arena = self.arena_for(handle)?;
+        // SAFETY: `arena_for` bounds-checked the handle. The returned reference
+        // is tied to the exclusive manager borrow, which prevents safe aliases.
+        Some(unsafe { &mut *arena.pages.ptr.add(handle.page_index as usize) })
+    }
+
     fn push_free(&mut self, handle: PageHandle) {
-        let arena = self.arena_for(handle).expect("pmm: free page has arena");
-        // SAFETY: The caller is mutating the free list while holding the PMM lock.
-        let page = unsafe { arena.page_mut(handle) }.expect("pmm: free page has metadata");
-        page.previous_free = self.free_tail;
-        page.next_free = PageHandle::NONE;
-        if self.free_tail.is_some() {
-            let tail_arena = self.arena_for(self.free_tail).expect("pmm: tail has arena");
-            // SAFETY: The tail handle is currently linked in the free list.
-            unsafe { tail_arena.page_mut(self.free_tail) }
+        let tail = self.free_tail;
+        {
+            let page = self.page_mut(handle).expect("pmm: free page has metadata");
+            page.previous_free = tail;
+            page.next_free = PageHandle::NONE;
+        }
+        if tail.is_some() {
+            self.page_mut(tail)
                 .expect("pmm: tail has metadata")
                 .next_free = handle;
         } else {
@@ -800,31 +800,27 @@ impl PhysicalMemoryManager {
     }
 
     fn remove_free(&mut self, handle: PageHandle) {
-        let arena = self.arena_for(handle).expect("pmm: free page has arena");
-        // SAFETY: The handle is currently linked in the free list.
-        let page = unsafe { arena.page_mut(handle) }.expect("pmm: free page has metadata");
-        let previous = page.previous_free;
-        let next = page.next_free;
+        let (previous, next) = {
+            let page = self.page_mut(handle).expect("pmm: free page has metadata");
+            let links = (page.previous_free, page.next_free);
+            page.previous_free = PageHandle::NONE;
+            page.next_free = PageHandle::NONE;
+            links
+        };
         if previous.is_some() {
-            let previous_arena = self.arena_for(previous).expect("pmm: previous has arena");
-            // SAFETY: The previous handle is linked to this free node.
-            unsafe { previous_arena.page_mut(previous) }
+            self.page_mut(previous)
                 .expect("pmm: previous has metadata")
                 .next_free = next;
         } else {
             self.free_head = next;
         }
         if next.is_some() {
-            let next_arena = self.arena_for(next).expect("pmm: next has arena");
-            // SAFETY: The next handle is linked to this free node.
-            unsafe { next_arena.page_mut(next) }
+            self.page_mut(next)
                 .expect("pmm: next has metadata")
                 .previous_free = previous;
         } else {
             self.free_tail = previous;
         }
-        page.previous_free = PageHandle::NONE;
-        page.next_free = PageHandle::NONE;
     }
 }
 
@@ -843,10 +839,10 @@ impl AllocatedPage {
     /// Page tables and slab pages outlive the immediate allocation scope. They
     /// are still PMM-owned memory, but the owner is recorded by that subsystem
     /// rather than this RAII value.
-    pub fn into_physical(self) -> Option<PhysicalAddress> {
-        let physical = self.physical_address();
-        // AllocatedPage handles should always resolve before ownership transfer.
-        debug_assert!(physical.is_some());
+    pub fn into_physical(self) -> PhysicalAddress {
+        let physical = self
+            .physical_address()
+            .expect("pmm: owned page handle has no physical address");
         let _this = ManuallyDrop::new(self);
         physical
     }
@@ -904,7 +900,7 @@ impl Drop for PageRun {
         if self.count == 0 {
             return;
         }
-        let _ = free_contiguous_parts(self.head, self.count);
+        free_contiguous_parts(self.head, self.count).expect("pmm: owned page run failed to free");
         self.head = PageHandle::NONE;
         self.count = 0;
     }
@@ -1053,14 +1049,48 @@ mod tests {
         let run = pmm.alloc_contiguous(3, 12).unwrap();
         assert_eq!(run.count(), 3);
         assert_eq!(run.head_for_test(), PageHandle::new(0, 0));
-        // SAFETY: The test owns `pmm` and no mutable metadata reference is live.
-        let head_page = unsafe { pmm.arenas[0].page_ref(run.head_for_test()) };
+        let head_page = pmm.page(run.head_for_test());
         assert!(head_page.unwrap().is_contiguous_head());
         let head = run.head_for_test();
         let count = run.count();
         core::mem::forget(run);
         pmm.free_contiguous(head, count).unwrap();
         assert_eq!(pmm.free_pages, 8);
+    }
+
+    #[test]
+    fn single_page_run_uses_free_list_head() {
+        let mut pages = [Page::default(); 3];
+        let storage = PageStorage {
+            ptr: pages.as_mut_ptr(),
+            len: pages.len(),
+            arena_index: 0,
+        };
+        let mut pmm = PhysicalMemoryManager::empty();
+        pmm.arenas[0] = Arena {
+            base: PhysicalAddress::new(0x1000),
+            page_count: 3,
+            pages: storage,
+        };
+        pmm.arena_count = 1;
+        pmm.build_free_list();
+        pmm.initialized = true;
+
+        let first = pmm.alloc_page().unwrap();
+        let second = pmm.alloc_page().unwrap();
+        pmm.free_page(second);
+        pmm.free_page(first);
+
+        let run = pmm
+            .alloc_contiguous(1, PAGE_ALIGNMENT_LOG2)
+            .expect("single-page run is available");
+        assert_eq!(run.head_for_test(), PageHandle::new(0, 2));
+        assert!(pmm.page(run.head_for_test()).unwrap().is_contiguous_head());
+
+        let head = run.head_for_test();
+        core::mem::forget(run);
+        pmm.free_contiguous(head, 1).unwrap();
+        assert_eq!(pmm.free_pages, 3);
     }
 
     #[cfg(debug_assertions)]

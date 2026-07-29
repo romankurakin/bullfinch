@@ -75,6 +75,12 @@ impl ThreadFpState {
         self.valid = true;
         self.user_enabled = true;
     }
+
+    pub fn save_user_state_with(&mut self, save: impl FnOnce(&mut UserFpState)) {
+        save(&mut self.state);
+        self.valid = true;
+        self.user_enabled = true;
+    }
 }
 
 impl Default for ThreadFpState {
@@ -114,5 +120,8 @@ mod tests {
         state.save_user_state(UserFpState::zeroed());
         assert_eq!(state.user_state(), Some(&UserFpState::zeroed()));
         assert!(state.user_enabled());
+
+        state.save_user_state_with(|saved| *saved = UserFpState::zeroed());
+        assert_eq!(state.user_state(), Some(&UserFpState::zeroed()));
     }
 }

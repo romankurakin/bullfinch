@@ -622,9 +622,10 @@ pub unsafe fn unmap_page(
     }
     let physical = slot.output_address().ok_or(UnmapError::NotMapped)?;
     *slot = PageTableEntry::INVALID;
-    // Kernel mappings are global. Use the full fence until user/non-global
-    // address spaces can choose a narrower scope by PTE.
-    TranslationLookasideBuffer::flush_all();
+    // TODO(smp): broadcast address-scoped TLB shootdowns before multiple harts
+    // can observe this shared kernel page table. `rs2=x0` covers global mappings,
+    // but the fence below invalidates only the local hart.
+    TranslationLookasideBuffer::flush_address(virtual_address);
     Ok(physical)
 }
 

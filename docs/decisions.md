@@ -135,12 +135,23 @@ endpoint OR bound notification—2 primitives instead of 3.
 ## Rung 9: FP/SIMD State
 
 **Kernel FP/SIMD:** Soft-float kernel targets over kernel-mode FP/SIMD. Kernel
-FP would force every trap frame and context switch to save the FP register
-file; soft-float removes the state to protect, and hardware traps catch
-accidental kernel FP use. Reverts the earlier "EL1 FP/SIMD allowed" choice.
+code stays outside the user-state ownership protocol, and hardware traps turn
+accidental kernel FP use into a visible fault instead of silent corruption.
+Reverts the earlier "EL1 FP/SIMD allowed" choice.
 
-**User FP state:** Architecture-native tracking over one generic model. ARM64
-uses software ownership; RISC-V uses `sstatus.FS`.
+**User FP ownership:** CPU-resident state across traps with eager transfer at
+thread switch over both trap-boundary save/restore and cross-thread lazy
+ownership. This removes register-file traffic from traps without adding a
+per-CPU owner and migration protocol. ARM64 uses software tracking, while
+RISC-V also uses `sstatus.FS` to skip clean saves.
+
+**User FP activation:** First-use trapping over enabling FP for every thread.
+Threads that never execute FP avoid state transfers, and the trap initializes
+registers before exposing them to a new owner.
+
+**User FP storage:** Inline per-thread images over allocation on first use. The
+thread table is already bounded, and avoiding allocation in a trap path is
+worth the fixed 528-byte ARM64 or 272-byte RISC-V image per thread.
 
 **Vector extensions:** No SVE, SME, or RVV over partial support. They have
 separate state models.

@@ -17,6 +17,7 @@ const BACK_POINTER_SIZE: usize = core::mem::size_of::<usize>();
 const MIN_SLABS: usize = 1;
 const MAX_CLASS: usize = 1024;
 const MAX_BITMAP_WORDS: usize = 1;
+#[cfg(debug_assertions)]
 const POISON_FREE: u8 = 0xdd;
 
 type PageAllocFn = fn() -> Option<NonNull<u8>>;
@@ -55,21 +56,30 @@ struct SlabHeader {
     cookie: usize,
     bitmap: [u64; MAX_BITMAP_WORDS],
     free_count: usize,
-    next: *mut SlabHeader,
-    prev: *mut SlabHeader,
+    next: Option<NonNull<SlabHeader>>,
+    prev: Option<NonNull<SlabHeader>>,
     in_partial_list: bool,
 }
+
+const _: () = assert!(
+    core::mem::size_of::<Option<NonNull<SlabHeader>>>() == core::mem::size_of::<*mut SlabHeader>()
+);
 
 struct Pool<T> {
     alloc_page: PageAllocFn,
     free_page: PageFreeFn,
     cookie: usize,
-    current: *mut SlabHeader,
-    partial_head: *mut SlabHeader,
+    current: Option<NonNull<SlabHeader>>,
+    partial_head: Option<NonNull<SlabHeader>>,
     total_allocated: usize,
     slab_count: usize,
     _object: PhantomData<T>,
 }
+
+// SAFETY: Moving a pool transfers its private list heads without moving the
+// slab pages. Every list mutation requires `&mut Pool<T>`, and `T: Send` makes
+// transferring ownership of the pool's typed storage across CPUs sound.
+unsafe impl<T: Send> Send for Pool<T> {}
 
 impl<T> Pool<T> {
     const fn empty() -> Self {
@@ -77,8 +87,8 @@ impl<T> Pool<T> {
             alloc_page: no_page_alloc,
             free_page: no_page_free,
             cookie: 0,
-            current: core::ptr::null_mut(),
-            partial_head: core::ptr::null_mut(),
+            current: None,
+            partial_head: None,
             total_allocated: 0,
             slab_count: 0,
             _object: PhantomData,
@@ -91,7 +101,7 @@ impl<T> Pool<T> {
         seed: usize,
     ) -> Result<Self, PoolInitError> {
         let mut pool = Self::empty();
-        if pool.object_align() > PAGE_SIZE {
+        if Self::object_align() > PAGE_SIZE {
             return Err(PoolInitError::Alignment);
         }
         pool.alloc_page = alloc_page;
@@ -120,7 +130,7 @@ impl<T> Pool<T> {
         }
 
         let slab = self.alloc_new_slab()?;
-        self.current = slab.as_ptr();
+        self.current = Some(slab);
         self.alloc_from_slab(slab)
     }
 
@@ -175,42 +185,53 @@ impl<T> Pool<T> {
 
         let word_index = slot_index / 64;
         let bit_mask = 1u64 << (slot_index % 64);
-        // SAFETY: The slot was bounds-checked against this slab's bitmap.
-        let slab_mut = unsafe { slab.as_ptr().as_mut().unwrap() };
-        if slab_mut.bitmap[word_index] & bit_mask != 0 {
-            return Err(FreeError::DoubleFree);
-        }
+        let max_free = self.objects_per_slab() - 1;
+        let (was_full, became_empty, page_addr) = {
+            // SAFETY: The slot was bounds-checked and the allocator lock gives
+            // this pool exclusive access to its slab metadata.
+            let slab_mut = unsafe { &mut *slab.as_ptr() };
+            if slab_mut.bitmap[word_index] & bit_mask != 0 {
+                return Err(FreeError::DoubleFree);
+            }
 
-        // SAFETY: The object belongs to this slab and is currently allocated.
-        unsafe {
-            core::ptr::write_bytes(
-                object.as_ptr().cast::<u8>(),
-                POISON_FREE,
-                self.object_size(),
-            );
-        }
+            #[cfg(debug_assertions)]
+            {
+                // SAFETY: The object belongs to this slab and is currently allocated.
+                unsafe {
+                    core::ptr::write_bytes(
+                        object.as_ptr().cast::<u8>(),
+                        POISON_FREE,
+                        self.object_size(),
+                    );
+                }
+            }
 
-        let was_full = slab_mut.free_count == 0;
-        slab_mut.bitmap[word_index] |= bit_mask;
-        slab_mut.free_count += 1;
+            let was_full = slab_mut.free_count == 0;
+            slab_mut.bitmap[word_index] |= bit_mask;
+            slab_mut.free_count += 1;
+            (
+                was_full,
+                slab_mut.free_count == max_free,
+                slab_mut.page_addr,
+            )
+        };
         self.total_allocated -= 1;
 
-        let max_free = self.objects_per_slab() - 1;
-        if slab_mut.free_count == max_free && self.slab_count > MIN_SLABS {
+        if became_empty && self.slab_count > MIN_SLABS {
             self.unlink_slab(slab);
             self.slab_count -= 1;
             // SAFETY: The page is leaving this pool. Poisoning the back pointer
             // makes stale frees fail the cookie check.
             unsafe {
-                (slab_mut.page_addr as *mut usize).write(usize::MAX);
+                (page_addr as *mut usize).write(usize::MAX);
             }
-            (self.free_page)(NonNull::new(slab_mut.page_addr as *mut u8).unwrap());
+            (self.free_page)(NonNull::new(page_addr as *mut u8).unwrap());
             return Ok(());
         }
 
         if was_full {
             self.link_slab(slab);
-            self.current = slab.as_ptr();
+            self.current = Some(slab);
         }
         Ok(())
     }
@@ -236,7 +257,7 @@ impl<T> Pool<T> {
     }
 
     fn current_slab_with_space(&mut self) -> Option<NonNull<SlabHeader>> {
-        if let Some(current) = NonNull::new(self.current) {
+        if let Some(current) = self.current {
             // SAFETY: `current` is a slab linked into this pool.
             if unsafe { current.as_ref() }.free_count > 0 {
                 return Some(current);
@@ -244,7 +265,7 @@ impl<T> Pool<T> {
             self.current = self.partial_head;
         }
 
-        while let Some(slab) = NonNull::new(self.current) {
+        while let Some(slab) = self.current {
             // SAFETY: `current` walks slabs linked into this pool.
             if unsafe { slab.as_ref() }.free_count > 0 {
                 return Some(slab);
@@ -256,42 +277,60 @@ impl<T> Pool<T> {
     }
 
     fn alloc_from_slab(&mut self, slab: NonNull<SlabHeader>) -> Option<NonNull<MaybeUninit<T>>> {
-        // SAFETY: The caller selected a slab owned by this pool.
-        let slab_ref = unsafe { slab.as_ptr().as_mut().unwrap() };
-        if slab_ref.free_count == 0 {
-            return None;
-        }
-
-        for word_index in 0..MAX_BITMAP_WORDS {
-            let word = slab_ref.bitmap[word_index];
-            if word == 0 {
-                continue;
+        let objects_per_slab = self.objects_per_slab();
+        let usable_start = self.usable_start();
+        let object_size = self.object_size();
+        let selected = {
+            // SAFETY: The caller selected a slab owned exclusively by this pool.
+            let slab_ref = unsafe { &mut *slab.as_ptr() };
+            if slab_ref.free_count == 0 {
+                return None;
             }
-            let bit_index = word.trailing_zeros() as usize;
-            let slot_index = word_index * 64 + bit_index;
-            if slot_index >= self.objects_per_slab() {
+
+            let mut selected = None;
+            for word_index in 0..MAX_BITMAP_WORDS {
+                let word = slab_ref.bitmap[word_index];
+                if word == 0 {
+                    continue;
+                }
+                let bit_index = word.trailing_zeros() as usize;
+                let slot_index = word_index * 64 + bit_index;
+                if slot_index >= objects_per_slab {
+                    break;
+                }
+
+                slab_ref.bitmap[word_index] &= !(1u64 << bit_index);
+                slab_ref.free_count -= 1;
+                let object_addr = slab_ref.page_addr + usable_start + slot_index * object_size;
+                selected = Some((object_addr, slab_ref.free_count == 0));
                 break;
             }
-
-            slab_ref.bitmap[word_index] &= !(1u64 << bit_index);
-            slab_ref.free_count -= 1;
-            self.total_allocated += 1;
-            if slab_ref.free_count == 0 {
-                self.unlink_slab(slab);
-            }
-
-            let object_addr =
-                slab_ref.page_addr + self.usable_start() + slot_index * self.object_size();
-            return NonNull::new(object_addr as *mut MaybeUninit<T>);
+            selected
+        };
+        let (object_addr, became_full) =
+            selected.expect("slab: positive free count has no free bitmap slot");
+        self.total_allocated += 1;
+        if became_full {
+            self.unlink_slab(slab);
         }
-        None
+        Some(
+            NonNull::new(object_addr as *mut MaybeUninit<T>)
+                .expect("slab: object address is non-null"),
+        )
     }
 
     fn alloc_new_slab(&mut self) -> Option<NonNull<SlabHeader>> {
         let page = (self.alloc_page)()?;
         let page_addr = page.as_ptr() as usize;
-        let slab_addr = page_addr.checked_add(self.usable_start())?;
-        let slab = NonNull::new(slab_addr as *mut SlabHeader)?;
+        assert!(
+            page_addr.is_multiple_of(PAGE_SIZE),
+            "slab: page allocator returned an unaligned page"
+        );
+        let slab_addr = page_addr
+            .checked_add(self.usable_start())
+            .expect("slab: header address overflow");
+        let slab =
+            NonNull::new(slab_addr as *mut SlabHeader).expect("slab: header address is non-null");
 
         let objects_per_slab = self.objects_per_slab();
         let mut bitmap = [u64::MAX; MAX_BITMAP_WORDS];
@@ -309,8 +348,8 @@ impl<T> Pool<T> {
                 cookie: self.slab_cookie(page_addr),
                 bitmap,
                 free_count: objects_per_slab - 1,
-                next: core::ptr::null_mut(),
-                prev: core::ptr::null_mut(),
+                next: None,
+                prev: None,
                 in_partial_list: false,
             });
         }
@@ -324,58 +363,66 @@ impl<T> Pool<T> {
     }
 
     fn link_slab(&mut self, slab: NonNull<SlabHeader>) {
-        // SAFETY: `slab` is owned by this pool.
-        let slab_ref = unsafe { slab.as_ptr().as_mut().unwrap() };
-        slab_ref.next = self.partial_head;
-        slab_ref.prev = core::ptr::null_mut();
-        if let Some(head) = NonNull::new(self.partial_head) {
+        let old_head = self.partial_head;
+        // SAFETY: `slab` is owned by this pool and is not currently linked.
+        unsafe {
+            (*slab.as_ptr()).next = old_head;
+            (*slab.as_ptr()).prev = None;
+            (*slab.as_ptr()).in_partial_list = true;
+        }
+        if let Some(head) = old_head {
             // SAFETY: `partial_head` is linked into this pool.
             unsafe {
-                head.as_ptr().as_mut().unwrap().prev = slab.as_ptr();
+                (*head.as_ptr()).prev = Some(slab);
             }
         }
-        self.partial_head = slab.as_ptr();
-        slab_ref.in_partial_list = true;
+        self.partial_head = Some(slab);
     }
 
     fn unlink_slab(&mut self, slab: NonNull<SlabHeader>) {
-        // SAFETY: `slab` is owned by this pool.
-        let slab_ref = unsafe { slab.as_ptr().as_mut().unwrap() };
-        if !slab_ref.in_partial_list {
-            return;
-        }
-        if let Some(prev) = NonNull::new(slab_ref.prev) {
+        let (previous, next) = {
+            // SAFETY: `slab` is owned by this pool.
+            let slab_ref = unsafe { &*slab.as_ptr() };
+            if !slab_ref.in_partial_list {
+                return;
+            }
+            (slab_ref.prev, slab_ref.next)
+        };
+        if let Some(previous) = previous {
             // SAFETY: `prev` is linked before `slab`.
             unsafe {
-                prev.as_ptr().as_mut().unwrap().next = slab_ref.next;
+                (*previous.as_ptr()).next = next;
             }
         } else {
-            self.partial_head = slab_ref.next;
+            self.partial_head = next;
         }
-        if let Some(next) = NonNull::new(slab_ref.next) {
+        if let Some(next) = next {
             // SAFETY: `next` is linked after `slab`.
             unsafe {
-                next.as_ptr().as_mut().unwrap().prev = slab_ref.prev;
+                (*next.as_ptr()).prev = previous;
             }
         }
-        slab_ref.prev = core::ptr::null_mut();
-        slab_ref.next = core::ptr::null_mut();
-        slab_ref.in_partial_list = false;
-        if self.current == slab.as_ptr() {
+        // SAFETY: Neighbor links no longer reach `slab`, so clear its local links.
+        unsafe {
+            (*slab.as_ptr()).prev = None;
+            (*slab.as_ptr()).next = None;
+            (*slab.as_ptr()).in_partial_list = false;
+        }
+        if self.current == Some(slab) {
             self.current = self.partial_head;
         }
     }
 
     fn object_size(&self) -> usize {
-        align_up(core::mem::size_of::<T>().max(1), self.object_align())
+        align_up(core::mem::size_of::<T>().max(1), Self::object_align())
     }
 
-    fn object_align(&self) -> usize {
+    fn object_align() -> usize {
         core::mem::align_of::<T>().max(CACHE_LINE_SIZE)
     }
 
     fn usable_start(&self) -> usize {
-        align_up(BACK_POINTER_SIZE, self.object_align())
+        align_up(BACK_POINTER_SIZE, Self::object_align())
     }
 
     fn objects_per_slab(&self) -> usize {
@@ -410,7 +457,7 @@ struct Class<const N: usize> {
     bytes: [u8; N],
 }
 
-struct Kmalloc {
+struct ObjectAllocator {
     pool_64: Pool<Class<64>>,
     pool_128: Pool<Class<128>>,
     pool_256: Pool<Class<256>>,
@@ -419,12 +466,7 @@ struct Kmalloc {
     initialized: bool,
 }
 
-// SAFETY: Slab pointers are allocator-owned metadata. All access is serialized
-// by `Locked<Kmalloc>`, so moving the allocator between CPUs does not permit
-// unsynchronized slab mutation.
-unsafe impl Send for Kmalloc {}
-
-impl Kmalloc {
+impl ObjectAllocator {
     const fn empty() -> Self {
         Self {
             pool_64: Pool::empty(),
@@ -441,7 +483,7 @@ impl Kmalloc {
         physical_to_virtual: PhysicalToVirtual,
         virtual_to_physical: VirtualToPhysical,
     ) {
-        assert!(!self.initialized, "kmalloc: already initialized");
+        assert!(!self.initialized, "object allocator: already initialized");
         set_mappers(physical_to_virtual, virtual_to_physical);
         self.pool_64 = Pool::new(pmm_alloc_page, pmm_free_page, seed_for(64));
         self.pool_128 = Pool::new(pmm_alloc_page, pmm_free_page, seed_for(128));
@@ -496,38 +538,24 @@ impl Kmalloc {
 
     /// # Safety
     ///
-    /// `ptr` must have been returned by this allocator and must not have
-    /// already been freed.
-    unsafe fn free(&mut self, ptr: NonNull<u8>) -> Result<(), FreeError> {
+    /// `ptr` must have been returned by this allocator for a request of `size`
+    /// bytes and must not have already been freed.
+    unsafe fn free(&mut self, ptr: NonNull<u8>, size: usize) -> Result<(), FreeError> {
         if !self.initialized {
             return Err(FreeError::NotInitialized);
         }
-        // SAFETY: `free` is unsafe and requires the caller to pass a live
-        // pointer from this allocator.
-        if unsafe { try_free(&mut self.pool_64, ptr) }? {
-            return Ok(());
+        // SAFETY: The caller supplies the original request size, so the same
+        // size-class decision used by `alloc` selects the owning pool directly;
+        // the caller also guarantees that `ptr` is live.
+        unsafe {
+            match size_class(size.max(CACHE_LINE_SIZE)).ok_or(FreeError::InvalidSlab)? {
+                SizeClass::Class64 => self.pool_64.free(ptr.cast()),
+                SizeClass::Class128 => self.pool_128.free(ptr.cast()),
+                SizeClass::Class256 => self.pool_256.free(ptr.cast()),
+                SizeClass::Class512 => self.pool_512.free(ptr.cast()),
+                SizeClass::Class1024 => self.pool_1024.free(ptr.cast()),
+            }
         }
-        // SAFETY: Same caller-owned pointer contract as above. This probes the
-        // next size class without taking ownership unless it matches.
-        if unsafe { try_free(&mut self.pool_128, ptr) }? {
-            return Ok(());
-        }
-        // SAFETY: Same caller-owned pointer contract as above. This probes the
-        // next size class without taking ownership unless it matches.
-        if unsafe { try_free(&mut self.pool_256, ptr) }? {
-            return Ok(());
-        }
-        // SAFETY: Same caller-owned pointer contract as above. This probes the
-        // next size class without taking ownership unless it matches.
-        if unsafe { try_free(&mut self.pool_512, ptr) }? {
-            return Ok(());
-        }
-        // SAFETY: Same caller-owned pointer contract as above. This probes the
-        // final size class.
-        if unsafe { try_free(&mut self.pool_1024, ptr) }? {
-            return Ok(());
-        }
-        Err(FreeError::InvalidSlab)
     }
 }
 
@@ -540,12 +568,13 @@ enum SizeClass {
 }
 
 #[must_use = "dropping the allocation frees it"]
-pub struct KernelAllocation {
+/// An owned allocation from a fixed-size kernel object pool.
+pub struct ObjectAllocation {
     ptr: NonNull<u8>,
     size: usize,
 }
 
-impl KernelAllocation {
+impl ObjectAllocation {
     pub const fn as_non_null(&self) -> NonNull<u8> {
         self.ptr
     }
@@ -559,69 +588,59 @@ impl KernelAllocation {
     }
 }
 
-impl Drop for KernelAllocation {
+impl Drop for ObjectAllocation {
     fn drop(&mut self) {
-        // SAFETY: `KernelAllocation` is constructed only by `alloc`, and this
-        // `Drop` implementation is the only owner-side free path.
-        let _ = unsafe { free_raw(self.ptr) };
+        // SAFETY: `ObjectAllocation` is constructed only by `alloc_object`,
+        // and this `Drop` implementation is the only owner-side free path.
+        unsafe { free_raw(self.ptr, self.size) }
+            .expect("object allocator: owned allocation failed to free");
     }
 }
 
-static KMALLOC: Locked<Kmalloc> = Locked::new(Kmalloc::empty());
+static OBJECT_ALLOCATOR: Locked<ObjectAllocator> = Locked::new(ObjectAllocator::empty());
 static MAPPERS: Locked<Mappers> = Locked::new(Mappers::identity());
 
 pub fn init(physical_to_virtual: PhysicalToVirtual, virtual_to_physical: VirtualToPhysical) {
-    KMALLOC
+    OBJECT_ALLOCATOR
         .lock()
         .init(physical_to_virtual, virtual_to_physical);
 }
 
-pub fn alloc(size: usize, alignment: Option<usize>) -> Result<KernelAllocation, AllocError> {
+/// Allocates up to 1024 bytes from the fixed-size kernel object pools.
+///
+/// Multi-page storage has a separate ownership contract through
+/// [`pmm::alloc_contiguous`].
+pub fn alloc_object(size: usize, alignment: Option<usize>) -> Result<ObjectAllocation, AllocError> {
     let ptr = alloc_raw(size, alignment)?;
-    Ok(KernelAllocation { ptr, size })
+    Ok(ObjectAllocation { ptr, size })
 }
 
 fn alloc_raw(size: usize, alignment: Option<usize>) -> Result<NonNull<u8>, AllocError> {
-    KMALLOC.lock().alloc(size, alignment)
+    OBJECT_ALLOCATOR.lock().alloc(size, alignment)
 }
 
 /// # Safety
 ///
-/// `ptr` must have been returned by `alloc_raw` and must not have already been
-/// freed. Passing a forged pointer can make the allocator read an invalid slab
-/// back pointer.
-unsafe fn free_raw(ptr: NonNull<u8>) -> Result<(), FreeError> {
-    // SAFETY: The caller proves `ptr` belongs to this allocator and is not
-    // already freed. The lock gives exclusive allocator access.
-    unsafe { KMALLOC.lock().free(ptr) }
+/// `ptr` must have been returned by `alloc_raw` for a request of `size` bytes
+/// and must not have already been freed. Passing a forged pointer can make the
+/// allocator read an invalid slab back pointer.
+unsafe fn free_raw(ptr: NonNull<u8>, size: usize) -> Result<(), FreeError> {
+    // SAFETY: The caller proves `ptr` belongs to this allocator, supplies its
+    // original request size, and has not already freed it. The lock gives
+    // exclusive allocator access.
+    unsafe { OBJECT_ALLOCATOR.lock().free(ptr, size) }
 }
 
 pub fn boot_probe() -> Result<(), AllocError> {
-    let _object = alloc(CACHE_LINE_SIZE, None)?;
+    let _object = alloc_object(CACHE_LINE_SIZE, None)?;
     Ok(())
-}
-
-/// # Safety
-///
-/// Caller must uphold the kmalloc `free` contract for `ptr`.
-unsafe fn try_free<const N: usize>(
-    pool: &mut Pool<Class<N>>,
-    ptr: NonNull<u8>,
-) -> Result<bool, FreeError> {
-    // SAFETY: The caller upholds the kmalloc `free` contract. This helper only
-    // probes which pool owns the pointer.
-    match unsafe { pool.free(ptr.cast::<MaybeUninit<Class<N>>>()) } {
-        Ok(()) => Ok(true),
-        Err(FreeError::InvalidSlab) => Ok(false),
-        Err(error) => Err(error),
-    }
 }
 
 fn pmm_alloc_page() -> Option<NonNull<u8>> {
     let page = pmm::alloc_page()?;
     let physical = page.physical_address()?;
     let virtual_address = MAPPERS.lock().physical_to_virtual(physical)?;
-    let transferred = page.into_physical()?;
+    let transferred = page.into_physical();
     // The transfer must preserve the page identity checked before mapper lookup.
     debug_assert_eq!(transferred, physical);
     NonNull::new(virtual_address.get() as *mut u8)
@@ -631,7 +650,7 @@ fn pmm_free_page(page: NonNull<u8>) {
     let physical = MAPPERS
         .lock()
         .virtual_to_physical(VirtualAddress::new(page.as_ptr() as usize))
-        .expect("kmalloc page is covered by the physmap");
+        .expect("object allocator page is covered by the physmap");
     pmm::free_physical_page(physical);
 }
 
@@ -916,7 +935,7 @@ mod tests {
     }
 
     #[test]
-    fn kmalloc_class_selection_validates_inputs() {
+    fn object_allocator_class_selection_validates_inputs() {
         assert!(matches!(size_class(64), Some(SizeClass::Class64)));
         assert!(matches!(size_class(65), Some(SizeClass::Class128)));
         assert!(matches!(size_class(1024), Some(SizeClass::Class1024)));

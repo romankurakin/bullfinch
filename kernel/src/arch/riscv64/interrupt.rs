@@ -6,22 +6,32 @@
 
 use kernel::{
     hwinfo::HardwareInfo,
-    trap::cause::{InterruptKind, TrapCause},
+    trap::{
+        cause::{InterruptKind, TrapCause},
+        dispatch::InterruptAction,
+    },
 };
 
-pub fn init(_: &HardwareInfo) {}
+pub type InitError = core::convert::Infallible;
+
+pub fn init(_: &HardwareInfo) -> Result<(), InitError> {
+    Ok(())
+}
 
 pub fn enable_timer_interrupt() {
     super::timer::enable_local_timer_interrupts();
 }
 
-pub fn handle_timer_interrupt(cause: Option<TrapCause>) -> bool {
+pub fn handle_timer_interrupt(cause: Option<TrapCause>) -> InterruptAction {
     if cause.is_none()
         || cause.and_then(TrapCause::interrupt_kind) == Some(InterruptKind::SupervisorTimer)
     {
-        crate::runtime::clock::handle_timer_irq();
-        true
+        if crate::runtime::clock::handle_timer_irq() {
+            InterruptAction::Reschedule
+        } else {
+            InterruptAction::Return
+        }
     } else {
-        false
+        InterruptAction::Unhandled
     }
 }

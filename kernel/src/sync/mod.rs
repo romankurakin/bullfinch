@@ -7,9 +7,10 @@
 use core::{
     cell::UnsafeCell,
     ops::{Deref, DerefMut},
-    sync::atomic::{AtomicBool, AtomicU32, Ordering},
+    sync::atomic::{AtomicBool, AtomicU16, Ordering},
 };
 
+#[cfg(test)]
 const TICKET_SHIFT: u32 = 16;
 
 /// A one-shot flag for boot-time initialization steps.
@@ -44,62 +45,67 @@ impl Default for Once {
 }
 
 struct TicketLock {
-    state: AtomicU32,
+    owner: AtomicU16,
+    next: AtomicU16,
 }
+
+const _: () = assert!(core::mem::size_of::<TicketLock>() == core::mem::size_of::<u32>());
 
 impl TicketLock {
     const fn new() -> Self {
         Self {
-            state: AtomicU32::new(0),
+            owner: AtomicU16::new(0),
+            next: AtomicU16::new(0),
         }
     }
 
     fn acquire(&self) {
-        // INVARIANT: The low half is the owner ticket and the high half is the
-        // next ticket. Wrapping is valid while fewer than 2^16 tickets are
-        // outstanding.
-        let old = self.state.fetch_add(1 << TICKET_SHIFT, Ordering::Acquire);
-        let ticket = (old >> TICKET_SHIFT) as u16;
-        let owner = old as u16;
-        if owner == ticket {
-            return;
-        }
-        while self.state.load(Ordering::Acquire) as u16 != ticket {
+        // Wrapping is valid while fewer than 2^16 tickets are outstanding. The
+        // acquire load of `owner` pairs with the previous holder's release.
+        let ticket = self.next.fetch_add(1, Ordering::Relaxed);
+        while self.owner.load(Ordering::Acquire) != ticket {
             crate::cpu::spin_wait();
         }
     }
 
     fn try_acquire(&self) -> bool {
-        let current = self.state.load(Ordering::Relaxed);
-        let owner = current as u16;
-        let next = (current >> TICKET_SHIFT) as u16;
+        let owner = self.owner.load(Ordering::Acquire);
+        let next = self.next.load(Ordering::Relaxed);
         if owner != next {
             return false;
         }
-        self.state
+        // The owner load above provides the acquire edge; this CAS only claims
+        // the uncontended ticket against competing acquirers.
+        self.next
             .compare_exchange(
-                current,
-                current.wrapping_add(1 << TICKET_SHIFT),
-                Ordering::Acquire,
+                next,
+                next.wrapping_add(1),
+                Ordering::Relaxed,
                 Ordering::Relaxed,
             )
             .is_ok()
     }
 
     fn release(&self) {
-        let state = self.state.load(Ordering::Relaxed);
-        // Unlocking an unlocked ticket lock is a caller-side lock invariant bug.
-        debug_assert_ne!(
-            state as u16,
-            (state >> TICKET_SHIFT) as u16,
-            "ticket: release called when lock is not held"
-        );
-        self.state.fetch_add(1, Ordering::Release);
+        let owner = self.owner.load(Ordering::Relaxed);
+        #[cfg(debug_assertions)]
+        {
+            // Unlocking an unlocked ticket lock is a caller-side lock invariant bug.
+            assert_ne!(
+                owner,
+                self.next.load(Ordering::Relaxed),
+                "ticket: release called when lock is not held"
+            );
+        }
+        // Only the current lock holder writes `owner`, so release is one
+        // halfword store and cannot carry into the independently atomic queue.
+        self.owner.store(owner.wrapping_add(1), Ordering::Release);
     }
 
     #[cfg(test)]
     fn raw(&self) -> u32 {
-        self.state.load(Ordering::Relaxed)
+        (u32::from(self.next.load(Ordering::Relaxed)) << TICKET_SHIFT)
+            | u32::from(self.owner.load(Ordering::Relaxed))
     }
 }
 
@@ -111,6 +117,7 @@ impl Default for TicketLock {
 
 pub struct SpinLock {
     inner: TicketLock,
+    #[cfg(debug_assertions)]
     // INVARIANT: This is debug state, not owner tracking. It must not gate
     // acquisition because another CPU can hold the lock while this CPU waits.
     held: AtomicBool,
@@ -120,30 +127,36 @@ impl SpinLock {
     pub const fn new() -> Self {
         Self {
             inner: TicketLock::new(),
+            #[cfg(debug_assertions)]
             held: AtomicBool::new(false),
         }
     }
 
     fn lock(&self) {
         self.inner.acquire();
+        #[cfg(debug_assertions)]
         self.held.store(true, Ordering::Relaxed);
     }
 
     fn try_lock(&self) -> bool {
         let acquired = self.inner.try_acquire();
         if acquired {
+            #[cfg(debug_assertions)]
             self.held.store(true, Ordering::Relaxed);
         }
         acquired
     }
 
     fn unlock(&self) {
-        // Debug ownership tracking catches unmatched unlocks before touching the ticket.
-        debug_assert!(
-            self.held.load(Ordering::Relaxed),
-            "spinlock: release called when lock is not held"
-        );
-        self.held.store(false, Ordering::Relaxed);
+        #[cfg(debug_assertions)]
+        {
+            // Debug ownership tracking catches unmatched unlocks before touching the ticket.
+            assert!(
+                self.held.load(Ordering::Relaxed),
+                "spinlock: release called when lock is not held"
+            );
+            self.held.store(false, Ordering::Relaxed);
+        }
         self.inner.release();
     }
 
@@ -269,6 +282,21 @@ mod tests {
         assert_eq!(lock.raw(), 1 << TICKET_SHIFT);
         lock.release();
         assert_eq!(lock.raw(), (1 << TICKET_SHIFT) | 1);
+    }
+
+    #[test]
+    fn ticket_lock_wrap_does_not_advance_next_twice() {
+        let lock = TicketLock::new();
+        lock.owner.store(u16::MAX, Ordering::Relaxed);
+        lock.next.store(u16::MAX, Ordering::Relaxed);
+
+        lock.acquire();
+        assert_eq!(lock.raw(), u32::from(u16::MAX));
+        lock.release();
+        assert_eq!(lock.raw(), 0);
+
+        assert!(lock.try_acquire());
+        lock.release();
     }
 
     #[test]

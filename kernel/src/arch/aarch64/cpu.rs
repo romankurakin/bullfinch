@@ -27,8 +27,6 @@ pub fn disable_interrupts() -> bool {
 
 pub fn enable_interrupts() {
     // SAFETY: DAIFClr with bit 1 unmasks IRQ exceptions on the current CPU.
-    // No `nomem`: a handler may fire before the next instruction commits and
-    // must observe all prior stores.
     unsafe {
         asm!("msr daifclr, {mask}", mask = const DAIF_IRQ_MASK, options(nostack, preserves_flags))
     };
@@ -55,12 +53,12 @@ pub fn spin_wait() {
 /// DSB ISH is required before TLB invalidation and after page table writes.
 pub fn data_sync_barrier_inner_shareable() {
     // SAFETY: DSB ISH completes prior memory accesses before continuing.
-    unsafe { asm!("dsb ish", options(nomem, nostack, preserves_flags)) };
+    unsafe { asm!("dsb ish", options(nostack, preserves_flags)) };
 }
 
 pub fn data_sync_barrier_system() {
     // SAFETY: DSB SY for MMIO or unknown shareability domain handoffs.
-    unsafe { asm!("dsb sy", options(nomem, nostack, preserves_flags)) };
+    unsafe { asm!("dsb sy", options(nostack, preserves_flags)) };
 }
 
 /// ISB flushes the pipeline after translation or system register changes.

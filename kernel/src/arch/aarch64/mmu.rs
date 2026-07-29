@@ -29,6 +29,8 @@ pub const KERNEL_VIRTUAL_BASE: usize = 0xffff_ff80_0000_0000;
 pub const KERNEL_PHYSICAL_LOAD: usize = 0x4008_0000;
 
 const PAGE_SHIFT: usize = PAGE_SIZE.trailing_zeros() as usize;
+// AArch64 TLBI address operands carry VA[55:12] in bits [43:0].
+const TLBI_VIRTUAL_ADDRESS_MASK: usize = 0x0000_0fff_ffff_ffff;
 const BLOCK_1G: usize = 1 << 30;
 const BLOCK_1G_MASK: usize = BLOCK_1G - 1;
 const BLOCK_2M: usize = 1 << 21;
@@ -206,6 +208,13 @@ pub(super) fn physical_to_virtual(address: PhysicalAddress) -> VirtualAddress {
 pub(crate) fn try_physical_to_virtual(address: PhysicalAddress) -> Option<VirtualAddress> {
     let mapped_bytes = PHYSMAP_END_GB.get().checked_mul(BLOCK_1G)?;
     (address.get() < mapped_bytes).then(|| physical_to_virtual(address))
+}
+
+/// Returns an address only when the early kernel map gives it Device memory
+/// attributes. Later physical-board support must replace this fixed window
+/// with explicit device mappings from the board contract.
+pub(super) fn try_device_physical_to_virtual(address: PhysicalAddress) -> Option<VirtualAddress> {
+    (address.get() < BLOCK_1G).then(|| physical_to_virtual(address))
 }
 
 fn virtual_to_physical(address: VirtualAddress) -> PhysicalAddress {
@@ -608,7 +617,7 @@ impl TranslationLookasideBuffer {
     }
 
     pub fn flush_address(address: VirtualAddress) {
-        let operand = (address.get() >> PAGE_SHIFT) & 0x000f_ffff_ffff;
+        let operand = (address.get() >> PAGE_SHIFT) & TLBI_VIRTUAL_ADDRESS_MASK;
         cpu::data_sync_barrier_inner_shareable();
         // SAFETY: ARM requires the same barrier sequence for address-scoped TLB
         // invalidation. VALE1IS targets the final-level EL1 entry for this page.
@@ -859,9 +868,8 @@ fn enable_mmu() {
     // point. QEMU does not model caches, but real hardware requires this.
     unsafe {
         asm!("mrs {control}, sctlr_el1", control = out(reg) control, options(nostack, preserves_flags));
-        control |= SCTLR_EL1_MMU_ENABLE
-            | SCTLR_EL1_DATA_CACHE_ENABLE
-            | SCTLR_EL1_INSTRUCTION_CACHE_ENABLE;
+        control |=
+            SCTLR_EL1_MMU_ENABLE | SCTLR_EL1_DATA_CACHE_ENABLE | SCTLR_EL1_INSTRUCTION_CACHE_ENABLE;
         asm!(
             "ic iallu",
             "dsb nsh",

@@ -1,9 +1,10 @@
 //! RISC-V scalar FP controls.
-
-#![allow(
-    dead_code,
-    reason = "Rung 9 wires scalar FP controls before user-mode FP consumes them"
-)]
+//!
+//! Trap entry records `sstatus.FS` and disables FP without spilling the
+//! resident user register file. A real thread switch saves only Dirty state
+//! and restores the incoming thread; returning to the same thread merely
+//! reinstates its recorded FS value. The kernel target excludes F and D, so
+//! compiled Rust cannot accidentally use scalar FP.
 
 use core::{
     arch::{asm, global_asm},
@@ -14,24 +15,21 @@ use kernel::fp::{FpStatus, ThreadFpState, UserFpState};
 
 #[repr(C, align(16))]
 pub struct TrapFpScratch {
-    state: UnsafeCell<UserFpState>,
-    saved: UnsafeCell<u8>,
+    return_status: UnsafeCell<u8>,
 }
 
 // SAFETY: RISC-V boot admits one hart into Rust and parks the rest, so current
-// trap handling is single-hart. TODO(smp): replace this with per-hart scratch
-// storage before secondary harts can enter U-mode.
+// trap handling is single-hart. Trap entry records the interrupted user FS
+// state and trap exit consumes it on the same hart. TODO(smp): replace this
+// with per-hart scratch storage before secondary harts can enter U-mode.
 unsafe impl Sync for TrapFpScratch {}
 
 impl TrapFpScratch {
-    pub const STATE_OFFSET: usize = core::mem::offset_of!(Self, state);
-    pub const SAVED_OFFSET: usize = core::mem::offset_of!(Self, saved);
-    pub const SAVED_FROM_STATE_OFFSET: usize = Self::SAVED_OFFSET - Self::STATE_OFFSET;
+    pub const RETURN_STATUS_OFFSET: usize = core::mem::offset_of!(Self, return_status);
 
     const fn new() -> Self {
         Self {
-            state: UnsafeCell::new(UserFpState::zeroed()),
-            saved: UnsafeCell::new(0),
+            return_status: UnsafeCell::new(FpStatus::Off as u8),
         }
     }
 }
@@ -92,10 +90,6 @@ unsafe extern "C" {
     pub(super) fn rv64_fp_restore(state: *const UserFpState);
 }
 
-pub fn current_status() -> FpStatus {
-    FpStatus::from_sstatus(read_sstatus())
-}
-
 pub fn set_status(status: FpStatus) {
     let next = status.apply_to_sstatus(read_sstatus());
     // SAFETY: `next` preserves the non-FS bits read from local hart state and
@@ -113,33 +107,43 @@ pub fn disable_scalar_fp() {
     set_status(FpStatus::Off);
 }
 
-pub fn prepare_user_restore(thread: &ThreadFpState) {
-    match thread.restore_status() {
-        None => clear_pending_user_restore(),
-        Some(FpStatus::Initial) => {
-            let zero = UserFpState::zeroed();
-            prepare_restore_state(&zero, FpStatus::Initial);
+pub fn activate_user_state(thread: &ThreadFpState) {
+    let status = thread
+        .restore_status()
+        .expect("activated RISC-V FP state must be restorable");
+    restore_for_user(thread.user_state(), status);
+}
+
+/// Transfers the resident scalar FP register file at a scheduler context switch.
+///
+/// # Safety
+///
+/// Trap entry must have recorded the outgoing user FS state and set hardware
+/// FS to Off. `old` and `new` must be the scheduler's actual switch pair.
+pub unsafe fn context_switch(old: &mut ThreadFpState, new: &ThreadFpState) {
+    let old_status = return_status();
+    debug_assert_eq!(
+        matches!(old_status, FpStatus::Off),
+        matches!(old.status(), FpStatus::Off)
+    );
+    if old_status.needs_save() {
+        set_status(FpStatus::Dirty);
+        old.save_user_state_with(|state| {
+            // SAFETY: The outgoing thread owns the dirty resident register file
+            // and hardware FS was enabled immediately above.
+            unsafe { save_current_state(state) };
+        });
+        disable_scalar_fp();
+    }
+
+    match new.restore_status() {
+        None => set_return_status(FpStatus::Off),
+        Some(status @ (FpStatus::Initial | FpStatus::Clean)) => {
+            restore_for_user(new.user_state(), status);
         }
-        Some(FpStatus::Clean) => prepare_restore_state(thread.user_state(), FpStatus::Clean),
         Some(FpStatus::Off | FpStatus::Dirty) => {
             unreachable!("thread FP restore status excludes off/dirty")
         }
-    }
-}
-
-fn prepare_restore_state(state: &UserFpState, status: FpStatus) {
-    // SAFETY: Trap exit is the only consumer of this single-hart scratch slot.
-    // It runs after this Rust handler returns and clears the status before `sret`.
-    unsafe {
-        *RV64_TRAP_FP_SCRATCH.state.get() = *state;
-        *RV64_TRAP_FP_SCRATCH.saved.get() = status as u8;
-    }
-}
-
-pub fn clear_pending_user_restore() {
-    // SAFETY: This status byte is local to the parked-single-hart trap path.
-    unsafe {
-        *RV64_TRAP_FP_SCRATCH.saved.get() = 0;
     }
 }
 
@@ -165,20 +169,34 @@ pub unsafe fn restore_current_state(state: &UserFpState) {
     unsafe { rv64_fp_restore(state) };
 }
 
-pub fn take_trapped_user_state() -> Option<UserFpState> {
-    // SAFETY: Trap entry wrote the flag and state before calling Rust.
-    let saved = unsafe { *RV64_TRAP_FP_SCRATCH.saved.get() };
-    if saved == 0 {
-        return None;
-    }
+fn restore_for_user(state: &UserFpState, status: FpStatus) {
+    debug_assert!(matches!(status, FpStatus::Initial | FpStatus::Clean));
+    set_status(FpStatus::Dirty);
+    // SAFETY: The current trap handler owns the hart FP register file and will
+    // disable kernel access before returning to the selected user thread.
+    unsafe { restore_current_state(state) };
+    disable_scalar_fp();
+    set_return_status(status);
+}
 
-    // SAFETY: `saved != 0` means assembly populated the full state image.
-    let state = unsafe { *RV64_TRAP_FP_SCRATCH.state.get() };
-    // SAFETY: Clear the single producer/consumer flag after copying.
-    unsafe {
-        *RV64_TRAP_FP_SCRATCH.saved.get() = 0;
+fn return_status() -> FpStatus {
+    // SAFETY: Trap entry is the single producer and the current trap handler is
+    // the single consumer while secondary harts remain parked.
+    let status = unsafe { *RV64_TRAP_FP_SCRATCH.return_status.get() };
+    match status {
+        0 => FpStatus::Off,
+        1 => FpStatus::Initial,
+        2 => FpStatus::Clean,
+        _ => FpStatus::Dirty,
     }
-    Some(state)
+}
+
+fn set_return_status(status: FpStatus) {
+    // SAFETY: The current trap handler exclusively prepares this hart's return
+    // state while secondary harts remain parked.
+    unsafe {
+        *RV64_TRAP_FP_SCRATCH.return_status.get() = status as u8;
+    }
 }
 
 fn read_sstatus() -> usize {

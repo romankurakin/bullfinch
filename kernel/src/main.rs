@@ -9,7 +9,7 @@ mod hal;
 mod runtime;
 mod startup;
 
-use kernel::{boot, mmu::PhysicalAddress};
+use kernel::{boot, fdt::FdtError, mmu::PhysicalAddress};
 
 #[cfg(target_arch = "riscv64")]
 #[used]
@@ -56,8 +56,10 @@ pub fn kernel_main(info: BootInfo) -> ! {
     let mut out = console::Console::new();
     let hardware = match startup::init::virt_init(info.dtb) {
         Ok(hardware) => hardware,
-        Err(_) => {
-            out.print("\n[PANIC]\nboot: invalid device tree\n");
+        Err(error) => {
+            out.print("\n[PANIC]\nboot: ");
+            out.print(boot_error_message(error));
+            out.print("\n");
             hal::cpu::halt();
         }
     };
@@ -95,7 +97,10 @@ pub fn kernel_main(info: BootInfo) -> ! {
         hal::cpu::halt();
     });
     startup::log::trace();
-    hal::interrupt::init(&hardware);
+    hal::interrupt::init(&hardware).unwrap_or_else(|_| {
+        out.print("\n[PANIC]\ninterrupt: initialization failed\n");
+        hal::cpu::halt();
+    });
     runtime::clock::init().unwrap_or_else(|_| {
         out.print("\n[PANIC]\nclock: invalid timer frequency\n");
         hal::cpu::halt();
@@ -114,6 +119,22 @@ pub fn kernel_main(info: BootInfo) -> ! {
     out.print("[BOOT:OK]\n");
 
     enter_idle_thread(&mut out)
+}
+
+fn boot_error_message(error: startup::init::BootError) -> &'static str {
+    use startup::init::BootError;
+
+    match error {
+        BootError::MissingDeviceTree => "missing device tree",
+        BootError::DeviceTree(FdtError::MalformedBlob) => "malformed device tree blob",
+        BootError::DeviceTree(FdtError::MalformedProperty) => "malformed device tree property",
+        BootError::DeviceTree(FdtError::InvalidStandardData) => "invalid standard device tree data",
+        BootError::DeviceTreeTooLarge => "device tree is too large",
+        BootError::DeviceTreeMagic => "invalid device tree magic",
+        BootError::DeviceTreeMisaligned => "misaligned device tree address",
+        BootError::DeviceTreeAddressNotMapped => "device tree address is not mapped",
+        BootError::MemoryMap(_) => "memory map initialization failed",
+    }
 }
 
 fn kernel_physical_end() -> PhysicalAddress {

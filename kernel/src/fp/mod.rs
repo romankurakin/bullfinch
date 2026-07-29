@@ -19,19 +19,31 @@ pub use selected::*;
 )))]
 mod host {
     #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-    pub struct ThreadFpState;
+    pub struct ThreadFpState {
+        enabled: bool,
+    }
 
     #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
     pub struct UserFpState;
 
     impl ThreadFpState {
         pub const fn new() -> Self {
-            Self
+            Self { enabled: false }
         }
 
-        pub fn enable_user_state(&mut self) {}
+        pub fn enable_user_state(&mut self) {
+            self.enabled = true;
+        }
 
-        pub fn save_user_state(&mut self, _: UserFpState) {}
+        pub fn save_user_state(&mut self, _: UserFpState) {
+            self.enabled = true;
+        }
+
+        pub fn save_user_state_with(&mut self, save: impl FnOnce(&mut UserFpState)) {
+            let mut state = UserFpState;
+            save(&mut state);
+            self.enabled = true;
+        }
     }
 
     impl UserFpState {

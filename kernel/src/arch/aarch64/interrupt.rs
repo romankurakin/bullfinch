@@ -11,6 +11,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use kernel::{
     hwinfo::{HardwareInfo, InterruptControllerInfo},
     mmu::{PhysicalAddress, VirtualAddress},
+    trap::dispatch::InterruptAction,
 };
 
 use super::{cpu, mmio, mmu};
@@ -18,6 +19,17 @@ use super::{cpu, mmio, mmu};
 const TIMER_PPI: u32 = 30;
 const GIC_SPECIAL_INTERRUPT_START: u32 = 1020;
 const GIC_SPECIAL_INTERRUPT_END: u32 = 1023;
+const GIC_DISTRIBUTOR_REGION_SIZE: usize = 0x1_0000;
+const GIC_V2_CPU_INTERFACE_REGION_SIZE: usize = 0x1_0000;
+const GIC_REDISTRIBUTOR_REGION_SIZE: usize = 0x2_0000;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InitError {
+    MissingController,
+    MissingCpuInterface,
+    MissingRedistributor,
+    DeviceRangeUnavailable,
+}
 
 // Single writer during boot, many readers from trap context. `GIC_READY` gates
 // all reads of `GIC_SLOT`.
@@ -46,10 +58,11 @@ enum Gic {
     V3(GicV3),
 }
 
-pub fn init(info: &HardwareInfo) {
-    let Some(controller) = info.features.interrupt_controller else {
-        panic!("gic: missing interrupt controller");
-    };
+pub fn init(info: &HardwareInfo) -> Result<(), InitError> {
+    let controller = info
+        .features
+        .interrupt_controller
+        .ok_or(InitError::MissingController)?;
 
     let gic = match controller {
         InterruptControllerInfo::GicV2 {
@@ -57,15 +70,15 @@ pub fn init(info: &HardwareInfo) {
             cpu_interface_base,
         } => Gic::V2(GicV2::new(
             distributor_base,
-            cpu_interface_base.expect("gicv2: missing cpu interface"),
-        )),
+            cpu_interface_base.ok_or(InitError::MissingCpuInterface)?,
+        )?),
         InterruptControllerInfo::GicV3 {
             distributor_base,
             redistributor_base,
         } => Gic::V3(GicV3::new(
             distributor_base,
-            redistributor_base.expect("gicv3: missing redistributor"),
-        )),
+            redistributor_base.ok_or(InitError::MissingRedistributor)?,
+        )?),
     };
 
     // SAFETY: This is the only writer of `GIC_SLOT`. It runs during single-hart
@@ -77,53 +90,44 @@ pub fn init(info: &HardwareInfo) {
     }
     // Release publishes the `Some(gic)` store to later acquire loads.
     GIC_READY.store(true, Ordering::Release);
+    Ok(())
 }
 
 pub fn enable_timer_interrupt() {
-    with_gic(|gic| {
+    if let Some(gic) = get_gic() {
         // SAFETY: MMIO registers programmed here belong to the GIC discovered
         // from the DTB and mapped into the kernel physmap.
         unsafe { gic.enable_timer_interrupt() }
-    });
+    }
 }
 
-pub fn acknowledge() -> Option<u32> {
-    let mut intid = None;
-    with_gic(|gic| {
-        // SAFETY: Read of the GIC IAR register from trap context.
-        intid = Some(unsafe { gic.acknowledge() });
-    });
-    intid
-}
-
-pub fn end_of_interrupt(intid: u32) {
-    with_gic(|gic| {
-        // SAFETY: Writing the previously-acknowledged INTID to EOIR.
-        unsafe { gic.end_of_interrupt(intid) };
-    });
-}
-
-pub fn handle_timer_interrupt(_: Option<kernel::trap::cause::TrapCause>) -> bool {
-    let Some(intid) = acknowledge() else {
-        return false;
+pub fn handle_timer_interrupt(_: Option<kernel::trap::cause::TrapCause>) -> InterruptAction {
+    let Some(gic) = get_gic() else {
+        return InterruptAction::Unhandled;
     };
+    // SAFETY: Read of the GIC IAR register from trap context.
+    let intid = unsafe { gic.acknowledge() };
     if is_gic_special_interrupt(intid) {
         // A special INTID (1023 means spurious) tells us the interrupt went
         // away between assertion and acknowledge. Nothing is active, and the
         // GIC architecture requires no EOI for these IDs; thus the right
         // response is to do nothing and resume the interrupted context.
-        // Returning true reports the IRQ as handled, because a spurious
+        // Returning normally reports the IRQ as handled, because a spurious
         // interrupt is an architecturally normal event, not an error.
-        return true;
+        return InterruptAction::Return;
     }
-    if intid == TIMER_PPI {
-        crate::runtime::clock::handle_timer_irq();
-        end_of_interrupt(intid);
-        true
+    let action = if intid == TIMER_PPI {
+        if crate::runtime::clock::handle_timer_irq() {
+            InterruptAction::Reschedule
+        } else {
+            InterruptAction::Return
+        }
     } else {
-        end_of_interrupt(intid);
-        false
-    }
+        InterruptAction::Unhandled
+    };
+    // SAFETY: `intid` is the active interrupt just returned by this GIC.
+    unsafe { gic.end_of_interrupt(intid) };
+    action
 }
 
 fn is_gic_special_interrupt(intid: u32) -> bool {
@@ -131,17 +135,14 @@ fn is_gic_special_interrupt(intid: u32) -> bool {
     (GIC_SPECIAL_INTERRUPT_START..=GIC_SPECIAL_INTERRUPT_END).contains(&intid)
 }
 
-fn with_gic(f: impl FnOnce(Gic)) {
+fn get_gic() -> Option<Gic> {
     if !GIC_READY.load(Ordering::Acquire) {
-        return;
+        return None;
     }
     // SAFETY: `GIC_READY` is set only after the single boot-time write of
     // `GIC_SLOT`. The `Gic` enum is `Copy`, so we hand out a value, not a
     // borrow into the cell.
-    let gic = unsafe { *GIC_SLOT.0.get() };
-    if let Some(gic) = gic {
-        f(gic);
-    }
+    unsafe { *GIC_SLOT.0.get() }
 }
 
 impl Gic {
@@ -205,11 +206,14 @@ impl GicV2 {
     const GICD_INTERRUPT_SET_ENABLE: usize = 0x100;
     const GICD_INTERRUPT_PRIORITY: usize = 0x400;
 
-    fn new(distributor: PhysicalAddress, cpu_interface: PhysicalAddress) -> Self {
-        Self {
-            distributor: mmu::physical_to_virtual(distributor),
-            cpu_interface: mmu::physical_to_virtual(cpu_interface),
-        }
+    fn new(
+        distributor: PhysicalAddress,
+        cpu_interface: PhysicalAddress,
+    ) -> Result<Self, InitError> {
+        Ok(Self {
+            distributor: map_device_region(distributor, GIC_DISTRIBUTOR_REGION_SIZE)?,
+            cpu_interface: map_device_region(cpu_interface, GIC_V2_CPU_INTERFACE_REGION_SIZE)?,
+        })
     }
 
     /// # Safety
@@ -299,16 +303,20 @@ impl GicV3 {
     const GICR_WAKER_CHILDREN_ASLEEP: u32 = 1 << 2;
     const GICR_WAKER_PROCESSOR_SLEEP: u32 = 1 << 1;
     const ICC_SRE_ENABLE_SYSTEM_REGISTERS: u64 = 1 << 0;
+    const ICC_CTLR_EOI_MODE: u64 = 1 << 1;
 
     // Bounded redistributor wake handshake. Expiry is treated as a hardware
     // fault instead of spinning forever during boot.
     const WAKE_RETRY_BUDGET: u32 = 1_000_000;
 
-    fn new(distributor: PhysicalAddress, redistributor: PhysicalAddress) -> Self {
-        Self {
-            distributor: mmu::physical_to_virtual(distributor),
-            redistributor: mmu::physical_to_virtual(redistributor),
-        }
+    fn new(
+        distributor: PhysicalAddress,
+        redistributor: PhysicalAddress,
+    ) -> Result<Self, InitError> {
+        Ok(Self {
+            distributor: map_device_region(distributor, GIC_DISTRIBUTOR_REGION_SIZE)?,
+            redistributor: map_device_region(redistributor, GIC_REDISTRIBUTOR_REGION_SIZE)?,
+        })
     }
 
     /// # Safety
@@ -354,8 +362,6 @@ impl GicV3 {
 
         // SAFETY: ICC_* system registers are the local GICv3 CPU interface.
         // PMR=0xff accepts all priorities. IGRPEN1 enables group 1 interrupts.
-        // No `nomem`: enabling interrupts has memory-visible side effects via
-        // any handler that runs after this point.
         unsafe {
             asm!(
                 "msr icc_pmr_el1, {priority}",
@@ -410,10 +416,24 @@ impl GicV3 {
     /// # Safety
     /// `intid` must be the value previously returned by `acknowledge`.
     unsafe fn end_of_interrupt(self, intid: u32) {
-        // SAFETY: Writing the INTID returned by ICC_IAR1_EL1 completes that
-        // interrupt at the local GIC CPU interface.
+        let control: u64;
+        // SAFETY: ICC_CTLR_EL1 reports whether EOI and deactivation are combined.
+        // The matching INTID is written to DIR only in split-EOI mode.
         unsafe {
-            asm!("msr icc_eoir1_el1, {intid}", intid = in(reg) u64::from(intid), options(nostack, preserves_flags));
+            asm!(
+                "mrs {control}, icc_ctlr_el1",
+                "msr icc_eoir1_el1, {intid}",
+                control = out(reg) control,
+                intid = in(reg) u64::from(intid),
+                options(nostack, preserves_flags)
+            );
+            if control & Self::ICC_CTLR_EOI_MODE != 0 {
+                asm!(
+                    "msr icc_dir_el1, {intid}",
+                    intid = in(reg) u64::from(intid),
+                    options(nostack, preserves_flags)
+                );
+            }
         }
         cpu::instruction_barrier();
     }
@@ -445,4 +465,15 @@ fn write_gic_system_register_enable(value: u64) {
             options(nostack, preserves_flags)
         );
     }
+}
+
+fn map_device_region(base: PhysicalAddress, size: usize) -> Result<VirtualAddress, InitError> {
+    let last = base
+        .checked_add(
+            size.checked_sub(1)
+                .ok_or(InitError::DeviceRangeUnavailable)?,
+        )
+        .ok_or(InitError::DeviceRangeUnavailable)?;
+    mmu::try_device_physical_to_virtual(last).ok_or(InitError::DeviceRangeUnavailable)?;
+    mmu::try_device_physical_to_virtual(base).ok_or(InitError::DeviceRangeUnavailable)
 }

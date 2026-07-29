@@ -175,6 +175,12 @@ const _: () = assert!(core::mem::size_of::<PhysicalAddress>() == core::mem::size
 const _: () = assert!(core::mem::size_of::<VirtualAddress>() == core::mem::size_of::<usize>());
 const _: () = assert!(core::mem::size_of::<PageCount>() == core::mem::size_of::<usize>());
 const _: () = assert!(core::mem::size_of::<PageOffset>() == core::mem::size_of::<usize>());
+const _: () = assert!(
+    core::mem::size_of::<PageAligned<PhysicalAddress>>() == core::mem::size_of::<PhysicalAddress>()
+);
+const _: () = assert!(
+    core::mem::size_of::<PageAligned<VirtualAddress>>() == core::mem::size_of::<VirtualAddress>()
+);
 
 #[cfg(test)]
 mod tests {

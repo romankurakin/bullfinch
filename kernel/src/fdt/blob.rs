@@ -7,26 +7,26 @@ pub use dtoolkit::fdt::{Fdt, FdtNode as Node};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FdtError {
-    Parse,
-    Property,
-    Standard,
+    MalformedBlob,
+    MalformedProperty,
+    InvalidStandardData,
 }
 
 impl From<dtoolkit::error::FdtParseError> for FdtError {
     fn from(_: dtoolkit::error::FdtParseError) -> Self {
-        Self::Parse
+        Self::MalformedBlob
     }
 }
 
 impl From<dtoolkit::error::PropertyError> for FdtError {
     fn from(_: dtoolkit::error::PropertyError) -> Self {
-        Self::Property
+        Self::MalformedProperty
     }
 }
 
 impl From<dtoolkit::error::StandardError> for FdtError {
     fn from(_: dtoolkit::error::StandardError) -> Self {
-        Self::Standard
+        Self::InvalidStandardData
     }
 }
 

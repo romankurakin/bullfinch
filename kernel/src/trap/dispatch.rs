@@ -13,6 +13,13 @@ pub enum KernelTrapAction {
     Panic(TrapReport),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InterruptAction {
+    Unhandled,
+    Return,
+    Reschedule,
+}
+
 pub fn dispatch_kernel_trap(frame: &mut impl TrapFrameSnapshot) -> KernelTrapAction {
     KernelTrapAction::Panic(TrapReport::from_frame(frame))
 }

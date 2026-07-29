@@ -37,15 +37,33 @@ pub mod context {
     }
 }
 
+pub mod fp {
+    use kernel::fp::ThreadFpState;
+
+    /// Transfers the resident user FP register file between scheduler threads.
+    ///
+    /// # Safety
+    ///
+    /// Trap entry must have disabled kernel FP access, `old` must describe the
+    /// interrupted thread, and `new` must describe the thread selected to run.
+    pub unsafe fn context_switch(old: &mut ThreadFpState, new: &ThreadFpState) {
+        // SAFETY: This is the HAL boundary for the architecture FP ownership
+        // transfer. The caller upholds its trap and scheduler requirements.
+        unsafe { crate::arch::fp::context_switch(old, new) };
+    }
+}
+
 pub mod interrupt {
     use kernel::hwinfo::HardwareInfo;
-    use kernel::trap::cause::TrapCause;
+    use kernel::trap::{cause::TrapCause, dispatch::InterruptAction};
 
-    pub fn init(info: &HardwareInfo) {
-        crate::arch::interrupt::init(info);
+    pub type InitError = crate::arch::interrupt::InitError;
+
+    pub fn init(info: &HardwareInfo) -> Result<(), InitError> {
+        crate::arch::interrupt::init(info)
     }
 
-    pub fn handle_timer_interrupt(cause: Option<TrapCause>) -> bool {
+    pub fn handle_timer_interrupt(cause: Option<TrapCause>) -> InterruptAction {
         crate::arch::interrupt::handle_timer_interrupt(cause)
     }
 }
@@ -109,7 +127,7 @@ pub mod mmu {
         let page = pmm::alloc_page()?;
         let physical = page.physical_address()?;
         let virtual_address = try_physical_to_virtual(physical)?;
-        let transferred = page.into_physical()?;
+        let transferred = page.into_physical();
         // The transfer must preserve the page identity checked before mapper lookup.
         debug_assert_eq!(transferred, physical);
         // SAFETY: PMM just gave this page to the page-table allocator. The

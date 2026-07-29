@@ -76,6 +76,11 @@ impl ThreadFpState {
         // CPU-local condition, not a property of this memory image.
         debug_assert_eq!(self.status.as_fp_status(), FpStatus::Clean);
     }
+
+    pub fn save_user_state_with(&mut self, save: impl FnOnce(&mut UserFpState)) {
+        save(&mut self.state);
+        self.status = StoredFpStatus::Clean;
+    }
 }
 
 impl Default for ThreadFpState {
@@ -158,6 +163,24 @@ pub const fn instruction_may_access_scalar_fp(instruction: usize) -> bool {
     }
 
     is_fp_csr_access(instruction)
+}
+
+/// Returns whether an illegal instruction can be the first use of scalar FP.
+///
+/// Some harts report zero in `stval` instead of instruction bits. Treat that
+/// case as a possible first use only while the thread's stored state is Off;
+/// after the one retry, a genuinely illegal instruction is reported normally.
+pub const fn illegal_instruction_may_be_first_fp_use(
+    instruction: usize,
+    stored_status: FpStatus,
+) -> bool {
+    if !matches!(stored_status, FpStatus::Off) {
+        return false;
+    }
+    if instruction == 0 {
+        return true;
+    }
+    instruction_may_access_scalar_fp(instruction)
 }
 
 /// The FP control CSRs (fflags, frm, fcsr) are part of the FP state, so with
@@ -243,6 +266,9 @@ mod tests {
         state.save_user_state(UserFpState::zeroed());
         assert_eq!(state.status(), FpStatus::Clean);
         assert_eq!(state.restore_status(), Some(FpStatus::Clean));
+
+        state.save_user_state_with(|saved| *saved = UserFpState::zeroed());
+        assert_eq!(state.status(), FpStatus::Clean);
     }
 
     #[test]
@@ -267,6 +293,24 @@ mod tests {
         assert!(!instruction_may_access_scalar_fp(0));
         assert!(!instruction_may_access_scalar_fp(0x0000_0013));
         assert!(!instruction_may_access_scalar_fp(0x0000_0003));
+    }
+
+    #[test]
+    fn retries_missing_illegal_instruction_bits_only_for_first_fp_use() {
+        assert!(illegal_instruction_may_be_first_fp_use(0, FpStatus::Off));
+        assert!(!illegal_instruction_may_be_first_fp_use(
+            0,
+            FpStatus::Initial
+        ));
+        assert!(!illegal_instruction_may_be_first_fp_use(0, FpStatus::Clean));
+        assert!(!illegal_instruction_may_be_first_fp_use(
+            0x0000_0053,
+            FpStatus::Clean
+        ));
+        assert!(illegal_instruction_may_be_first_fp_use(
+            0x0000_0053,
+            FpStatus::Off
+        ));
     }
 
     #[test]
