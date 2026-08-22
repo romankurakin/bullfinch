@@ -15,23 +15,28 @@ Sova project. Assumes `sova` is available in `PATH`.
 - **Design decisions**: See how MINIX implements PM, FS, drivers
 - **Verifying references**: Check chapter/section numbers before adding to comments
 
-## Search
+## Workflow
+
+Use Sova read-only by default. Prefer newline-delimited JSON so locations and
+passage text can be parsed without scraping terminal formatting.
 
 ```bash
 # Search the indexed OS reference library
-sova operating-system-documents "how to handle page faults"
-sova operating-system-documents "interrupt controller" -n 10
+sova --json search operating-system-documents "how to handle page faults"
+sova --json search operating-system-documents "interrupt controller" -n 10
 
-# Inspect what is indexed
-sova list operating-system-documents
-
-# Re-index the project if needed
-sova index operating-system-documents
+# Read-only project and index diagnostics
+sova --json list operating-system-documents
+sova --json doctor operating-system-documents
 ```
 
-Search output includes `path:start-end` plus the matching chunk text. Use the
-Read tool with a small line buffer around the returned range when extra context
-is needed.
+Read the returned `location` with a small line buffer when extra surrounding
+context is needed. Use a few focused query reformulations for ambiguous topics,
+especially the architecture, register, exception level, or subsystem name.
+
+`doctor` exits nonzero when it finds stale or inconsistent state. Report the
+finding; do not re-index, install services, or remove project data unless the
+user explicitly asks.
 
 ## Available Documents
 
@@ -47,16 +52,10 @@ is needed.
 - `riscv-sbi` — RISC-V SBI Specification
 - `riscv-unprivileged` — RISC-V Unprivileged Specification
 
-## Setup
+## Setup and Maintenance
 
-Confirm the project exists and is indexed:
-
-```bash
-sova projects
-sova list operating-system-documents
-```
-
-If the project is missing, register or re-index the documents folder:
+If the project is missing, report that first. Only register or re-index the
+documents when the user requests it:
 
 ```bash
 sova index ~/Developer/operating-system-documents
