@@ -1,8 +1,8 @@
 //! Architecture-neutral mapping intent.
 //!
-//! Page-table descriptor bits differ between ARM64 and RISC-V. Portable code
-//! should describe what it wants (address, size, permissions, memory type) and
-//! let the architecture module translate that intent into the correct bits.
+//! Portable code describes a mapping by address, size, permissions, and memory
+//! type. Each architecture module encodes those properties in its page-table
+//! descriptor format, which differs between ARM64 and RISC-V.
 
 use super::address::{PAGE_SIZE, PageAligned, PhysicalAddress};
 

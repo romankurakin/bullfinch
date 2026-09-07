@@ -1,10 +1,13 @@
 //! RISC-V scalar FP controls.
 //!
-//! Trap entry records `sstatus.FS` and disables FP without spilling the
-//! resident user register file. A real thread switch saves only Dirty state
-//! and restores the incoming thread; returning to the same thread merely
-//! reinstates its recorded FS value. The kernel target excludes F and D, so
-//! compiled Rust cannot accidentally use scalar FP.
+//! Trap entry records `sstatus.FS` and disables FP but leaves the user's values
+//! in the registers. A thread switch saves outgoing state only when FS is
+//! Dirty, which marks state that may differ from the saved image. It then
+//! restores the incoming thread's state. Returning to the same thread restores
+//! the recorded FS value without copying the register contents.
+//!
+//! The kernel target excludes F and D, the scalar floating-point extensions.
+//! Compiled Rust therefore cannot accidentally use scalar FP.
 
 use core::{
     arch::{asm, global_asm},
@@ -39,8 +42,8 @@ pub(super) static RV64_TRAP_FP_SCRATCH: TrapFpScratch = TrapFpScratch::new();
 global_asm!(
     r#"
     # The kernel target is rv64imac, so the assembler rejects FP instructions
-    # by default. Enable F and D for this block alone; the compiler still
-    # cannot emit FP anywhere in kernel code.
+    # by default. Enable F and D for this assembly block alone. Compiled Rust
+    # still uses the kernel's soft-float target.
     .option push
     .option arch, +f, +d
     .text
@@ -151,8 +154,8 @@ pub unsafe fn context_switch(old: &mut ThreadFpState, new: &ThreadFpState) {
 ///
 /// # Safety
 ///
-/// The caller must have enabled scalar FP for the current hart and must own the
-/// live FP state. Calling this with `sstatus.FS=Off` will trap.
+/// The caller must enable scalar FP on the current hart before this call and
+/// own the live FP state. If `sstatus.FS=Off`, this function traps.
 pub unsafe fn save_current_state(state: &mut UserFpState) {
     // SAFETY: The caller proves FP access and state ownership.
     unsafe { rv64_fp_save(state) };
@@ -162,8 +165,8 @@ pub unsafe fn save_current_state(state: &mut UserFpState) {
 ///
 /// # Safety
 ///
-/// The caller must have enabled scalar FP for the current hart and must ensure
-/// the restored state belongs to the execution context that will next use FP.
+/// The caller must enable scalar FP on the current hart before this call.
+/// The restored state must belong to the execution context that will next use FP.
 pub unsafe fn restore_current_state(state: &UserFpState) {
     // SAFETY: The caller proves FP access and state ownership.
     unsafe { rv64_fp_restore(state) };

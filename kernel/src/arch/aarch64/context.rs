@@ -1,8 +1,10 @@
 //! ARM64 context-switch frame.
 //!
-//! This is the callee-saved register set for voluntary switches, separate from
-//! the trap frame used by exceptions. The layout mirrors AAPCS64: x19-x28,
-//! x29(fp), x30(lr), sp, and the saved interrupt state.
+//! This frame preserves the registers that survive a function call under
+//! AAPCS64: x19-x28 and x29(fp). It also stores x30(lr), sp, and interrupt state.
+//! A context switch saves the old frame and restores the new frame to resume
+//! execution on another stack. Exception entry uses separate
+//! [trap and IRQ frames](crate::trap::frame::arm64).
 
 #![allow(dead_code, reason = "assembly owns context frame fields")]
 
@@ -68,6 +70,8 @@ impl Context {
         }
     }
 
+    /// Places the entry function and argument in registers restored by the
+    /// first switch. The thread trampoline passes x20 to the function in x19.
     pub fn set_entry_data(&mut self, entry: usize, arg: usize) {
         self.x19 = entry as u64;
         self.x20 = arg as u64;
@@ -103,8 +107,9 @@ pub unsafe fn switch_context(old: &mut Context, new: &Context) {
 /// # Safety
 ///
 /// `old` and `new` must satisfy the same requirements as [`switch_context`].
-/// The caller must be on a trap or IRQ path whose final `eret` restores
-/// interrupt state from the saved exception status.
+/// The caller must be on a trap or IRQ path. The incoming context must either
+/// resume through a saved exception frame or start at the thread trampoline,
+/// which enables interrupts on first entry.
 pub unsafe fn switch_context_from_trap(old: &mut Context, new: &Context) {
     // SAFETY: The caller proves the context ABI requirements and the trap-return
     // boundary owns interrupt-state restoration.
@@ -174,6 +179,9 @@ bullfinch_switch_context_from_trap:
     .global bullfinch_thread_trampoline
     .type bullfinch_thread_trampoline, %function
 bullfinch_thread_trampoline:
+    // A fresh thread has no exception frame whose eret would unmask IRQs.
+    // The switch installed its stack and scheduler identity before reaching here.
+    msr daifclr, #2
     mov x0, x20
     br x19
 "#

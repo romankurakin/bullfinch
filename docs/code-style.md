@@ -41,8 +41,8 @@ Use three levels of checking:
   ownership-transfer identity, FP status transitions, queue counters, and
   handle generation math.
 
-A debug assertion may explain why a model is internally coherent, but release
-security must not depend on it.
+A debug assertion checks assumptions during development. Release security
+must not depend on it because release builds omit the check.
 
 Prefer build-time or link-time assertions for static facts such as structure
 layout, linker section ordering, page alignment, and constant bounds. Use a
@@ -89,7 +89,7 @@ Use Rustdoc `# Safety` sections for unsafe APIs:
 /// # Safety
 ///
 /// The caller must ensure both contexts are valid for the architecture switch
-/// ABI and that the target stack remains mapped.
+/// ABI. The caller must keep the target stack mapped.
 pub unsafe fn switch_context(old: &mut Context, new: &Context);
 ```
 
@@ -101,9 +101,9 @@ Use `// SAFETY:` immediately before each unsafe block or unsafe impl:
 unsafe { core::ptr::write_volatile(ptr, value) };
 ```
 
-The comment must prove the exact operation. Good safety comments name the
-invariant, the earlier check, or the hardware rule that makes the operation
-valid. They should not say only "this is safe".
+The comment must explain why the exact operation is valid. Name the invariant,
+earlier check, or hardware rule that proves it. Saying only "this is safe"
+does not provide that proof.
 
 ## Layout And Assembly
 
@@ -135,3 +135,41 @@ Use plain English and light punctuation.
 Always document safety reasoning, architecture quirks, spec references, lock
 ownership, memory ordering, barrier requirements, and non-obvious invariants.
 Do not document obvious code or Rust basics.
+
+## Explanations And Documentation
+
+Assume the reader knows Rust but may be new to kernel internals. Explain the
+mechanism needed to understand the code, including why an algorithm or hardware
+constraint affects this implementation. Define an unfamiliar concept where it
+first matters. Use a small example when it makes the behavior easier to follow.
+
+- Give each sentence one main point. Split long sentences at independent
+  conditions or obligations, without losing their relationship.
+- Name who acts or owns the state: the caller, scheduler, CPU, or lock holder.
+- Put a prerequisite before the action that depends on it.
+- Keep terminology consistent. Preserve technical distinctions between actions
+  such as validating input and guaranteeing exclusive access.
+- Keep requirements, recommendations, possibilities, and future plans distinct.
+  Do not strengthen a recommendation or present a plan as current behavior.
+- Preserve identifiers, commands, units, spec references, and safety conditions.
+  A shorter sentence is useful only if it retains the same meaning.
+
+Use short sentences as a guide, not a word-count requirement. Keep useful
+headings, lists, and Rustdoc sections. Local notes can remain fragments.
+
+Put explanations where the reader needs them. Module docs introduce the
+mechanism; type docs describe ownership and invariants; function docs state
+caller obligations and observable behavior. Local comments explain a choice
+or ordering constraint at the affected code. Link to the defining type,
+function, or specification section when more detail lives elsewhere. Keep the
+local explanation sufficient to follow the code without opening the link.
+
+Remove comments that only repeat a name, operation, or assertion message.
+Keep local safety proofs even when they refer to a documented invariant.
+Place future-work notes outside those proofs so planned behavior cannot be
+mistaken for a condition that already holds.
+
+These guidelines apply to documentation, explanatory comments, and decision
+records in `docs/decisions.md`. When editing a decision record for style,
+preserve the choice, alternatives, rationale, tradeoffs, and decision status.
+Keep a change to the decision itself separate from a wording change.

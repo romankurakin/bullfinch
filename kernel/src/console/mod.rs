@@ -6,7 +6,8 @@
 
 use core::fmt;
 
-/// Not `Sync`. Concurrent access must be serialized by the caller.
+/// Writes to the architecture console. The caller must serialize concurrent
+/// access; this type is not `Sync`.
 pub struct Console {
     device: crate::arch::console::Console,
 }
@@ -18,7 +19,7 @@ impl Console {
         }
     }
 
-    /// Send one byte, inserting `\r` before `\n` for serial terminals.
+    /// Sends one byte and inserts `\r` before `\n` for serial terminals.
     pub fn put_byte(&mut self, byte: u8) {
         if byte == b'\n' {
             self.device.put_byte(b'\r');
@@ -53,12 +54,12 @@ impl fmt::Write for Console {
     }
 }
 
-/// Print without a named binding. Not re-entrant.
+/// Prints through a temporary console. The caller must prevent re-entry.
 pub fn print_unsafe(text: &str) {
     Console::new().print(text);
 }
 
-/// Notify the arch console driver that the higher-half mapping is live.
+/// Notifies the architecture console driver that the higher-half mapping is live.
 pub fn post_mmu_init() {
     crate::arch::console::post_mmu_init();
 }

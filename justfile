@@ -61,7 +61,7 @@ _lint-kernel:
     @{{clippy}} {{quiet}} -p bullfinch-kernel --lib {{warnings}}
 
 _lint-target target:
-    @{{clippy}} {{quiet}} -p bullfinch-kernel --target {{target}} --bin kernel {{warnings}}
+    @{{clippy}} {{quiet}} -p bullfinch-kernel --target {{target}} --bin kernel --all-features {{warnings}}
 
 smoke:
     @cargo run {{quiet}} -p bullfinch-tools -- smoke

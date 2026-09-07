@@ -42,8 +42,8 @@ static GIC_SLOT: GicSlot = GicSlot::empty();
 struct GicSlot(UnsafeCell<Option<Gic>>);
 
 // SAFETY: Access is gated by `GIC_READY`. The slot is written exactly once
-// during early single-hart boot before `GIC_READY` is set; all later access is
-// read-only by value (the `Gic` enum is `Copy`).
+// during early single-core boot before `GIC_READY` is set. Later readers copy
+// the value because the `Gic` enum is `Copy`.
 unsafe impl Sync for GicSlot {}
 
 impl GicSlot {
@@ -81,7 +81,7 @@ pub fn init(info: &HardwareInfo) -> Result<(), InitError> {
         )?),
     };
 
-    // SAFETY: This is the only writer of `GIC_SLOT`. It runs during single-hart
+    // SAFETY: This is the only writer of `GIC_SLOT`. It runs during single-core
     // boot with interrupts masked, before any reader can observe
     // `GIC_READY == true`. `gic.init()` owns the controller programming.
     unsafe {
@@ -108,12 +108,10 @@ pub fn handle_timer_interrupt(_: Option<kernel::trap::cause::TrapCause>) -> Inte
     // SAFETY: Read of the GIC IAR register from trap context.
     let intid = unsafe { gic.acknowledge() };
     if is_gic_special_interrupt(intid) {
-        // A special INTID (1023 means spurious) tells us the interrupt went
-        // away between assertion and acknowledge. Nothing is active, and the
-        // GIC architecture requires no EOI for these IDs; thus the right
-        // response is to do nothing and resume the interrupted context.
-        // Returning normally reports the IRQ as handled, because a spurious
-        // interrupt is an architecturally normal event, not an error.
+        // Special INTIDs do not identify an active interrupt that needs EOI.
+        // For example, 1023 can mean the interrupt disappeared before the
+        // acknowledge. Resume normally without sending an end-of-interrupt
+        // command for these values.
         return InterruptAction::Return;
     }
     let action = if intid == TIMER_PPI {
@@ -147,7 +145,7 @@ fn get_gic() -> Option<Gic> {
 
 impl Gic {
     /// # Safety
-    /// Caller must own exclusive access to the GIC (true during boot).
+    /// The caller must have exclusive access to the GIC, as during boot.
     unsafe fn init(self) {
         match self {
             // SAFETY: This method's caller owns the active GIC instance.
@@ -158,7 +156,7 @@ impl Gic {
     }
 
     /// # Safety
-    /// Caller must ensure the GIC is initialized.
+    /// The caller must ensure the GIC is initialized.
     unsafe fn enable_timer_interrupt(self) {
         match self {
             // SAFETY: This method's caller proved that the GIC is initialized.
@@ -169,7 +167,7 @@ impl Gic {
     }
 
     /// # Safety
-    /// Caller must invoke from trap context with the GIC initialized.
+    /// The caller must run in trap context with the GIC initialized.
     unsafe fn acknowledge(self) -> u32 {
         match self {
             // SAFETY: This method's caller is in trap context with the GIC ready.
@@ -217,7 +215,7 @@ impl GicV2 {
     }
 
     /// # Safety
-    /// Caller owns the distributor and CPU interface registers.
+    /// The caller must own the distributor and CPU interface registers.
     unsafe fn init(self) {
         // SAFETY: The caller owns these mapped GICv2 MMIO registers.
         unsafe {
@@ -237,7 +235,7 @@ impl GicV2 {
     }
 
     /// # Safety
-    /// GIC must be initialized.
+    /// The GIC must be initialized.
     unsafe fn enable_timer_interrupt(self) {
         // SAFETY: The caller proved that the GICv2 distributor is initialized.
         unsafe {
@@ -257,7 +255,7 @@ impl GicV2 {
     }
 
     /// # Safety
-    /// Must be called from trap context with the GIC initialized.
+    /// The caller must run in trap context with the GIC initialized.
     unsafe fn acknowledge(self) -> u32 {
         // SAFETY: The caller is in trap context and the CPU interface is ready.
         unsafe {
@@ -320,7 +318,7 @@ impl GicV3 {
     }
 
     /// # Safety
-    /// Caller owns the distributor and redistributor registers.
+    /// The caller must own the distributor and redistributor registers.
     unsafe fn init(self) {
         enable_gic_system_register_interface();
 
@@ -376,7 +374,7 @@ impl GicV3 {
     }
 
     /// # Safety
-    /// GIC must be initialized.
+    /// The GIC must be initialized.
     unsafe fn enable_timer_interrupt(self) {
         let sgi = self.redistributor.checked_add(Self::GICR_SGI_BASE).unwrap();
         // SAFETY: Programming SGI/PPI bank of the redistributor for the
@@ -401,12 +399,12 @@ impl GicV3 {
     }
 
     /// # Safety
-    /// Must be called from trap context with the GIC initialized.
+    /// The caller must run in trap context with the GIC initialized.
     unsafe fn acknowledge(self) -> u32 {
         let intid: u32;
         // SAFETY: ICC_IAR1_EL1 acknowledges the active group 1 interrupt and
-        // returns its INTID. Dropping `nomem`: acknowledging is a side effect
-        // visible to other CPUs/handlers.
+        // returns its INTID. This assembly omits `nomem` because the acknowledge
+        // changes controller state visible to other CPUs and handlers.
         unsafe {
             asm!("mrs {intid:x}, icc_iar1_el1", intid = out(reg) intid, options(nostack, preserves_flags));
         }

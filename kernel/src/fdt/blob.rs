@@ -10,6 +10,7 @@ pub enum FdtError {
     MalformedBlob,
     MalformedProperty,
     InvalidStandardData,
+    UnsupportedBusMapping,
 }
 
 impl From<dtoolkit::error::FdtParseError> for FdtError {

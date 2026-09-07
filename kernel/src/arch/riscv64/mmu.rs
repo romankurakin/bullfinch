@@ -1,7 +1,9 @@
 //! RISC-V Sv48 memory-management unit.
 //!
-//! Sv48 uses four 9 bit page table levels. Boot uses 1 GiB gigapages beneath a
-//! static root, which avoids allocator use before PMM exists.
+//! Sv48 uses four page table levels, each indexed by 9 address bits. Boot uses
+//! 1 GiB gigapages beneath a static root. Each gigapage maps a large physical
+//! range with one descriptor, so boot does not need tables for individual
+//! 4 KiB pages before PMM exists.
 //!
 //! See RISC-V Privileged Specification, Sections 12.3-12.6 (Virtual Memory).
 
@@ -401,8 +403,8 @@ pub unsafe fn translate(root: &PageTable, address: VirtualAddress) -> Option<Phy
 ///
 /// `root` and every branch descriptor used by this mapping must belong to a
 /// valid page table tree owned by the caller. The caller must have exclusive
-/// mutation rights to the tree and must coordinate with any address-space or
-/// remote-sfence users not covered by the local invalidation here.
+/// mutation rights to the tree. The caller must coordinate with any address-space
+/// or remote-sfence users not covered by the local invalidation here.
 pub unsafe fn map_page(
     root: &mut PageTable,
     virtual_address: VirtualAddress,
@@ -475,7 +477,7 @@ pub fn map_kernel_page_with_alloc(
     allocate_table: PageTableAllocator,
 ) -> Result<(), MapError> {
     // SAFETY: The root table is the active kernel owned table. Boot is still
-    // single-hart while stack slots are created in the current rung.
+    // single-hart while this implementation creates stack slots.
     unsafe {
         map_page_with_alloc(
             &mut *ROOT_TABLE.get(),
@@ -491,9 +493,10 @@ pub fn map_kernel_page_with_alloc(
 ///
 /// # Safety
 ///
-/// `root` must be a valid kernel owned Sv48 root. The caller must hold the
-/// page table mutation lock once SMP exists, and `allocate_table` must return a
-/// zeroed, page-aligned table page mapped in the kernel physmap.
+/// `root` must be a valid kernel owned Sv48 root.
+/// Once SMP exists, the caller must hold the page table mutation lock.
+/// `allocate_table` must return a zeroed, page-aligned table page mapped in
+/// the kernel physmap.
 unsafe fn map_page_with_alloc(
     root: &mut PageTable,
     virtual_address: VirtualAddress,
@@ -572,8 +575,9 @@ pub fn unmap_kernel_page(virtual_address: VirtualAddress) -> Result<PhysicalAddr
 ///
 /// `root` and every branch descriptor used by this mapping must belong to a
 /// valid page table tree owned by the caller. The caller must have exclusive
-/// mutation rights to the tree and must not free the physical page until all
-/// harts that could use the old translation have observed the sfence.
+/// mutation rights to the tree.
+/// Before freeing the physical page, the caller must ensure that all harts
+/// that could use the old translation have observed the sfence.
 pub unsafe fn unmap_page(
     root: &mut PageTable,
     virtual_address: VirtualAddress,
@@ -641,9 +645,9 @@ impl TranslationLookasideBuffer {
 
     pub fn flush_address(address: VirtualAddress) {
         cpu::fence_rw_rw();
-        // SAFETY: The address-scoped form orders writes for one local page. Remote
-        // shootdown belongs to the later SMP rung. `rs2=x0` covers all address
-        // spaces for this virtual page, including global mappings.
+        // SAFETY: This form orders writes for one virtual page on this hart.
+        // `rs2=x0` covers all address spaces, including global mappings.
+        // SMP support must also invalidate translations on other harts.
         unsafe {
             asm!(
                 "sfence.vma {address}, zero",

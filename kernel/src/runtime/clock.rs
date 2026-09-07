@@ -1,8 +1,9 @@
 //! Runtime clock state.
 //!
-//! The timer interrupt counts ticks and schedules the next deadline without a
-//! lock. The handler already runs with interrupts disabled, so shared state is
-//! published through atomics.
+//! The timer handler counts ticks and programs the next deadline. Atomics give
+//! readers access to the clock counters without a separate clock lock.
+//! Interrupts remain disabled during the handler, and only one CPU updates
+//! these counters. The scheduler called by the handler has its own lock.
 
 use core::sync::atomic::{AtomicU64, Ordering};
 

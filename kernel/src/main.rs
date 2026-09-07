@@ -129,6 +129,9 @@ fn boot_error_message(error: startup::init::BootError) -> &'static str {
         BootError::DeviceTree(FdtError::MalformedBlob) => "malformed device tree blob",
         BootError::DeviceTree(FdtError::MalformedProperty) => "malformed device tree property",
         BootError::DeviceTree(FdtError::InvalidStandardData) => "invalid standard device tree data",
+        BootError::DeviceTree(FdtError::UnsupportedBusMapping) => {
+            "unsupported device tree bus mapping"
+        }
         BootError::DeviceTreeTooLarge => "device tree is too large",
         BootError::DeviceTreeMagic => "invalid device tree magic",
         BootError::DeviceTreeMisaligned => "misaligned device tree address",
@@ -160,5 +163,7 @@ unsafe fn switch_context(old: &mut hal::context::Context, new: &hal::context::Co
 }
 
 extern "C" fn idle_thread(_: usize) -> ! {
+    #[cfg(feature = "smoke-test")]
+    runtime::smoke::start();
     hal::cpu::halt()
 }

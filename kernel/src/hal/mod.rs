@@ -1,8 +1,8 @@
 //! Hardware abstraction layer.
 //!
-//! Portable code should use this module instead of reaching into `arch`
-//! directly. It provides thin wrappers that forward to the selected
-//! architecture implementation at compile time with zero runtime cost.
+//! Portable code should call this module for architecture operations. Its
+//! wrappers select the architecture implementation at compile time, without
+//! a runtime architecture check.
 
 pub mod cpu {
     pub fn halt() -> ! {
@@ -17,9 +17,8 @@ pub mod context {
     ///
     /// # Safety
     ///
-    /// The scheduler must hold exclusive ownership of both contexts and must
-    /// only switch to a context with a live kernel stack and valid return
-    /// address.
+    /// The scheduler must hold exclusive ownership of both contexts. The target
+    /// context must have a live kernel stack and a valid return address.
     pub unsafe fn switch_context(old: &mut Context, new: &Context) {
         // SAFETY: This is the HAL boundary for the arch-specific switch ABI.
         unsafe { kernel::context::switch_context(old, new) };
@@ -29,8 +28,9 @@ pub mod context {
     ///
     /// # Safety
     ///
-    /// The caller must be returning through an architecture exception return
-    /// frame that will restore interrupt state.
+    /// The caller must be on a trap path. The incoming context must resume
+    /// through an exception frame or start at the thread trampoline, which
+    /// enables interrupts on first entry.
     pub unsafe fn switch_context_from_trap(old: &mut Context, new: &Context) {
         // SAFETY: This is the HAL boundary for the arch-specific trap switch ABI.
         unsafe { kernel::context::switch_context_from_trap(old, new) };
@@ -44,8 +44,9 @@ pub mod fp {
     ///
     /// # Safety
     ///
-    /// Trap entry must have disabled kernel FP access, `old` must describe the
-    /// interrupted thread, and `new` must describe the thread selected to run.
+    /// Trap entry must have disabled kernel FP access.
+    /// `old` must describe the interrupted thread.
+    /// `new` must describe the thread selected to run.
     pub unsafe fn context_switch(old: &mut ThreadFpState, new: &ThreadFpState) {
         // SAFETY: This is the HAL boundary for the architecture FP ownership
         // transfer. The caller upholds its trap and scheduler requirements.

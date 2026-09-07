@@ -1,9 +1,8 @@
 //! Architecture-neutral trap causes.
 //!
-//! Raw trap registers are architecture-specific. ARM64 has exception classes
-//! in ESR_EL1; RISC-V has cause codes in scause. Portable code should not have
-//! to know about either. Each architecture module decodes its own register once
-//! and hands the rest of the kernel a typed `TrapCause`.
+//! ARM64 reports exception classes in ESR_EL1. RISC-V reports cause codes in
+//! scause. Each architecture decoder converts its register format into a typed
+//! `TrapCause` that portable code can inspect.
 //!
 //! See ARM Architecture Reference Manual, D1.4 (Exceptions).
 //! See RISC-V Privileged Specification, Chapter 12 (Supervisor-Level ISA).

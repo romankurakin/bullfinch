@@ -1,9 +1,10 @@
 //! Physical page allocator.
 //!
-//! Memory is split into arenas discovered from the DTB. Each arena keeps one
-//! metadata entry per physical page. Metadata is placed as high as possible in
-//! each arena without overlapping firmware or kernel reservations, so low
-//! physical addresses remain available for later DMA-sensitive users.
+//! The allocator creates arenas from memory regions in the device tree (DTB).
+//! Each arena has one metadata entry per physical page. It places metadata
+//! at the highest available addresses in each arena, outside firmware and
+//! kernel reservations. This leaves low addresses available for devices whose
+//! direct memory access (DMA) cannot reach all physical memory.
 
 use core::{mem::ManuallyDrop, ptr};
 
@@ -22,6 +23,7 @@ const PAGE_POISON: u8 = 0xde;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InitError {
+    AlreadyInitialized,
     NoMemoryRegions,
     MetadataTooLarge,
     MetadataAddressUnavailable,
@@ -167,8 +169,8 @@ impl PageStorage {
 
     /// # Safety
     ///
-    /// Caller must own the whole metadata range and must ensure it is mapped,
-    /// initialized only once, and not aliased by any other slice.
+    /// The caller must own the whole metadata range and ensure it is mapped.
+    /// The range must be initialized only once and have no other slice aliases.
     unsafe fn as_mut_slice(&mut self) -> &mut [Page] {
         // SAFETY: Arena initialization owns this metadata range inside the
         // physmap. `len` is the number of `Page` entries reserved for it.
@@ -236,8 +238,8 @@ fn ranges_overlap_or_touch(
 
 type PhysicalToVirtual = fn(PhysicalAddress) -> Option<VirtualAddress>;
 
-/// Placeholder mapper used before `init` provides the real physmap. With no
-/// mapping there is nothing to poison, so freed pages are left untouched.
+/// Supplies no mapping before `init` installs the real physmap mapper.
+/// Without a mapping, debug poisoning leaves freed pages untouched.
 fn no_mapping(_: PhysicalAddress) -> Option<VirtualAddress> {
     None
 }
@@ -282,6 +284,11 @@ impl PhysicalMemoryManager {
         kernel_end: PhysicalAddress,
         physical_to_virtual: PhysicalToVirtual,
     ) -> Result<(), InitError> {
+        // Live allocation guards refer to this manager's arena metadata.
+        // Rebuilding it would make their pages available to other owners.
+        if self.initialized {
+            return Err(InitError::AlreadyInitialized);
+        }
         self.reset();
         self.physical_to_virtual = physical_to_virtual;
         if info.dropped_reserved_regions != 0 {
@@ -373,6 +380,9 @@ impl PhysicalMemoryManager {
             .ok_or(InitError::ArithmeticOverflow)?;
         let mut candidate_start = PhysicalAddress::new(arena_end.get() - metadata_bytes);
 
+        // Search from the arena's high end. On overlap, move the whole candidate
+        // below the highest overlapping reservation rather than trying each page.
+        // Each retry lowers candidate_start, so the search cannot revisit a range.
         loop {
             let candidate_end = candidate_start
                 .checked_add(metadata_bytes)
@@ -605,11 +615,11 @@ impl PhysicalMemoryManager {
         self.free_pages += 1;
     }
 
-    /// Fill a freed page with poison in debug builds. A stale pointer into the
-    /// page now reads 0xdede... instead of plausible old data; thus a
-    /// use-after-free shows up as predictable garbage rather than silent
-    /// reuse. The write costs a page-sized memset on every free, so release
-    /// builds skip it.
+    /// Fills a freed page with 0xDE bytes in debug builds.
+    ///
+    /// This recognizable pattern helps expose reads through stale pointers
+    /// before the page is reused. It does not prevent use-after-free.
+    /// Release builds skip the page-sized write on each free.
     fn poison_page(&self, page: PageHandle) {
         if !cfg!(debug_assertions) {
             return;
@@ -623,9 +633,9 @@ impl PhysicalMemoryManager {
         let Some(virtual_address) = (self.physical_to_virtual)(physical) else {
             return;
         };
-        // SAFETY: `free_page` validated the page as an allocated arena page
-        // that the caller owned exclusively, and the physmap covers every
-        // arena page, so this write cannot alias live kernel data.
+        // SAFETY: `free_page` validated an allocated arena page that the caller
+        // owned exclusively. The physmap covers every arena page. No live
+        // kernel data aliases this page when it is poisoned.
         unsafe {
             core::ptr::write_bytes(virtual_address.get() as *mut u8, PAGE_POISON, PAGE_SIZE);
         }
@@ -650,6 +660,9 @@ impl PhysicalMemoryManager {
             if arena.page_count < count {
                 continue;
             }
+            // Contiguous allocation scans physical page order within one arena.
+            // A run starts only at an aligned free page. An occupied page
+            // resets the run, so a result cannot cross a reserved or live page.
             let mut run_start = None;
             let mut run_length = 0usize;
             for index in 0..arena.page_count {
@@ -720,6 +733,8 @@ impl PhysicalMemoryManager {
         if end > arena.page_count {
             return Err(FreeContiguousError::AddressNotInArena);
         }
+        // Validate the entire run before freeing any page. A recoverable error
+        // must leave the caller's allocation intact.
         for index in start..end {
             let handle = PageHandle::new(head.arena_index, index as u32);
             let page = self
@@ -836,9 +851,9 @@ impl AllocatedPage {
 
     /// Transfers this page to a subsystem that will return it by physical address.
     ///
-    /// Page tables and slab pages outlive the immediate allocation scope. They
-    /// are still PMM-owned memory, but the owner is recorded by that subsystem
-    /// rather than this RAII value.
+    /// Page tables and slab pages can outlive this allocation guard. The
+    /// receiving subsystem takes responsibility for returning the page to PMM.
+    /// This function disables the guard's automatic return of the page.
     pub fn into_physical(self) -> PhysicalAddress {
         let physical = self
             .physical_address()
@@ -854,6 +869,10 @@ impl Drop for AllocatedPage {
     }
 }
 
+/// Owns physically consecutive pages within one PMM arena.
+///
+/// Drop returns the entire run to PMM. Users that map these pages elsewhere
+/// must remove those mappings before dropping the run; PMM does not track them.
 #[must_use = "dropping the page run returns it to PMM"]
 pub struct PageRun {
     head: PageHandle,
@@ -906,6 +925,8 @@ impl Drop for PageRun {
     }
 }
 
+// Protects arena metadata, page states, reservations, and the free list.
+// Allocation guards own pages after this lock is released; they do not hold it.
 static PMM: Locked<PhysicalMemoryManager> = Locked::new(PhysicalMemoryManager::empty());
 
 pub fn init(
@@ -930,6 +951,11 @@ fn free_page_handle(page: PageHandle) {
     pmm.free_page(page);
 }
 
+/// Allocates `count` consecutive pages with a start aligned to 2^alignment_log2 bytes.
+///
+/// Alignment is at least one page; for example, 16 requests a 64 KiB boundary.
+/// Returns `None` for an unsupported request or when no suitable run is free.
+/// PMM must be initialized before calling this function.
 pub fn alloc_contiguous(count: usize, alignment_log2: u8) -> Option<PageRun> {
     let mut pmm = PMM.lock();
     assert_initialized(&pmm);
@@ -977,6 +1003,64 @@ fn assert_initialized(pmm: &PhysicalMemoryManager) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_reinitialization_without_changing_live_allocations() {
+        let mut pages = [Page::default(); 2];
+        let mut pmm = PhysicalMemoryManager::empty();
+        pmm.arenas[0] = Arena {
+            base: PhysicalAddress::new(0x1000),
+            page_count: pages.len(),
+            pages: PageStorage {
+                ptr: pages.as_mut_ptr(),
+                len: pages.len(),
+                arena_index: 0,
+            },
+        };
+        pmm.arena_count = 1;
+        pmm.build_free_list();
+        pmm.initialized = true;
+        let first = pmm.alloc_page().unwrap();
+
+        let info = HardwareInfo::empty(crate::boot::DeviceTreeBlobPhysicalAddress::new(0));
+        assert_eq!(
+            pmm.init(
+                &info,
+                PhysicalAddress::ZERO,
+                PhysicalAddress::ZERO,
+                no_mapping
+            ),
+            Err(InitError::AlreadyInitialized)
+        );
+        assert!(pmm.initialized);
+        assert_eq!(pmm.arena_count, 1);
+        assert_eq!(pmm.free_pages, 1);
+        assert_eq!(pmm.page(first).unwrap().state, PageState::Allocated);
+        let second = pmm.alloc_page().unwrap();
+        assert_ne!(first, second);
+        assert_eq!(pmm.alloc_page(), None);
+        pmm.free_page(first);
+        pmm.free_page(second);
+        assert_eq!(pmm.free_pages, 2);
+    }
+
+    #[test]
+    fn failed_initialization_allows_retry() {
+        let mut pmm = PhysicalMemoryManager::empty();
+        let info = HardwareInfo::empty(crate::boot::DeviceTreeBlobPhysicalAddress::new(0));
+        for _ in 0..2 {
+            assert_eq!(
+                pmm.init(
+                    &info,
+                    PhysicalAddress::ZERO,
+                    PhysicalAddress::ZERO,
+                    no_mapping
+                ),
+                Err(InitError::NoMemoryRegions)
+            );
+            assert!(!pmm.initialized);
+        }
+    }
 
     #[test]
     fn page_handle_round_trips_through_arena() {

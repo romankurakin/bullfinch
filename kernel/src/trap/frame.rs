@@ -1,9 +1,12 @@
 //! Trap frame layouts.
 //!
-//! When a trap fires the CPU switches to kernel mode and the assembly entry
-//! code saves every register to the stack. These structs describe exactly what
-//! that stack image looks like. If you change a field here you must also change
-//! the corresponding assembly in `arch/*/trap.rs`.
+//! These structs describe the stack images written by architecture entry code.
+//! `TrapFrame` holds the general-purpose registers and exception status needed
+//! for diagnostics. `IrqFrame` saves a smaller set on the fast interrupt path.
+//! Rust calls preserve callee-saved registers, which the
+//! [context switch](crate::context) saves only when the handler switches threads.
+//!
+//! If you change a field, update the corresponding assembly in `arch/*/trap.rs`.
 
 pub mod arm64 {
     use crate::trap::{

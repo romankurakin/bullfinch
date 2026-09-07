@@ -13,6 +13,9 @@ path = "src/lib.rs"
 [dependencies]
 dtoolkit = { version = "0.3.0", default-features = false }
 
+[features]
+smoke-test = []
+
 [[bin]]
 name = "kernel"
 path = "src/main.rs"

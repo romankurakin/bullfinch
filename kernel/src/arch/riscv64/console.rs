@@ -19,7 +19,7 @@ pub fn post_mmu_init() {}
 
 fn sbi_putchar(byte: u8) {
     // SAFETY: OpenSBI starts the kernel in S-mode and supports the legacy
-    // console putchar call on QEMU virt during this early MVP boot path.
+    // console putchar call on QEMU virt during early boot.
     unsafe {
         core::arch::asm!(
             "ecall",

@@ -15,9 +15,11 @@ const TICKET_SHIFT: u32 = 16;
 
 /// A one-shot flag for boot-time initialization steps.
 ///
-/// This is for admission control, not lazy initialization. If the winner
-/// publishes shared data for later readers, use a primitive with an explicit
-/// initialization value and publication contract.
+/// One `try_once` caller claims the step and returns true. Other calls return
+/// false. The flag records the claim, not the completion of initialization.
+/// Readers cannot use `is_done` to decide whether initialized data is ready.
+/// If the winner publishes shared data, use a primitive that tracks completion
+/// and defines when readers can access that data.
 pub struct Once {
     done: AtomicBool,
 }
@@ -44,6 +46,10 @@ impl Default for Once {
     }
 }
 
+// A waiting caller takes a ticket from `next`, then waits for `owner` to match.
+// Releasing the lock advances `owner`, admitting the next ticket in order.
+// The acquire/release pair below makes the previous holder's writes visible
+// to the next holder; ticket allocation alone does not publish those writes.
 struct TicketLock {
     owner: AtomicU16,
     next: AtomicU16,
@@ -74,8 +80,9 @@ impl TicketLock {
         if owner != next {
             return false;
         }
-        // The owner load above provides the acquire edge; this CAS only claims
-        // the uncontended ticket against competing acquirers.
+        // The Acquire load of `owner` observes the previous holder's writes.
+        // This compare-and-swap only claims the next ticket against competing
+        // callers, so it can use Relaxed ordering.
         self.next
             .compare_exchange(
                 next,
@@ -90,15 +97,14 @@ impl TicketLock {
         let owner = self.owner.load(Ordering::Relaxed);
         #[cfg(debug_assertions)]
         {
-            // Unlocking an unlocked ticket lock is a caller-side lock invariant bug.
             assert_ne!(
                 owner,
                 self.next.load(Ordering::Relaxed),
                 "ticket: release called when lock is not held"
             );
         }
-        // Only the current lock holder writes `owner`, so release is one
-        // halfword store and cannot carry into the independently atomic queue.
+        // Only the current holder writes `owner`. Incrementing this separate
+        // 16-bit counter cannot carry into `next` when `owner` wraps.
         self.owner.store(owner.wrapping_add(1), Ordering::Release);
     }
 
@@ -115,6 +121,12 @@ impl Default for TicketLock {
     }
 }
 
+/// A ticket lock that disables local interrupts before acquiring the lock.
+///
+/// This prevents an interrupt handler on the same CPU from waiting for a lock
+/// held by the interrupted code. The guard releases the lock before restoring
+/// the previous interrupt state. Do not block, switch threads, or acquire the
+/// same lock again while holding its guard.
 pub struct SpinLock {
     inner: TicketLock,
     #[cfg(debug_assertions)]
@@ -150,7 +162,6 @@ impl SpinLock {
     fn unlock(&self) {
         #[cfg(debug_assertions)]
         {
-            // Debug ownership tracking catches unmatched unlocks before touching the ticket.
             assert!(
                 self.held.load(Ordering::Relaxed),
                 "spinlock: release called when lock is not held"
@@ -203,6 +214,9 @@ impl Drop for SpinLockGuard<'_> {
 }
 
 /// Mutable global state protected by a spin lock.
+///
+/// A guard gives exclusive access to the value and keeps local interrupts
+/// disabled. The restrictions on [`SpinLock`] guards apply here too.
 pub struct Locked<T> {
     lock: SpinLock,
     value: UnsafeCell<T>,

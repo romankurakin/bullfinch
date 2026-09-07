@@ -1,17 +1,18 @@
 //! Boot-time types shared between architecture stubs and the common kernel.
 //!
-//! Thin newtypes over raw integers. They prevent passing a physical address
-//! where a hart ID is expected at the boot handoff boundary.
+//! These types distinguish physical addresses from hardware thread IDs when
+//! architecture code passes control to the common kernel.
 
 use crate::mmu::address::PhysicalAddress;
 
 /// On RISC-V this is the `mhartid` value passed by OpenSBI in `a0`.
-/// On ARM64 there is no direct equivalent; `None` indicates the primary core.
+/// On ARM64, `None` indicates the primary core.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HartId(usize);
 
-/// Used before the MMU is enabled and again after the higher-half mapping
-/// is live. See `startup::init` for the two-phase init sequence.
+/// Carries the DTB's physical address through both boot phases. The address
+/// remains physical after the kernel enters its higher-half virtual mapping.
+/// See `startup::init` for the boot sequence.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DeviceTreeBlobPhysicalAddress(PhysicalAddress);
 

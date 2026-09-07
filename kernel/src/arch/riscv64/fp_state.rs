@@ -167,9 +167,9 @@ pub const fn instruction_may_access_scalar_fp(instruction: usize) -> bool {
 
 /// Returns whether an illegal instruction can be the first use of scalar FP.
 ///
-/// Some harts report zero in `stval` instead of instruction bits. Treat that
-/// case as a possible first use only while the thread's stored state is Off;
-/// after the one retry, a genuinely illegal instruction is reported normally.
+/// Some harts report zero in `stval` instead of instruction bits. When the
+/// thread's stored state is Off, zero permits one retry with FP enabled.
+/// If the instruction traps again, the handler reports it as illegal.
 pub const fn illegal_instruction_may_be_first_fp_use(
     instruction: usize,
     stored_status: FpStatus,
@@ -183,12 +183,15 @@ pub const fn illegal_instruction_may_be_first_fp_use(
     instruction_may_access_scalar_fp(instruction)
 }
 
-/// The FP control CSRs (fflags, frm, fcsr) are part of the FP state, so with
-/// `sstatus.FS = Off` even reading the rounding mode raises an illegal
-/// instruction. Thus a thread can hit its first-use trap through a CSR access
-/// before it touches any f register. CSR instructions use the SYSTEM opcode
-/// with a nonzero funct3; funct3 0 covers ecall, ebreak, and the xret family,
-/// and funct3 4 is reserved.
+/// Detects access to the FP control and status registers (fflags, frm, fcsr).
+///
+/// With `sstatus.FS = Off`, even reading the rounding mode raises an illegal
+/// instruction. A thread can therefore trigger its first-use trap before it
+/// touches any f register.
+///
+/// CSR instructions use the SYSTEM opcode with a nonzero funct3. The decoder
+/// excludes funct3 0, which covers ecall, ebreak, and the xret family. It also
+/// excludes funct3 4, which is reserved.
 const fn is_fp_csr_access(instruction: u32) -> bool {
     if instruction & 0x7f != 0x73 {
         return false;

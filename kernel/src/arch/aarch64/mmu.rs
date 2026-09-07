@@ -1,8 +1,9 @@
 //! ARM64 memory-management unit.
 //!
 //! ARM64 keeps user and kernel address spaces in separate translation-table
-//! base registers. Early boot uses 39 bit virtual addresses and 1 GiB blocks,
-//! which avoids allocator use before PMM exists.
+//! base registers. Early boot uses 39 bit virtual addresses and 1 GiB blocks.
+//! Each block maps a large physical range with one descriptor, so boot does
+//! not need to allocate page tables for individual 4 KiB pages before PMM exists.
 //!
 //! See ARM Architecture Reference Manual, Chapter D8 (The AArch64 Virtual Memory
 //! System Architecture).
@@ -399,8 +400,8 @@ pub unsafe fn translate(root: &PageTable, address: VirtualAddress) -> Option<Phy
 ///
 /// `root` and every table descriptor used by this mapping must belong to a
 /// valid page table tree owned by the caller. The caller must have exclusive
-/// mutation rights to the tree and must coordinate with any address-space or
-/// remote-TLB users not covered by the local invalidation here.
+/// mutation rights to the tree. The caller must coordinate with any address-space
+/// or remote-TLB users not covered by the local invalidation here.
 pub unsafe fn map_page(
     root: &mut PageTable,
     virtual_address: VirtualAddress,
@@ -466,7 +467,7 @@ pub fn map_kernel_page_with_alloc(
     allocate_table: PageTableAllocator,
 ) -> Result<(), MapError> {
     // SAFETY: The high kernel table is the active kernel owned table. Boot is
-    // still single-core while stack slots are created in the current rung.
+    // still single-core while this implementation creates stack slots.
     unsafe {
         map_page_with_alloc(
             &mut *HIGH_TABLE.get(),
@@ -482,9 +483,10 @@ pub fn map_kernel_page_with_alloc(
 ///
 /// # Safety
 ///
-/// `root` must be a valid kernel owned page table root. The caller must hold
-/// the page table mutation lock once SMP exists, and `allocate_table` must
-/// return a zeroed, page-aligned table page mapped in the kernel physmap.
+/// `root` must be a valid kernel owned page table root.
+/// Once SMP exists, the caller must hold the page table mutation lock.
+/// `allocate_table` must return a zeroed, page-aligned table page mapped in
+/// the kernel physmap.
 unsafe fn map_page_with_alloc(
     root: &mut PageTable,
     virtual_address: VirtualAddress,
@@ -560,8 +562,9 @@ pub fn unmap_kernel_page(virtual_address: VirtualAddress) -> Result<PhysicalAddr
 ///
 /// `root` and every table descriptor used by this mapping must belong to a
 /// valid page table tree owned by the caller. The caller must have exclusive
-/// mutation rights to the tree and must not free the physical page until all
-/// CPUs that could use the old translation have observed the TLB invalidation.
+/// mutation rights to the tree.
+/// Before freeing the physical page, the caller must ensure that all CPUs
+/// that could use the old translation have observed the TLB invalidation.
 pub unsafe fn unmap_page(
     root: &mut PageTable,
     virtual_address: VirtualAddress,
@@ -859,13 +862,12 @@ const SCTLR_EL1_INSTRUCTION_CACHE_ENABLE: u64 = 1 << 12;
 
 fn enable_mmu() {
     let mut control: u64;
-    // SAFETY: SCTLR_EL1 is local CPU state. Setting M enables translation
-    // after MAIR/TCR/TTBR are valid and the TLBs have been invalidated. C and
-    // I enable the caches in the same write; this is sound because
-    // translation now supplies the Normal WBWA attributes from MAIR, and all
-    // pre-MMU stores were non-cacheable, so no stale dirty lines exist. IC
-    // IALLU then discards any instruction-cache state left from before this
-    // point. QEMU does not model caches, but real hardware requires this.
+    // SAFETY: SCTLR_EL1 is local CPU state. MAIR/TCR/TTBR are valid and the
+    // TLBs are invalidated before M enables translation. The same write sets
+    // C and I to enable caches using MAIR's Normal WBWA attributes.
+    // Pre-MMU stores were non-cacheable, so no stale dirty cache lines exist.
+    // IC IALLU discards prior instruction-cache state. Real hardware needs
+    // this maintenance even though QEMU does not model the caches.
     unsafe {
         asm!("mrs {control}, sctlr_el1", control = out(reg) control, options(nostack, preserves_flags));
         control |=

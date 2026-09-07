@@ -1,7 +1,8 @@
 //! Time and timer-counter units.
 //!
-//! Keep frequency, durations, and absolute deadlines distinct. They are all
-//! represented as integers by hardware, but mixing them is a common kernel bug.
+//! Frequency measures counter ticks per second. A duration counts elapsed
+//! ticks, while a deadline names a counter value. Separate types prevent using
+//! one unit where an operation expects another.
 
 use core::num::NonZeroU64;
 

@@ -3,6 +3,10 @@
 Educational microkernel inspired by MINIX 3 and Zircon. ARM64 and RISC-V.
 Capabilities-based security. WebAssembly userspace.
 
+The checklist tracks completed stages. Each stage below records its scope and
+research questions. Unchecked stages describe planned work, not current kernel
+behavior. See [decisions.md](decisions.md) for accepted design choices.
+
 ## Progress
 
 - [x] Rung 1: Toolchain and Boot
@@ -41,8 +45,8 @@ Capabilities-based security. WebAssembly userspace.
 
 ### Rung 1: Toolchain and Boot
 
-**Implement:** Cross-compilation for both architectures, UART output, boot
-banner, HAL interface definitions.
+**Implement:** Cross-compile the kernel for both architectures. Add UART
+output, a boot banner, and hardware abstraction layer (HAL) interfaces.
 
 **Questions:**
 
@@ -58,8 +62,8 @@ banner, HAL interface definitions.
 
 ### Rung 2: Exception Handling
 
-**Implement:** Trap handlers for both architectures, register dumps, kernel
-debug output (printf, panic).
+**Implement:** Add trap handlers for both architectures. Include register
+dumps and kernel diagnostic output through printf and panic.
 
 **Questions:**
 
@@ -76,8 +80,9 @@ debug output (printf, panic).
 
 ### Rung 3: MMU and Abstraction Layer
 
-**Implement:** Paging with identity mapping, higher-half kernel, HAL for
-architecture-specific MMU code.
+**Implement:** Add paging with identity mappings, where virtual and physical
+addresses are equal. Map the kernel into the higher half of virtual memory.
+Expose architecture-specific MMU operations through the HAL.
 
 **Questions:**
 
@@ -94,8 +99,9 @@ architecture-specific MMU code.
 
 ### Rung 4: Timer and Clock Services
 
-**Implement:** Timer interrupts, monotonic clock syscalls, tick handlers for
-preemptive scheduling foundation.
+**Implement:** Add timer interrupts and monotonic clock syscalls. Use timer
+ticks as the basis for preemptive scheduling, where an interrupt can stop
+the current thread.
 
 **Questions:**
 
@@ -112,8 +118,8 @@ preemptive scheduling foundation.
 
 ### Rung 5: Device Tree Parsing
 
-**Implement:** Device tree parsing, parse DTB for memory regions, interrupt
-controller config (GIC/PLIC), peripheral addresses.
+**Implement:** Parse the device-tree blob (DTB) for memory regions,
+interrupt-controller configuration (GIC/PLIC), and peripheral addresses.
 
 **Questions:**
 
@@ -130,8 +136,8 @@ controller config (GIC/PLIC), peripheral addresses.
 
 ### Rung 6: Physical Memory Allocator
 
-**Implement:** Page allocator with leak detection. Research allocator strategies
-(bitmap, buddy, free list).
+**Implement:** Add a physical page allocator with leak detection. Compare
+bitmap, buddy, and free-list allocation strategies.
 
 **Questions:**
 
@@ -147,8 +153,9 @@ controller config (GIC/PLIC), peripheral addresses.
 
 ### Rung 7: Kernel Object Allocator
 
-**Implement:** Slab or pool allocator for fixed-size kernel objects. Contiguous
-page allocator for multi-page objects (stacks).
+**Implement:** Add a slab or pool allocator for kernel objects of fixed
+sizes. Add contiguous page allocation for objects that need several pages,
+such as stacks.
 
 **Questions:**
 
@@ -167,9 +174,10 @@ page allocator for multi-page objects (stacks).
 
 ### Rung 8: Task Structures and Scheduler
 
-**Implement:** Thread and Process structs (minimal kernel-side), per-arch
-register save sets, context switch, fair scheduler (weight-based vruntime),
-preemption via timer interrupts.
+**Implement:** Add minimal kernel-side Thread and Process structures,
+architecture register save sets, and context switching. Implement fair
+scheduling with virtual runtime adjusted by thread weight. Use timer
+interrupts for preemption.
 
 **Questions:**
 
@@ -187,14 +195,15 @@ preemption via timer interrupts.
 
 ### Rung 9: FP/SIMD State
 
-**Implement:** User FP/SIMD state for ARM64 NEON/FP and RISC-V scalar FP. The
-kernel builds soft-float (`aarch64-unknown-none-softfloat`,
-`riscv64imac-unknown-none-elf`), so kernel code never executes FP/SIMD; the
-trap path disables kernel access without spilling the resident user state.
-First use initializes a thread's state, and an actual thread switch transfers
-ownership by saving the outgoing state and restoring the incoming state. On
-RISC-V, clean state does not need to be saved. SVE, SME, and RVV are out of
-scope.
+**Implement:** Add user FP/SIMD state for ARM64 NEON/FP and RISC-V scalar
+FP. Build the kernel for the soft-float targets
+`aarch64-unknown-none-softfloat` and `riscv64imac-unknown-none-elf`.
+
+Compiled kernel code does not use FP/SIMD registers. Trap entry disables
+access while leaving user state in the registers. First use initializes the
+thread's state. A thread switch saves outgoing state and restores incoming
+state to transfer ownership. RISC-V can skip saves of clean state. SVE, SME,
+and RVV are out of scope.
 
 **Research:**
 
@@ -204,8 +213,8 @@ scope.
 
 ### Rung 10: Per-Task Virtual Memory
 
-**Implement:** Per-process address space, ASID management, address space
-switching on context switch.
+**Implement:** Give each process an address space. Manage address-space
+identifiers (ASIDs) and switch address spaces during context switches.
 
 **Questions:**
 
@@ -223,8 +232,9 @@ switching on context switch.
 
 ### Rung 11: Symmetric Multiprocessing
 
-**Implement:** Secondary CPU bringup, per-CPU stacks, per-CPU scheduler queues,
-IPI for TLB shootdown.
+**Implement:** Start secondary CPUs and give each CPU its own stack and
+scheduler queue. Use interprocessor interrupts (IPIs) to request TLB
+invalidation on other CPUs.
 
 **Questions:**
 
@@ -246,8 +256,8 @@ IPI for TLB shootdown.
 
 ### Rung 12: Tickless Scheduling
 
-**Implement:** Dynamic tick - timer fires only for actual deadlines, not
-periodic. Per-CPU timer management.
+**Implement:** Program the timer for the next deadline instead of periodic
+ticks. Manage deadlines separately for each CPU.
 
 **Questions:**
 
@@ -266,8 +276,9 @@ periodic. Per-CPU timer management.
 
 ### Rung 13: Handle Tables
 
-**Implement:** Per-process handle table, handle as index + generation, rights
-bitmap per entry.
+**Implement:** Add a handle table to each process. Represent each handle
+with an index and generation, so a reused slot can be distinguished from an
+old handle. Store a rights bitmap in each entry.
 
 **Questions:**
 
@@ -282,8 +293,8 @@ bitmap per entry.
 
 ### Rung 14: Rights and Validation
 
-**Implement:** Rights checking in syscall paths, rights per-handle not
-per-object.
+**Implement:** Validate handle rights in syscall paths. Attach rights to
+each handle, rather than to the shared object.
 
 **Questions:**
 
@@ -298,7 +309,8 @@ per-object.
 
 ### Rung 15: Derivation and Revocation
 
-**Implement:** Handle derivation with attenuation (can only remove rights).
+**Implement:** Derive handles with reduced rights. A derived handle can
+remove rights but cannot add them.
 
 **Questions:**
 
@@ -313,8 +325,8 @@ per-object.
 
 ### Rung 16: Memory Objects (VMO)
 
-**Implement:** VMO for physical memory representation, mapping into address
-spaces.
+**Implement:** Represent physical memory with virtual memory objects (VMOs).
+Map these objects into address spaces.
 
 **Questions:**
 
@@ -329,8 +341,8 @@ spaces.
 
 ### Rung 17: Address Space Management (VMAR)
 
-**Implement:** Virtual memory address regions, mapping VMOs into process address
-space.
+**Implement:** Add virtual memory address regions (VMARs). Use them to
+manage where VMOs map into a process address space.
 
 **Questions:**
 
@@ -345,10 +357,10 @@ space.
 
 ### Rung 18: Synchronous IPC
 
-**Implement:** Synchronous message passing, send/receive/call primitives.
-Receive wakes on endpoint OR bound notification. Route blocking and yielding
-trap switches through the same paired integer and FP ownership transfer as
-timer preemption.
+**Implement:** Add synchronous message passing with send, receive, and call
+operations. A receive must wake for either an endpoint message or a bound
+notification. Use the same paired integer and FP ownership transfer for
+blocking, yielding, and timer-driven trap switches.
 
 **Questions:**
 
@@ -367,7 +379,7 @@ timer preemption.
 
 ### Rung 19: Handle Transfer
 
-**Implement:** Move handles between processes via IPC.
+**Implement:** Move handles between processes through IPC.
 
 **Questions:**
 
@@ -382,8 +394,9 @@ timer preemption.
 
 ### Rung 20: Async Notifications
 
-**Implement:** Lightweight async signaling without full IPC. Notification
-binding to threads for multiplexed receive.
+**Implement:** Add lightweight asynchronous notifications. Bind a
+notification to a thread so a receive can wait for either a message or a
+notification.
 
 **Questions:**
 
@@ -399,7 +412,7 @@ binding to threads for multiplexed receive.
 
 ### Rung 21: Fault Handling
 
-**Implement:** Deliver faults to userspace via IPC.
+**Implement:** Deliver faults to userspace through IPC.
 
 **Questions:**
 
@@ -414,7 +427,8 @@ binding to threads for multiplexed receive.
 
 ### Rung 22: Hardware IRQ Objects
 
-**Implement:** Bind hardware interrupts to notifications, userspace drivers.
+**Implement:** Bind hardware interrupts to notifications for userspace
+drivers.
 
 **Questions:**
 
@@ -431,7 +445,7 @@ binding to threads for multiplexed receive.
 
 ### Rung 23: Memory Sharing
 
-**Implement:** VMO sharing via handle duplication.
+**Implement:** Share VMOs by duplicating their handles.
 
 **Questions:**
 
@@ -447,8 +461,9 @@ binding to threads for multiplexed receive.
 
 ### Rung 24: Process Creation
 
-**Implement:** Spawn syscall, explicit capability passing. Add a cross-thread
-FP isolation regression on both architectures once two user threads can run.
+**Implement:** Add a spawn syscall with explicit capability passing. Once
+two user threads can run, test FP isolation between them on both
+architectures.
 
 **Questions:**
 
@@ -468,8 +483,8 @@ FP isolation regression on both architectures once two user threads can run.
 
 ### Rung 25: Initial Bootstrap
 
-**Implement:** Kernel creates init with bootstrap capabilities (root job, vDSO,
-boot image).
+**Implement:** Have the kernel create init with bootstrap capabilities for
+the root job, vDSO, and boot image.
 
 **Questions:**
 
@@ -484,9 +499,9 @@ boot image).
 
 ### Rung 26: Process Manager
 
-**Implement:** Userspace process lifecycle server with Erlang-style supervision
-tree. Root supervisor is kernel-restartable; all other supervisors are normal
-processes watching their children via IPC.
+**Implement:** Add a userspace process manager with an Erlang-style
+supervision tree. The kernel can restart the root supervisor. Other
+supervisors are ordinary processes that monitor their children through IPC.
 
 **Questions:**
 
@@ -498,14 +513,15 @@ processes watching their children via IPC.
 
 **Design:**
 
-- Kernel only special-cases root supervisor (PID 1 or flagged at boot)
-- Root supervisor death → kernel restarts it directly (no IPC)
-- All other supervision is userspace processes using normal IPC
-- Supervisors can supervise other supervisors (tree structure)
-- Scheduling policy can be adjusted by process manager via syscall (mechanism
-  in kernel, policy in userspace)
-- Exited threads become zombies; parent reclaims resources via wait()
-- OOM handling: kernel notifies PM of memory pressure, PM decides policy
+- Only the root supervisor has special kernel handling (PID 1 or a boot flag).
+- If the root supervisor dies, the kernel restarts it directly without IPC.
+- Other supervisors monitor children through ordinary userspace IPC.
+- Supervisors can monitor other supervisors, forming a tree.
+- The process manager selects scheduling policy through syscalls. The kernel
+  provides the scheduling mechanism.
+- Exited threads remain as zombies until the parent reclaims them with wait().
+- When memory runs low, the kernel notifies the process manager. The process
+  manager decides how to respond.
 
 **Research:**
 
@@ -519,9 +535,9 @@ processes watching their children via IPC.
 
 ### Rung 27: Device Discovery and Manager
 
-**Implement:** User-space device discovery and device manager. The kernel keeps
-only the bootstrap interrupt-controller setup needed to run the system until
-user-space drivers exist.
+**Implement:** Add userspace device discovery and a device manager. Keep
+only the kernel interrupt-controller setup needed until userspace drivers
+exist.
 
 **Questions:**
 
@@ -538,7 +554,8 @@ user-space drivers exist.
 
 ### Rung 28: Filesystem Server
 
-**Implement:** Simple ramfs, direct channel to filesystem per-app.
+**Implement:** Add a simple RAM filesystem (ramfs). Give each application a
+direct channel to the filesystem server.
 
 **Questions:**
 
@@ -558,8 +575,8 @@ user-space drivers exist.
 
 ### Rung 29: WASM Integration
 
-**Implement:** WASM interpreter process, WASI syscall layer, hello world
-end-to-end.
+**Implement:** Add a WebAssembly interpreter process and a WASI syscall
+layer. Run a hello-world program through the complete path.
 
 **Questions:**
 
@@ -576,8 +593,8 @@ end-to-end.
 
 ## Phase 6: Future
 
-Network stack, virtio drivers, real filesystems, hardware testing (Pi 5, Orange
-RV2).
+Later work includes a network stack, virtio drivers, additional filesystems,
+and hardware testing on Pi 5 and Orange RV2.
 
 ---
 

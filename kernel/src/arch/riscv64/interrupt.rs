@@ -1,8 +1,8 @@
 //! RISC-V interrupt setup.
 //!
-//! OpenSBI owns the machine-mode timer and platform interrupt controller before
-//! entering supervisor mode. Local code enables timer delivery after programming
-//! SBI deadlines.
+//! OpenSBI programs timer deadlines requested through SBI. This module enables
+//! supervisor timer interrupts and dispatches them to the runtime clock.
+//! Platform external-interrupt handling remains outside this module.
 
 use kernel::{
     hwinfo::HardwareInfo,

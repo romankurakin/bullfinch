@@ -1,8 +1,10 @@
 //! Task and scheduler model.
 //!
-//! Threads are represented by opaque IDs and stored inside the scheduler. This
-//! keeps ownership local to the scheduler and avoids exporting raw thread
-//! pointers before the context-switching rung grows real stacks.
+//! The scheduler owns threads and exposes opaque IDs for lookup. Each non-idle
+//! thread accumulates virtual runtime: CPU time adjusted by its scheduling
+//! weight. The scheduler favors ready threads with the lowest virtual runtime.
+//! A larger weight makes this value grow more slowly, giving the thread a
+//! larger share of CPU time. The idle thread runs when no other thread is ready.
 
 use core::{mem::ManuallyDrop, num::NonZeroU32};
 
@@ -32,8 +34,13 @@ const MAX_KERNEL_STACK_SLOTS: usize = KERNEL_STACK_REGION_SIZE / KERNEL_STACK_SL
 const STACK_SLOT_WORD_BITS: usize = usize::BITS as usize;
 const STACK_SLOT_WORDS: usize = MAX_KERNEL_STACK_SLOTS.div_ceil(STACK_SLOT_WORD_BITS);
 
+// Protects the virtual stack-slot bitmap. A claimed slot stays reserved until
+// its KernelStackSlot guard is dropped, even while the bitmap lock is released.
 static STACK_SLOTS: Locked<StackSlots> = Locked::new(StackSlots::new());
 
+// Charge elapsed time in nanoseconds, scaled by base_weight / thread_weight.
+// A thread with twice the base weight receives half the charge for the same
+// elapsed time. Use u128 for the intermediate product, then saturate to u64.
 fn scaled_vruntime_delta(elapsed_ticks: u64, weight: NonZeroU32) -> u64 {
     if weight.get() == SCHED_BASE_WEIGHT {
         return SCHED_TIME_SLICE_NS.saturating_mul(elapsed_ticks);
@@ -53,23 +60,24 @@ pub type ContextSwitch = unsafe fn(&mut Context, &Context);
 /// Architecture operations that jointly transfer FP and integer context at a
 /// trap-return boundary.
 ///
-/// A type parameter keeps the calls statically dispatched while bundling the
-/// two halves of one ownership transfer so they cannot be wired independently.
+/// One type supplies both operations, so callers cannot select unrelated FP
+/// and integer switch implementations. The type parameter selects the calls
+/// at compile time.
 pub trait TrapContextSwitch {
     /// Transfers the resident FP register file between scheduler threads.
     ///
     /// # Safety
     ///
-    /// `old` and `new` must be the outgoing and incoming scheduler FP states,
-    /// and trap entry must have disabled kernel FP access.
+    /// `old` and `new` must be the outgoing and incoming scheduler FP states.
+    /// Trap entry must have disabled kernel FP access.
     unsafe fn switch_fp(old: &mut ThreadFpState, new: &ThreadFpState);
 
     /// Transfers the integer context and kernel stack.
     ///
     /// # Safety
     ///
-    /// `old` and `new` must be the matching scheduler context pair, and the
-    /// caller must be returning through an architecture trap frame.
+    /// `old` and `new` must be the matching scheduler context pair.
+    /// The caller must be returning through an architecture trap frame.
     unsafe fn switch_integer(old: &mut Context, new: &Context);
 }
 
@@ -81,6 +89,11 @@ pub enum StackError {
     Map(MapError),
 }
 
+/// Owns stack pages and their mappings in the kernel stack region.
+///
+/// Each slot leaves one unmapped guard page below the usable stack, so a
+/// downward overflow into that page faults. Drop removes the stack mappings
+/// before returning the physical pages and virtual slot for reuse.
 pub struct KernelStack {
     pages: ManuallyDrop<PageRun>,
     slot: ManuallyDrop<Option<KernelStackSlot>>,
@@ -89,6 +102,9 @@ pub struct KernelStack {
     unmap: Option<UnmapKernelStackPage>,
 }
 
+// Owns an unfinished stack. `mapped_pages` counts the successfully mapped
+// prefix, so an early return unmaps only that prefix before freeing resources.
+// `finish` transfers ownership to KernelStack and disarms this rollback.
 struct KernelStackBuild {
     pages: ManuallyDrop<PageRun>,
     slot: ManuallyDrop<KernelStackSlot>,
@@ -205,6 +221,11 @@ impl Drop for KernelStackBuild {
 }
 
 impl KernelStack {
+    /// Maps a new stack, leaving the guard page at the bottom of its slot unmapped.
+    ///
+    /// A mapping error rolls back earlier mappings. Failure to unmap during
+    /// rollback or drop panics: reusing pages while old mappings survive would
+    /// let a stale stack address access a new owner's memory.
     pub fn create_mapped(
         stack_region_base: KernelStackRegionBase,
         map_page: MapKernelStackPage,
@@ -339,8 +360,8 @@ impl ThreadId {
 
 /// Bootstrap-only authority for creating initial kernel threads.
 ///
-/// This is not a capability handle. Later user-space process and service
-/// creation should go through the handle table and rights checks.
+/// This authority applies only during bootstrap. Future userspace process
+/// and service creation should use capability handles with rights checks.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BootstrapProcess {
     id: ProcessId,
@@ -478,8 +499,9 @@ struct Thread {
     idle: bool,
 }
 
-// TODO(smp): replace context-pair extraction with a per-CPU scheduler ownership
-// protocol before another CPU can mutate thread slots after the lock is released.
+// TODO(smp): before enabling concurrent scheduler access, replace raw context
+// pairs with a per-CPU ownership protocol. A context pair outlives the lock,
+// so another CPU must not mutate its thread slots during the switch.
 struct ContextPair {
     old: *mut Context,
     new: *const Context,
@@ -671,6 +693,8 @@ impl<const THREADS: usize, const PROCESSES: usize> Scheduler<THREADS, PROCESSES>
             .as_mut()
             .expect("process index was found")
             .add_thread(&mut thread);
+        // Start at the current runtime floor. Starting at zero would let a new
+        // thread run until it caught up with time charged before it existed.
         if !idle && thread.virtual_runtime < self.min_virtual_runtime {
             thread.virtual_runtime = self.min_virtual_runtime;
         }
@@ -878,6 +902,9 @@ impl<const THREADS: usize, const PROCESSES: usize> Default for Scheduler<THREADS
     }
 }
 
+// Protects thread/process records, run state, and scheduler trace events.
+// Context transfers release this lock before changing stacks; ContextPair and
+// TrapContextPair describe the current single-CPU ownership constraint.
 static SCHEDULER: Locked<Scheduler<MAX_TASKS, MAX_PROCESSES>> = Locked::new(Scheduler::new());
 
 pub fn init() -> Result<(), InitError> {
@@ -911,6 +938,11 @@ pub fn preempt_from_trap<S: TrapContextSwitch>() -> Result<(), ScheduleError> {
     let Some(pair) = ({ SCHEDULER.lock().preempt_contexts()? }) else {
         return Ok(());
     };
+    // The incoming thread must be able to take SCHEDULER's lock. The temporary
+    // guard above is already dropped; trap entry keeps local interrupts disabled
+    // until the transfer finishes. Secondary CPUs are not scheduled yet.
+    // TODO(process-creation): add a QEMU regression that alternates distinct FP
+    // values between two user threads on both architectures.
     {
         // SAFETY: A real scheduler switch returns distinct outgoing and incoming
         // threads. Trap entry disabled hardware FP access, and interrupts remain
@@ -921,8 +953,6 @@ pub fn preempt_from_trap<S: TrapContextSwitch>() -> Result<(), ScheduleError> {
         let new_fp = unsafe { &*pair.new_fp };
         // SAFETY: The scheduler proved that these FP states belong to the same
         // outgoing and incoming threads as the context pair below.
-        // TODO(process-creation): add a QEMU regression that alternates
-        // distinct FP values between two user threads on both architectures.
         unsafe { S::switch_fp(old_fp, new_fp) };
     }
     // SAFETY: The scheduler returned the outgoing thread context it owns.
@@ -935,6 +965,10 @@ pub fn preempt_from_trap<S: TrapContextSwitch>() -> Result<(), ScheduleError> {
     Ok(())
 }
 
+/// Charges elapsed scheduler intervals to the current thread and reports
+/// whether a reschedule is pending. Does not switch contexts itself.
+///
+/// Pass [`crate::clock::TickAdvance::elapsed_ticks`], not raw hardware counter ticks.
 pub fn tick(elapsed_ticks: u64) -> Result<bool, ScheduleError> {
     SCHEDULER.lock().tick(elapsed_ticks)
 }
@@ -945,9 +979,9 @@ pub fn current() -> Option<ThreadSnapshot> {
 
 /// Enables the current thread's saved FP image and inspects it in place.
 ///
-/// The callback runs while the scheduler lock is held and must not re-enter
-/// task APIs. Keeping the state borrowed avoids copying the architecture's
-/// entire register image on the first-use trap path.
+/// The scheduler holds its lock while the callback runs. The callback must
+/// not re-enter task APIs. Borrowing the state avoids copying the entire
+/// architecture register image when the thread first uses FP.
 pub fn enable_current_user_fp_state(
     activate: impl FnOnce(&ThreadFpState),
 ) -> Result<(), ScheduleError> {
@@ -956,7 +990,6 @@ pub fn enable_current_user_fp_state(
     let thread = scheduler
         .thread_mut(current)
         .ok_or(ScheduleError::UnknownThread)?;
-    // The scheduler's current ID must resolve to that same thread entry.
     debug_assert_eq!(thread.id, current);
     thread.fp.enable_user_state();
     activate(&thread.fp);
@@ -965,6 +998,8 @@ pub fn enable_current_user_fp_state(
 
 /// Inspects the current thread's FP state without letting its reference escape
 /// the scheduler lock.
+///
+/// The callback runs with the lock held and must not re-enter task APIs.
 pub fn with_current_user_fp_state<R>(
     inspect: impl FnOnce(&ThreadFpState) -> R,
 ) -> Result<R, ScheduleError> {

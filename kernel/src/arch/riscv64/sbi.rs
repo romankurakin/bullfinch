@@ -1,8 +1,8 @@
 //! RISC-V Supervisor Binary Interface calls.
 //!
-//! OpenSBI provides S-mode services such as timer programming. These are
-//! stopgap mechanisms that will move to kernel-native drivers as the HAL
-//! matures.
+//! The kernel requests firmware services through `ecall`. OpenSBI implements
+//! these calls for the QEMU boot path, including timer deadlines and early
+//! console output.
 
 use core::arch::asm;
 

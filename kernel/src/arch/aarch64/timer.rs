@@ -12,9 +12,9 @@ use super::{cpu, interrupt};
 
 const CNTP_CTL_ENABLE: u64 = 1 << 0;
 
-// 0 == not yet initialized. Written once at boot, read from many call sites.
-// Using an atomic avoids `static mut` aliasing UB and makes the publication
-// edge explicit.
+// Zero means no valid frequency is available. Boot publishes the frequency
+// with Release, and readers load it with Acquire. The atomic avoids shared
+// references to a mutable static value.
 static FREQUENCY_HZ: AtomicU64 = AtomicU64::new(0);
 
 pub fn init_frequency(_: Option<Frequency>) {

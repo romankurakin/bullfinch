@@ -1,8 +1,9 @@
 //! Kernel object allocator.
 //!
-//! Fixed size pools allocate objects from self contained slab pages. Each slab
-//! stores its metadata in slot 0 and an encoded back pointer at the page start,
-//! so freeing an object does not need external metadata.
+//! Each pool divides its pages into slots of one fixed size. Each such page
+//! is a slab: slot 0 holds its metadata, and the remaining slots hold objects.
+//! An encoded back pointer at the page start locates the slab metadata when
+//! freeing an object. No external metadata lookup is needed.
 
 use core::{marker::PhantomData, mem::MaybeUninit, ptr::NonNull};
 
@@ -65,6 +66,10 @@ const _: () = assert!(
     core::mem::size_of::<Option<NonNull<SlabHeader>>>() == core::mem::size_of::<*mut SlabHeader>()
 );
 
+// Owns all slab pages for one object layout. The partial list contains slabs
+// with free slots, including retained empty slabs. Full slabs leave the list
+// until a free creates space; `current` caches a candidate from this list.
+// Mutating the list or a slab's bitmap requires exclusive access to the pool.
 struct Pool<T> {
     alloc_page: PageAllocFn,
     free_page: PageFreeFn,
@@ -111,9 +116,7 @@ impl<T> Pool<T> {
             return Err(PoolInitError::Header);
         }
         let objects = pool.objects_per_slab();
-        // Slot tracking is a fixed-size bitmap. A layout that needs more
-        // slots than the bitmap can index would corrupt the slab, so reject
-        // it here instead.
+        // The bitmap must cover every slot, with at least one slot after the header.
         if objects <= 1 || objects > MAX_BITMAP_WORDS * 64 {
             return Err(PoolInitError::Object);
         }
@@ -136,16 +139,16 @@ impl<T> Pool<T> {
 
     /// # Safety
     ///
-    /// `object` must have been returned by this pool and must not have already
-    /// been freed. Passing an arbitrary pointer can make the allocator read an
-    /// invalid slab back pointer.
+    /// `object` must come from this pool and still be allocated. An arbitrary
+    /// pointer can make the allocator read an invalid slab back pointer.
     unsafe fn free(&mut self, object: NonNull<MaybeUninit<T>>) -> Result<(), FreeError> {
         let object_addr = object.as_ptr() as usize;
         let page_base = object_addr & !(PAGE_SIZE - 1);
         let back_pointer = page_base as *const usize;
-        // SAFETY: `page_base` is derived from the object pointer. Validation
-        // below rejects pages whose encoded back pointer does not match this
-        // pool before any slab metadata is trusted.
+        // SAFETY: The caller supplies a live allocation from this pool, so its
+        // containing page is still mapped and starts with an initialized,
+        // aligned back pointer. The checks below detect metadata corruption;
+        // they cannot make reading an arbitrary pointer valid.
         let encoded = unsafe { back_pointer.read() };
         let slab = self
             .decode_back_pointer(page_base, encoded)
@@ -157,8 +160,8 @@ impl<T> Pool<T> {
             return Err(FreeError::InvalidSlab);
         }
 
-        // SAFETY: The encoded back pointer and expected address checks above
-        // prove that this pool owns the slab header for `page_base`.
+        // SAFETY: The caller's allocation keeps its slab page live. The address
+        // check places this pointer at that page's initialized slab header.
         let slab_ref = unsafe { slab.as_ref() };
         if slab_ref.page_addr != page_base || slab_ref.cookie != self.slab_cookie(page_base) {
             return Err(FreeError::InvalidSlab);
@@ -220,8 +223,8 @@ impl<T> Pool<T> {
         if became_empty && self.slab_count > MIN_SLABS {
             self.unlink_slab(slab);
             self.slab_count -= 1;
-            // SAFETY: The page is leaving this pool. Poisoning the back pointer
-            // makes stale frees fail the cookie check.
+            // SAFETY: The empty slab's page is still owned by this pool until
+            // `free_page` below. Invalidate its back pointer before release.
             unsafe {
                 (page_addr as *mut usize).write(usize::MAX);
             }
@@ -287,6 +290,9 @@ impl<T> Pool<T> {
                 return None;
             }
 
+            // A set bit marks a free slot. `trailing_zeros` locates the first
+            // set bit without inspecting each slot. Clearing that bit claims
+            // the slot; slot 0 remains reserved for the slab header.
             let mut selected = None;
             for word_index in 0..MAX_BITMAP_WORDS {
                 let word = slab_ref.bitmap[word_index];
@@ -538,15 +544,15 @@ impl ObjectAllocator {
 
     /// # Safety
     ///
-    /// `ptr` must have been returned by this allocator for a request of `size`
-    /// bytes and must not have already been freed.
+    /// `ptr` must come from this allocator for a request of `size` bytes.
+    /// The allocation must not already be freed.
     unsafe fn free(&mut self, ptr: NonNull<u8>, size: usize) -> Result<(), FreeError> {
         if !self.initialized {
             return Err(FreeError::NotInitialized);
         }
-        // SAFETY: The caller supplies the original request size, so the same
-        // size-class decision used by `alloc` selects the owning pool directly;
-        // the caller also guarantees that `ptr` is live.
+        // SAFETY: The caller supplies the original request size. The same
+        // size-class calculation used by `alloc` therefore selects the owning
+        // pool. The caller also guarantees that `ptr` is live.
         unsafe {
             match size_class(size.max(CACHE_LINE_SIZE)).ok_or(FreeError::InvalidSlab)? {
                 SizeClass::Class64 => self.pool_64.free(ptr.cast()),
@@ -621,9 +627,9 @@ fn alloc_raw(size: usize, alignment: Option<usize>) -> Result<NonNull<u8>, Alloc
 
 /// # Safety
 ///
-/// `ptr` must have been returned by `alloc_raw` for a request of `size` bytes
-/// and must not have already been freed. Passing a forged pointer can make the
-/// allocator read an invalid slab back pointer.
+/// `ptr` must come from `alloc_raw` for a request of `size` bytes. The allocation
+/// must not already be freed. A forged pointer can make the allocator read an
+/// invalid slab back pointer.
 unsafe fn free_raw(ptr: NonNull<u8>, size: usize) -> Result<(), FreeError> {
     // SAFETY: The caller proves `ptr` belongs to this allocator, supplies its
     // original request size, and has not already freed it. The lock gives
@@ -868,9 +874,9 @@ mod tests {
         // SAFETY: Error path test passes the metadata slot intentionally.
         assert_eq!(unsafe { pool.free(metadata) }, Err(FreeError::MetadataSlot));
 
-        // The 64-byte class packs the page exactly, so one past the last slot
-        // lands on the next page; thus the back-pointer check rejects it as a
-        // foreign slab rather than an out-of-range slot index.
+        // The 64-byte class fills the page. A pointer past the last slot lands
+        // on the next page, where the back-pointer check rejects it as a
+        // foreign slab before the slot-index check runs.
         let next_page = NonNull::new(
             (storage_base + pool.capacity_per_slab() * pool.aligned_size())
                 as *mut MaybeUninit<TestObject>,
@@ -895,8 +901,9 @@ mod tests {
     #[test]
     fn rejects_in_page_pointer_past_last_slot() {
         TEST_STATE.with_borrow_mut(TestState::reset);
-        // 768-byte objects leave tail slack in the page, so an aligned in-page
-        // pointer past the last slot exists and must fail the slot bound.
+        // 768-byte objects leave unused bytes at the page end. An aligned
+        // pointer into that space stays within the slab page but exceeds its
+        // slot count, exercising the slot-index check.
         let mut pool = Pool::<WideObject>::new(test_alloc_page, test_free_page, 7);
         let object = pool.alloc().unwrap();
         let page_base = (object.as_ptr() as usize) & !(PAGE_SIZE - 1);

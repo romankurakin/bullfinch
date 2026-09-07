@@ -1,10 +1,12 @@
 //! RISC-V trap vector installation.
 //!
-//! In vectored mode `stvec` jumps to `base + 4 * cause`. The table has 256
-//! slots and routes all of them through the common dispatcher. Assembly only
-//! saves registers; Rust validates `scause`.
+//! In vectored mode, interrupts enter at `base + 4 * cause`. Synchronous
+//! exceptions enter at `base`. The table has 256 slots. Slot 5 takes the fast
+//! timer path with a smaller register frame. Other slots use the full trap
+//! entry path, where Rust decodes `scause`.
+//! [`IrqFrame`] and [`TrapFrame`] define the layouts shared with this assembly.
 //!
-//! See RISC-V Privileged Specification, section 4.1.5 (stvec).
+//! See RISC-V Privileged Specification, version 20250508, section 12.1.2 (stvec).
 
 use core::arch::{asm, global_asm};
 
@@ -250,8 +252,8 @@ pub fn init() {
     let installed: usize;
 
     // SAFETY: `vector_base` names the 1024-byte-aligned `.trap` table emitted
-    // above. It covers causes 0-255, and every slot routes through the common
-    // dispatcher. FENCE.I makes the trap code visible before traps are enabled.
+    // above. It covers causes 0-255 with either the full trap or fast timer
+    // entry path. FENCE.I makes the trap code visible before traps are enabled.
     unsafe {
         asm!(
             "csrw stvec, {stvec}",

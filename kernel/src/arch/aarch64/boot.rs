@@ -1,9 +1,9 @@
 //! ARM64 boot entry point.
 //!
-//! QEMU drops us into EL1 with the DTB pointer in x0 and no MMU. The boot stub
-//! does the bare minimum: save x0 somewhere safe, zero BSS, call
-//! `rust_arm64_phys_init` while we are still running with physical addresses,
-//! then switch SP and PC into the higher-half mapping and jump to
+//! QEMU enters EL1 with the DTB pointer in x0 and the MMU disabled. The boot
+//! stub saves x0 and zeros BSS, the region for zero-initialized static data.
+//! It calls `rust_arm64_phys_init` while addresses are still physical.
+//! It then switches SP and PC into the higher-half mapping and jumps to
 //! `rust_arm64_main`. Any secondary core that wakes up parks in WFI.
 //!
 //! See ARM Architecture Reference Manual, D1.2 (Reset and boot).
@@ -35,9 +35,9 @@ pub unsafe extern "C" fn _start() -> ! {
     naked_asm!(
         "
         mov x19, x0
-        // Park every core whose full affinity is not 0.0.0.0. Checking Aff0
-        // alone is not enough: core 0 of a second cluster has Aff1 != 0 but
-        // Aff0 == 0, and thus would race the boot core through this path.
+        // Admit only the core with affinity 0.0.0.0. Aff0 identifies a core
+        // within a cluster, so another cluster can also have a core with Aff0=0.
+        // Checking all affinity fields prevents both cores from running boot.
         // The two masks cover Aff2:Aff1:Aff0 in bits [23:0] and Aff3 in bits
         // [39:32], skipping the MT, U, and RES1 bits between them.
         mrs x1, mpidr_el1

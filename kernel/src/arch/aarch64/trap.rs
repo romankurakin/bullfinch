@@ -1,9 +1,11 @@
 //! ARM64 trap vector installation.
 //!
 //! ARM64 requires VBAR_EL1 to point at a 2 KiB-aligned table with 16 entries
-//! of 128 bytes each. Only two slots matter for now (synchronous exception and
-//! IRQ from current EL). The rest branch to the same handlers so that an
-//! unexpected trap type reaches the common panic path.
+//! of 128 bytes each. IRQ slots use a fast entry path with a smaller register
+//! frame. All other slots use the full trap entry path for cause decoding and
+//! diagnostics. The Rust handler handles user FP activation before passing
+//! other exceptions to the common trap policy.
+//! [`IrqFrame`] and [`TrapFrame`] define the layouts shared with this assembly.
 //!
 //! See ARM Architecture Reference Manual, D1.9 (Vector tables).
 

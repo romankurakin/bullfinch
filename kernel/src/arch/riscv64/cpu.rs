@@ -1,10 +1,11 @@
 //! RISC-V CPU primitives.
 //!
-//! See RISC-V Privileged Architecture Spec (20211203), chapters 3 (CSRs),
-//! 3.1.6.1 (sstatus.SIE), and the Memory-Consistency Model.
+//! These helpers act on the current hart (hardware thread).
 
 use core::arch::asm;
 
+// SIE controls supervisor interrupts on this hart. See RISC-V Privileged
+// Specification, version 20250508, section 12.1.1 (sstatus).
 const SUPERVISOR_INTERRUPT_ENABLE: usize = 1 << 1;
 
 #[allow(dead_code, reason = "used by the library CPU backend")]
@@ -66,8 +67,7 @@ pub fn spin_wait() {
     };
 }
 
-/// The RISC V read write fence is required after page table writes and before
-/// SFENCE VMA.
+/// Orders reads and writes with `fence rw, rw` before the MMU's `SFENCE.VMA`.
 pub fn fence_rw_rw() {
     // SAFETY: Orders page table writes before subsequent translation.
     unsafe { asm!("fence rw, rw", options(nomem, nostack, preserves_flags)) };

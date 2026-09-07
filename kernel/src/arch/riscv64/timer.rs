@@ -1,8 +1,8 @@
 //! RISC-V supervisor timer access.
 //!
-//! The supervisor timer is owned by machine-mode firmware (OpenSBI). We
-//! program deadlines via SBI calls and enable delivery through the local
-//! interrupt controller (PLIC or CLINT).
+//! The kernel requests timer deadlines through OpenSBI. It enables the hart's
+//! supervisor timer interrupt with `sie.STIE` and enables supervisor-mode
+//! interrupt delivery with `sstatus.SIE`.
 
 use core::arch::asm;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -13,7 +13,8 @@ use super::{cpu, interrupt, sbi};
 
 const SUPERVISOR_TIMER_INTERRUPT_ENABLE: usize = 1 << 5;
 
-// 0 == not yet initialized. See aarch64/timer.rs for the rationale.
+// Zero means no valid frequency is available. Boot publishes the frequency
+// with Release, and readers load it with Acquire.
 static FREQUENCY_HZ: AtomicU64 = AtomicU64::new(0);
 
 pub fn init_frequency(frequency: Option<Frequency>) {

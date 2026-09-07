@@ -1,8 +1,8 @@
 //! Kernel context model.
 //!
 //! Bare-metal builds use the selected architecture context module. Host tests
-//! use a layout-independent placeholder so scheduler ownership can be tested
-//! without assembly.
+//! use a placeholder to test scheduler ownership without executing a context
+//! switch. The placeholder does not depend on the architecture's register layout.
 
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
 #[path = "../arch/aarch64/context.rs"]

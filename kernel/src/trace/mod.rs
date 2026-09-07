@@ -1,7 +1,9 @@
 //! Kernel trace ring.
 //!
-//! The ring stores compact scheduler events during early bring-up. It is kept
-//! separate from `task` so the boot log stage maps to a real kernel module.
+//! The ring stores scheduler events in a fixed-size array without allocating.
+//! Its cursor wraps to the start after the last slot. Once the array is full,
+//! each new event replaces the oldest event. The caller supplies synchronization
+//! through exclusive access to the ring.
 
 pub const TRACE_EVENTS: usize = 128;
 

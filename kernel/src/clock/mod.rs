@@ -1,7 +1,8 @@
 //! Clock subsystem helpers.
 //!
-//! Hardware timers use monotonically increasing counters. Absolute deadlines
-//! avoid accumulating drift when an interrupt is handled late.
+//! Hardware timers count elapsed time in ticks. Each deadline is a counter
+//! value, rather than a delay from the current time. Advancing the previous
+//! deadline keeps late interrupts from shifting the entire tick schedule.
 
 pub const TICK_RATE_HZ: u64 = 100;
 
@@ -9,6 +10,8 @@ use crate::time::{Deadline, Frequency, TickInterval, Ticks};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TickAdvance {
+    /// Scheduler intervals elapsed, including intervals missed by a late IRQ.
+    /// Their rate is [`TICK_RATE_HZ`], distinct from the hardware counter frequency.
     pub elapsed_ticks: u64,
     pub next_tick: Deadline,
 }
@@ -20,6 +23,12 @@ pub fn ticks_per_interval(freq: Frequency) -> Option<TickInterval> {
     TickInterval::try_from_ticks(Ticks::new(freq.get() / TICK_RATE_HZ))
 }
 
+/// Advances the tick schedule after a timer interrupt.
+///
+/// Counts the scheduled tick, then skips any further deadlines at or before
+/// `now`. Division counts missed intervals without a loop for each one.
+/// For a deadline of 1000, an interval of 100, and `now` at 1350, four ticks
+/// elapsed and the next deadline is 1400. Returns `None` on arithmetic overflow.
 pub fn advance_tick_state(
     now: Ticks,
     scheduled_tick: Deadline,

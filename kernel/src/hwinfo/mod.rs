@@ -2,6 +2,10 @@
 //!
 //! The DTB is firmware data. Boot turns it into a compact snapshot so later
 //! subsystems do not repeatedly walk device-tree nodes.
+//!
+//! Device registers must be in the root address space or below buses with
+//! explicit empty `ranges` properties (identity mappings). Other bus mappings
+//! are rejected until address translation is implemented.
 
 use crate::{
     boot::DeviceTreeBlobPhysicalAddress,
@@ -150,14 +154,12 @@ impl HardwareInfo {
         self.reserved_region_count += 1;
     }
 
-    /// Collect RAM regions from `/memory` nodes and sort by size descending.
+    /// Collects RAM regions from `/memory` nodes, largest first.
     ///
-    /// The PMM initializes arenas in order. Largest first keeps metadata in the
-    /// biggest pool before smaller regions are touched.
+    /// The PMM initializes arenas in this order, each with its own metadata.
     fn collect_memory_regions(&mut self, fdt: &Fdt<'_>) -> FdtResult<()> {
-        // Firmware may describe RAM as several `memory@X` nodes rather than
-        // one `/memory` node with several `reg` entries; thus we walk every
-        // child of the root and take each node named "memory".
+        // Firmware can use several `memory@X` nodes or several `reg` entries
+        // in one memory node. Walk all root children to collect both forms.
         for node in fdt.root().children() {
             if node.name_without_address() != "memory" || !node_is_available(node)? {
                 continue;
@@ -175,8 +177,6 @@ impl HardwareInfo {
             }
         }
 
-        // Largest first: arena metadata comes from the biggest pool before
-        // smaller regions are touched.
         sort_regions_by_size(&mut self.memory_regions[..self.memory_region_count]);
         Ok(())
     }
@@ -212,10 +212,9 @@ impl HardwareInfo {
             };
             for entry in reg {
                 let Some(region) = region_from_reg(entry) else {
-                    // Count what we cannot parse. If a reserved entry were
-                    // dropped silently, the PMM could hand firmware-owned
-                    // memory to the allocator; the counter lets boot refuse
-                    // to continue instead.
+                    // Count unparsed reservations so boot can reject the map.
+                    // Without this check, the PMM could allocate memory that
+                    // still belongs to firmware.
                     self.dropped_reserved_regions = self.dropped_reserved_regions.saturating_add(1);
                     continue;
                 };
@@ -390,7 +389,20 @@ fn device_base(node: Node<'_>) -> FdtResult<Option<PhysicalAddress>> {
 }
 
 fn find_compatible<'a>(fdt: &Fdt<'a>, compatible: &[&str]) -> FdtResult<Option<Node<'a>>> {
-    find_compatible_below(fdt.root(), compatible, MAX_COMPATIBLE_SEARCH_DEPTH)
+    let root = fdt.root();
+    if !node_is_available(root)? {
+        return Ok(None);
+    }
+    // Root children already use CPU physical addresses. Only buses below the
+    // root need to declare how their children's addresses map to their parent.
+    for child in root.children() {
+        if let Some(node) =
+            find_compatible_below(child, compatible, MAX_COMPATIBLE_SEARCH_DEPTH - 1)?
+        {
+            return Ok(Some(node));
+        }
+    }
+    Ok(None)
 }
 
 fn find_compatible_below<'a>(
@@ -411,6 +423,16 @@ fn find_compatible_below<'a>(
         if let Some(match_node) =
             find_compatible_below(child, compatible, depth_remaining.saturating_sub(1))?
         {
+            // DTSpec 2.3.8: empty ranges means identity; missing ranges means
+            // no mapping. Nonempty ranges require translation, which this
+            // extractor does not implement. Check only ancestors of a match
+            // so unrelated buses do not prevent discovery of usable devices.
+            if !node
+                .property("ranges")
+                .is_some_and(|ranges| ranges.value().is_empty())
+            {
+                return Err(FdtError::UnsupportedBusMapping);
+            }
             return Ok(Some(match_node));
         }
     }
@@ -704,6 +726,104 @@ mod tests {
         assert_eq!(hw.dropped_reserved_regions, 1);
     }
 
+    #[test]
+    fn accepts_device_registers_below_nested_identity_buses() {
+        for compatible in ["arm,gic-v3", "arm,gic-400", "arm,pl011", "ns16550a"] {
+            let blob = device_below_buses(compatible, Some(&[]), Some(&[]));
+            let fdt = Fdt::new(&blob).unwrap();
+            let hw = HardwareInfo::from_fdt(DeviceTreeBlobPhysicalAddress::new(0), &fdt).unwrap();
+            if compatible.starts_with("arm,gic") {
+                let base = PhysicalAddress::new(0x0800_0000);
+                let second = Some(PhysicalAddress::new(0x080a_0000));
+                let expected = if compatible == "arm,gic-v3" {
+                    InterruptControllerInfo::GicV3 {
+                        distributor_base: base,
+                        redistributor_base: second,
+                    }
+                } else {
+                    InterruptControllerInfo::GicV2 {
+                        distributor_base: base,
+                        cpu_interface_base: second,
+                    }
+                };
+                assert_eq!(hw.features.interrupt_controller, Some(expected));
+            } else {
+                assert_eq!(hw.uart_base, Some(PhysicalAddress::new(0x0800_0000)));
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_device_registers_below_unmapped_or_translated_buses() {
+        let translated = [0, 0, 0, 0x0800_0000, 0, 0x1000_0000];
+        for compatible in ["arm,gic-v3", "arm,gic-400", "arm,pl011", "ns16550a"] {
+            for unsupported in [None, Some(translated.as_slice())] {
+                // Either ancestor can invalidate the path to a device.
+                for (outer, inner) in [(unsupported, Some(&[][..])), (Some(&[][..]), unsupported)] {
+                    let blob = device_below_buses(compatible, outer, inner);
+                    let fdt = Fdt::new(&blob).unwrap();
+                    assert_eq!(
+                        HardwareInfo::from_fdt(DeviceTreeBlobPhysicalAddress::new(0), &fdt),
+                        Err(FdtError::UnsupportedBusMapping)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn accepts_root_devices_despite_unrelated_unmapped_buses() {
+        let mut dtb = DtbBuilder::new();
+        dtb.begin_node("");
+        dtb.prop_u32("#address-cells", 2);
+        dtb.prop_u32("#size-cells", 2);
+        dtb.begin_node("unmapped-bus");
+        dtb.begin_node("unrelated-device");
+        dtb.prop_str_list("compatible", &["bullfinch,unrelated"]);
+        dtb.end_node();
+        dtb.end_node();
+        dtb.begin_node("serial@9000000");
+        dtb.prop_str_list("compatible", &["arm,pl011"]);
+        dtb.prop_cells("reg", &[0, 0x0900_0000, 0, 0x1000]);
+        dtb.end_node();
+        dtb.end_node();
+        let blob = dtb.finish();
+        let fdt = Fdt::new(&blob).unwrap();
+        let hw = HardwareInfo::from_fdt(DeviceTreeBlobPhysicalAddress::new(0), &fdt).unwrap();
+        assert_eq!(hw.uart_base, Some(PhysicalAddress::new(0x0900_0000)));
+    }
+
+    fn device_below_buses(
+        compatible: &str,
+        outer_ranges: Option<&[u32]>,
+        inner_ranges: Option<&[u32]>,
+    ) -> Vec<u8> {
+        let mut dtb = DtbBuilder::new();
+        dtb.begin_node("");
+        dtb.prop_u32("#address-cells", 2);
+        dtb.prop_u32("#size-cells", 2);
+        for (name, ranges) in [("soc", outer_ranges), ("bridge", inner_ranges)] {
+            dtb.begin_node(name);
+            dtb.prop_str_list("compatible", &["simple-bus"]);
+            dtb.prop_u32("#address-cells", 2);
+            dtb.prop_u32("#size-cells", 2);
+            if let Some(ranges) = ranges {
+                dtb.prop_cells("ranges", ranges);
+            }
+        }
+        dtb.begin_node("device@8000000");
+        dtb.prop_str_list("compatible", &[compatible]);
+        dtb.prop_cells(
+            "reg",
+            &[0, 0x0800_0000, 0, 0x10000, 0, 0x080a_0000, 0, 0x20000],
+        );
+        dtb.end_node();
+        dtb.end_node();
+        dtb.end_node();
+        dtb.end_node();
+        dtb.finish()
+    }
+
     fn test_dtb() -> Vec<u8> {
         let mut dtb = DtbBuilder::new();
 
@@ -753,6 +873,7 @@ mod tests {
         dtb.begin_node("soc");
         dtb.prop_u32("#address-cells", 2);
         dtb.prop_u32("#size-cells", 2);
+        dtb.prop("ranges", &[]);
         dtb.begin_node("serial@10000000");
         dtb.prop_str_list("compatible", &["ns16550a"]);
         dtb.prop_cells("reg", &[0, 0x1000_0000, 0, 0x100]);

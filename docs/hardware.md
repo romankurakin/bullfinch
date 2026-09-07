@@ -1,5 +1,9 @@
 # Target Hardware
 
+These notes describe hardware and emulation features for the target platforms.
+Kernel implementation status is tracked in [plan.md](plan.md). A listed CPU
+feature does not imply that Bullfinch uses it.
+
 ## Summary
 
 | Platform | CPU | ISA |
@@ -11,14 +15,18 @@
 
 ## QEMU virt (ARM64)
 
-Use `-cpu max` for all extensions or specific core (`cortex-a72`, `neoverse-n1`)
+Select a CPU model with `-cpu max` or a named core such as `cortex-a72` or
+`neoverse-n1`. The features exposed by `max` can change between QEMU versions.
+Some features also need machine options, as described in the
+[QEMU virt documentation](https://www.qemu.org/docs/master/system/arm/virt.html).
 
 Supported: ASIMD, FP16, Crypto, CRC32, LSE, RAS, SVE, PAC, BTI, MTE (needs
 `-machine mte=on`)
 
 ## QEMU virt (RISC-V)
 
-Use `-cpu max` or `-cpu rv64,v=true,zba=true,...`
+Select `-cpu max` or configure extensions on `rv64`, for example with
+`-cpu rv64,v=true,zba=true`.
 
 Supported: RV64GC, V (RVV 1.0), Zba, Zbb, Zbs, Zbc, Zicbom, Zicbop, Zicboz,
 Zicntr, Zihpm, Zkt
@@ -27,7 +35,7 @@ Not supported: Zicfiss
 
 ## Raspberry Pi 5
 
-Broadcom BCM2712, Cortex-A76 @ 2.4 GHz
+The Broadcom BCM2712 contains Cortex-A76 cores running at 2.4 GHz.
 
 Supported: ASIMD, FP16, Crypto, CRC32, LSE, DotProd, RDM, RAS, SSBS
 
@@ -35,7 +43,7 @@ Not supported: SVE, PAC (8.3+), BTI (8.5+), MTE (8.5+)
 
 ## Orange Pi RV2
 
-Spacemit K1 / Ky X1, X60 core @ 1.6 GHz, RVA22 (partial)
+Spacemit K1 / Ky X1 uses X60 cores running at 1.6 GHz, with partial RVA22 support.
 
 Supported: RV64IMAFDC, V (RVV 1.0, 256-bit), Zba, Zbb, Zbc, Zbs, Zicbom, Zicbop,
 Zicboz, Zicntr, Zicond, Zicsr, Zifencei, Zihintpause, Zihpm, Zfh, Zvfh, Zkt,
@@ -45,7 +53,8 @@ Not supported: Zicfiss (RVA23), Zicclsm (misaligned vector access)
 
 ## Arduino UNO Q
 
-Qualcomm QRB2210, Cortex-A53 @ 2.0 GHz, also has STM32U585 MCU
+The Qualcomm QRB2210 contains Cortex-A53 cores running at 2.0 GHz.
+The board also has an STM32U585 microcontroller.
 
 Supported: ASIMD, CRC32, TrustZone, Virtualization, Crypto (optional)
 
@@ -54,16 +63,20 @@ Not supported: LSE (8.1+), FP16 (8.2+), DotProd (8.2+), SVE, PAC (8.3+), BTI
 
 ## Implications
 
-**Security**: No hardware CFI on physical targets.
+**Security**: The physical targets lack hardware control-flow integrity (CFI)
+features listed here, such as BTI or Zicfiss.
 
-**Atomics**: Pi 5 has LSE, UNO Q has LL/SC only, RV2 has LR/SC + AMO.
+**Atomics**: Pi 5 has LSE instructions. UNO Q uses load-linked/store-conditional
+(LL/SC) sequences. RV2 has load-reserved/store-conditional (LR/SC) sequences
+and atomic memory operations (AMO).
 
-**Vectors**: Pi 5 NEON only, RV2 has RVV 1.0, QEMU has both SVE and RVV.
+**Vectors**: Pi 5 supports NEON but not SVE. RV2 supports RVV 1.0.
+QEMU can expose SVE on ARM64 and RVV on RISC-V.
 
-**Boot**: Direct QEMU boot remains the fast developer path. ARM64 QEMU uses a
-raw image, while RISC-V QEMU with OpenSBI loads the ELF kernel. U-Boot is a good
-real-board path, but should be added as separate board profiles before replacing
-the direct smoke path.
+**Boot**: The developer commands boot QEMU directly. ARM64 uses a raw image.
+RISC-V uses OpenSBI to load the ELF kernel. For physical boards, U-Boot should
+first be added through separate board profiles before replacing direct boot
+in smoke tests.
 
 ## References
 

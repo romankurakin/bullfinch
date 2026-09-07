@@ -1,10 +1,14 @@
-use kernel::mmu::VirtualAddress;
+//! Volatile access to memory-mapped device registers.
+//!
+//! `VirtualAddress` alone does not prove that an address names a device register.
+//! The caller must prove that the mapping, access width, and device side effects
+//! permit the operation. Volatile keeps the compiler from removing the access
+//! or reordering it across other externally observable events. Hardware ordering
+//! still requires the appropriate barriers, and volatile access is not atomic.
+//!
+//! See `core::ptr::read_volatile` for Rust's volatile-access guarantees.
 
-// Volatile MMIO accessors. These are `unsafe` because the caller picks the
-// address: a safe `VirtualAddress` can name anything, so soundness depends on
-// the caller proving the address refers to a device register that tolerates the
-// access width and side effects. Volatile prevents the compiler from eliding or
-// reordering the access.
+use kernel::mmu::VirtualAddress;
 
 /// # Safety
 /// `address` must refer to a 4-byte-aligned, currently mapped MMIO register

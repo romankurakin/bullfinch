@@ -1,9 +1,8 @@
 //! Portable trap dispatch policy.
 //!
-//! Architecture entry code saves registers, decodes the cause, and then hands
-//! the frame to us. This module decides what happens next. Right now every
-//! unexpected kernel trap simply panics. Eventually it will grow branches for
-//! syscalls, page faults, and breakpoints.
+//! The dispatcher builds a panic report for each kernel trap passed to it.
+//! Architecture handlers handle user FP activation before calling this policy.
+//! Syscall, page-fault recovery, and breakpoint policies remain future work.
 
 use super::report::{TrapFrameSnapshot, TrapReport};
 

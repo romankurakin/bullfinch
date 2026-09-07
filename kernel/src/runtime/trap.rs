@@ -1,8 +1,9 @@
 //! Portable trap handler entry points.
 //!
-//! Architecture-specific assembly saves the register frame, decodes the cause,
-//! and then calls one of these functions. By the time we get here the trap has
-//! already been typed, so we never touch raw CSRs.
+//! Architecture entry code saves registers and calls these handlers. Frame
+//! accessors decode raw exception registers into typed causes when needed.
+//! The fast interrupt path calls its handler without constructing a full
+//! diagnostic frame.
 
 use kernel::trap::{
     dispatch::{InterruptAction, KernelTrapAction, dispatch_kernel_trap},
@@ -58,8 +59,9 @@ impl kernel::task::TrapContextSwitch for ArchTrapContextSwitch {
         new: &crate::hal::context::Context,
     ) {
         // SAFETY: The task module owns scheduler contexts and only hands us pairs
-        // that can be switched at an exception-return boundary. The final `eret`
-        // or `sret` restores the interrupted context's IRQ state.
+        // that can be switched at an exception-return boundary. Resumed threads
+        // restore IRQ state through `eret` or `sret`; fresh threads enable IRQs
+        // in their first-entry trampoline.
         unsafe { crate::hal::context::switch_context_from_trap(old, new) };
     }
 }

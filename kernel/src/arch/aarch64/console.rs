@@ -1,7 +1,8 @@
 //! ARM64 console output.
 //!
-//! QEMU virt exposes a PL011 UART at a fixed physical address. This is TX-only
-//! for boot diagnostics. The real driver model comes later.
+//! This module sends boot diagnostics through QEMU virt's PL011 UART at a
+//! fixed physical address. It implements transmit only. General device-driver
+//! support remains future work.
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 

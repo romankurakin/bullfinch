@@ -1,7 +1,10 @@
 //! RISC-V context-switch frame.
 //!
-//! This is the psABI callee-saved register set for voluntary switches,
-//! separate from the trap frame used by exceptions.
+//! This frame preserves the registers that survive a function call under the
+//! psABI. It also stores the return address, stack pointer, and interrupt state.
+//! A context switch saves the old frame and restores the new frame to resume
+//! execution on another stack. Exception entry uses separate
+//! [trap and IRQ frames](crate::trap::frame::riscv64).
 
 #![allow(dead_code, reason = "assembly owns context frame fields")]
 
@@ -76,6 +79,8 @@ impl Context {
         }
     }
 
+    /// Places the entry function and argument in registers restored by the
+    /// first switch. The thread trampoline passes s2 to the function in s1.
     pub fn set_entry_data(&mut self, entry: usize, arg: usize) {
         self.s1 = entry as u64;
         self.s2 = arg as u64;
@@ -111,8 +116,9 @@ pub unsafe fn switch_context(old: &mut Context, new: &Context) {
 /// # Safety
 ///
 /// `old` and `new` must satisfy the same requirements as [`switch_context`].
-/// The caller must be on a trap or IRQ path whose final `sret` restores
-/// interrupt state from the saved supervisor status.
+/// The caller must be on a trap or IRQ path. The incoming context must either
+/// resume through a saved trap frame or start at the thread trampoline,
+/// which enables interrupts on first entry.
 pub unsafe fn switch_context_from_trap(old: &mut Context, new: &Context) {
     // SAFETY: The caller proves the context ABI requirements and the trap-return
     // boundary owns interrupt-state restoration.
@@ -206,6 +212,9 @@ bullfinch_switch_context_from_trap:
     .global bullfinch_thread_trampoline
     .type bullfinch_thread_trampoline, @function
 bullfinch_thread_trampoline:
+    # A fresh thread has no trap frame whose sret would restore SIE.
+    # The switch installed its stack and scheduler identity before reaching here.
+    csrsi sstatus, 0x2
     mv a0, s2
     jr s1
 "#

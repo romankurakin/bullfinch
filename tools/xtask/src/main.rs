@@ -8,6 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const BOOT_OK: &str = "[BOOT:OK]";
+const SCHED_OK: &str = "[SCHED:OK]";
 const SMOKE_TIMEOUT: Duration = Duration::from_secs(15);
 const PEEK_TIMEOUT: Duration = Duration::from_secs(4);
 
@@ -65,7 +66,7 @@ fn main() {
 fn run() -> Result<(), String> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Build(args) => build_kernel(args.arch, args.mode).map(|_| ()),
+        Commands::Build(args) => build_kernel(args.arch, args.mode, false).map(|_| ()),
         Commands::Qemu(args) => qemu_command(args),
         Commands::Smoke(args) => smoke_command(args),
         Commands::Peek(args) => smoke_command(SmokeArgs {
@@ -82,7 +83,7 @@ fn run() -> Result<(), String> {
 
 fn qemu_command(args: BuildArgs) -> Result<(), String> {
     ensure_smoke_support(args.arch)?;
-    let artifact = build_kernel(args.arch, args.mode)?;
+    let artifact = build_kernel(args.arch, args.mode, false)?;
     let board = board_for(args.arch);
     let mut command = qemu_command_for(board, &artifact)?;
     let status = command.status().map_err(|error| {
@@ -116,7 +117,7 @@ fn smoke_command(args: SmokeArgs) -> Result<(), String> {
 
 fn disasm_command(args: BuildArgs) -> Result<(), String> {
     ensure_tool(objdump_program(), "llvm-objdump")?;
-    let artifact = build_kernel(args.arch, args.mode)?;
+    let artifact = build_kernel(args.arch, args.mode, false)?;
     let mut command = Command::new(objdump_program());
     command.arg("-d");
     if args.arch == Arch::Riscv64 {
@@ -148,7 +149,7 @@ fn host_command() -> Result<(), String> {
     Ok(())
 }
 
-fn build_kernel(arch: Arch, mode: Mode) -> Result<KernelArtifact, String> {
+fn build_kernel(arch: Arch, mode: Mode, smoke_test: bool) -> Result<KernelArtifact, String> {
     ensure_build_support(arch)?;
     let mut command = cargo_command();
     command.args([
@@ -163,6 +164,9 @@ fn build_kernel(arch: Arch, mode: Mode) -> Result<KernelArtifact, String> {
     ]);
     if mode == Mode::Release {
         command.arg("--release");
+    }
+    if smoke_test {
+        command.args(["--features", "smoke-test"]);
     }
     run_status(command, &format!("build {} {}", arch.name(), mode.name()))?;
 
@@ -204,7 +208,7 @@ fn build_kernel(arch: Arch, mode: Mode) -> Result<KernelArtifact, String> {
 
 fn run_smoke_variant(arch: Arch, mode: Mode, peek: bool, verbose: bool) -> Result<bool, String> {
     ensure_smoke_support(arch)?;
-    let artifact = build_kernel(arch, mode)?;
+    let artifact = build_kernel(arch, mode, true)?;
     let board = board_for(arch);
     let name = format!("{}-qemu_virt-{}", arch.name(), mode.name());
     let mut command = qemu_command_for(board, &artifact)?;
@@ -230,7 +234,7 @@ fn run_smoke_variant(arch: Arch, mode: Mode, peek: bool, verbose: bool) -> Resul
         return Ok(true);
     }
 
-    if filtered.contains(BOOT_OK) {
+    if filtered.contains(BOOT_OK) && filtered.contains(SCHED_OK) {
         println!("{name}: PASS");
         Ok(true)
     } else {

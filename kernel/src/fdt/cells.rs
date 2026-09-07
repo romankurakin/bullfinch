@@ -1,12 +1,15 @@
 //! Flattened Device Tree cell parsing.
 //!
-//! DTB numeric properties are big-endian arrays of 32-bit cells. The parser
-//! provides structured helpers for some properties; this module reads scalar
-//! values used by Bullfinch policy.
+//! A cell is a 32-bit value stored with its most significant byte first.
+//! DTB numeric properties use one or more cells. This module reads scalar
+//! values that Bullfinch needs in addition to the parser's structured helpers.
 
 use core::convert::TryInto;
 
 /// Reads a 1-cell or 2-cell big-endian integer.
+///
+/// With two cells, the first contains the high 32 bits. Trailing bytes are
+/// ignored. Returns `None` for other cell counts or an input that is too short.
 pub fn read_cells(data: &[u8], cells: u8) -> Option<u64> {
     match cells {
         1 => {

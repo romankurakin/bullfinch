@@ -1,9 +1,8 @@
 //! Address and page-count types.
 //!
-//! Physical addresses, virtual addresses, and byte offsets are all just
-//! integers to the hardware. Mixing them up is a common MMU bug. These
-//! newtypes are zero-cost wrappers that let the type checker catch swaps at
-//! build time. `PageAligned<A>` is a proof that `A` is page-aligned.
+//! These wrappers distinguish physical addresses, virtual addresses, and byte
+//! offsets at compile time. They have the same representation as their inner
+//! values. `PageAligned<A>` records that the address satisfies page alignment.
 
 pub const PAGE_SIZE: usize = 4096;
 const PAGE_MASK: usize = PAGE_SIZE - 1;

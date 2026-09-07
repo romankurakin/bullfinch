@@ -1,8 +1,8 @@
 //! Trap formatting utilities.
 //!
-//! Panic and trap paths cannot allocate or take locks. These helpers format
-//! numbers into fixed-size stack buffers so that output is always possible
-//! even when the kernel is in distress.
+//! These helpers format numbers into fixed-size stack buffers. They need
+//! neither an allocator nor locks, so panic and trap handlers can use them
+//! even when those services are unavailable.
 
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 const HEX_USIZE_DIGITS: usize = core::mem::size_of::<usize>() * 2;

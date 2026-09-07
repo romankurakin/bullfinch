@@ -1,11 +1,13 @@
 //! ARM64 FP/SIMD controls.
 //!
-//! The kernel is built for `aarch64-unknown-none-softfloat`, and thus compiled
-//! kernel code never touches the FP/SIMD registers. Trap entry disables access
-//! without spilling the resident user register file. A real thread switch
-//! saves the outgoing owner and restores the incoming owner; returning to the
-//! same thread only re-enables access. While the kernel runs, CPACR_EL1 keeps
-//! FP/SIMD trapped at both EL0 and EL1, so accidental kernel FP use faults.
+//! The `aarch64-unknown-none-softfloat` target keeps compiled kernel code from
+//! using FP/SIMD registers. Trap entry disables access but leaves the user's
+//! values in the registers. A thread switch saves the outgoing thread's state
+//! and restores the incoming thread's state. Returning to the same thread only
+//! re-enables access, avoiding a save and restore on every trap.
+//!
+//! While the kernel runs, CPACR_EL1 traps FP/SIMD access at both EL0 and EL1.
+//! Accidental kernel FP use therefore faults instead of changing user state.
 
 use core::{
     arch::{asm, global_asm},
@@ -22,16 +24,15 @@ const CPACR_EL1_ZEN_MASK: usize = 0b11 << 16;
 const CPACR_EL1_SMEN_MASK: usize = 0b11 << 24;
 const CPACR_EL1_UNSUPPORTED_VECTOR_MASK: usize = CPACR_EL1_ZEN_MASK | CPACR_EL1_SMEN_MASK;
 
-/// FPEN=00 traps FP/SIMD at both EL0 and EL1. The kernel is soft-float, so
-/// any FP/SIMD access at EL1 is a bug; trapping it turns silent corruption
-/// into a visible fault. Trap entry preserves the resident user register file
-/// and switches CPACR_EL1 to this value; a real thread switch temporarily
-/// raises FPEN for the ownership transfer.
+/// FPEN=00 traps FP/SIMD at both EL0 and EL1. Trap entry installs this value
+/// without saving the resident user registers. This makes accidental kernel
+/// FP/SIMD use fault. A thread switch temporarily enables access to transfer
+/// the register state between owners.
 pub const CPACR_EL1_KERNEL: usize = CPACR_EL1_FPEN_ALL_TRAPPED;
-/// FPEN=11 is the only encoding that lets EL0 use FP/SIMD, and it untraps EL1
-/// as a side effect. EL1 uses it only during explicit state transfers; trap
-/// exit also installs it for an enabled EL0 thread, and the next entry closes
-/// EL1 access before running Rust code.
+/// FPEN=11 is the only encoding that permits EL0 FP/SIMD access. It also permits
+/// EL1 access, which the kernel uses only for explicit state transfers.
+/// Trap exit installs this value for an enabled EL0 thread. The next trap
+/// entry disables EL1 access before running Rust code.
 pub const CPACR_EL1_USER_FP_ENABLED: usize = CPACR_EL1_FPEN_ENABLED;
 
 #[repr(C, align(16))]
@@ -195,8 +196,8 @@ pub unsafe fn context_switch(old: &mut ThreadFpState, new: &ThreadFpState) {
 ///
 /// # Safety
 ///
-/// The caller must have enabled EL1 FP/SIMD access and must own the current
-/// live FP/SIMD state. Calling this while FP/SIMD is trapped will fault.
+/// The caller must enable EL1 FP/SIMD access before this call and own the live
+/// FP/SIMD state. If access is trapped, this function faults.
 pub unsafe fn save_current_state(state: &mut UserFpState) {
     // SAFETY: The caller proves FP/SIMD access and state ownership.
     unsafe { a64_fp_save(state) };
@@ -206,8 +207,8 @@ pub unsafe fn save_current_state(state: &mut UserFpState) {
 ///
 /// # Safety
 ///
-/// The caller must have enabled EL1 FP/SIMD access and must ensure the restored
-/// state belongs to the execution context that will next use FP/SIMD.
+/// The caller must enable EL1 FP/SIMD access before this call. The restored
+/// state must belong to the execution context that will next use FP/SIMD.
 pub unsafe fn restore_current_state(state: &UserFpState) {
     // SAFETY: The caller proves FP/SIMD access and state ownership.
     unsafe { a64_fp_restore(state) };

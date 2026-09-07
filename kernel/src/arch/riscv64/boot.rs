@@ -1,10 +1,11 @@
 //! RISC-V boot entry point.
 //!
-//! OpenSBI drops us into S-mode with the boot hart in a0 and the DTB pointer
-//! in a1. The boot stub sets gp, claims exactly one hart atomically so that
-//! any loser parks in WFI, zeros BSS, calls `rust_riscv64_phys_init` while
-//! we are still running with physical addresses, then switches SP and PC into
-//! the higher-half mapping and jumps to `rust_riscv64_main`.
+//! OpenSBI enters S-mode with the boot hart ID in a0 and the DTB pointer in a1.
+//! A hart is a hardware thread. The boot stub sets gp and atomically admits
+//! one hart; all others park in WFI. The admitted hart zeros BSS, the region
+//! for zero-initialized static data. It calls `rust_riscv64_phys_init` while
+//! addresses are still physical. It then switches SP and PC into the
+//! higher-half mapping and jumps to `rust_riscv64_main`.
 //!
 //! See RISC-V Privileged Specification, Chapter 3 (Machine-Level ISA).
 
