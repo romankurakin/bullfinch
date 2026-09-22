@@ -60,41 +60,39 @@ __bullfinch_aarch64_trap_vectors:
     .balign 128
 
     .text
+    // Only a trap from EL0 writes the scratch byte. A trap from EL1 does not
+    // change the current thread, so writing here would lose the outer record.
+    // See `TrapFpScratch`.
     .macro record_user_fp_access
     mrs x16, spsr_el1
     and x16, x16, #0xf
-    cbnz x16, 98f
+    cbnz x16, 99f
     mrs x16, cpacr_el1
     and x16, x16, #{fp_enabled_mask}
     cmp x16, #{user_fp_enabled}
     cset w17, eq
-    b 99f
-98:
-    mov w17, #0
-99:
     adrp x16, {trap_fp_scratch}
     add x16, x16, :lo12:{trap_fp_scratch}
     strb w17, [x16, #{scratch_return_enabled_offset}]
+99:
     .endm
 
+    // A return to EL1 leaves the scratch byte for the outer trap. A return
+    // to EL0 consumes it.
     .macro restore_user_fp_access_for_return status_offset
-    adrp x16, {trap_fp_scratch}
-    add x16, x16, :lo12:{trap_fp_scratch}
     ldr x17, [sp, #\status_offset]
     and x17, x17, #0xf
-    cbnz x17, 97f
+    cbnz x17, 98f
+    adrp x16, {trap_fp_scratch}
+    add x16, x16, :lo12:{trap_fp_scratch}
     ldrb w17, [x16, #{scratch_return_enabled_offset}]
+    strb wzr, [x16, #{scratch_return_enabled_offset}]
     cbz w17, 98f
     mov x17, #{user_fp_enabled}
     b 99f
-97:
 98:
-    mov x16, #{kernel_cpacr}
-    mov x17, x16
+    mov x17, #{kernel_cpacr}
 99:
-    adrp x16, {trap_fp_scratch}
-    add x16, x16, :lo12:{trap_fp_scratch}
-    strb wzr, [x16, #{scratch_return_enabled_offset}]
     msr cpacr_el1, x17
     isb
     .endm

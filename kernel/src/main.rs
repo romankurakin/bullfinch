@@ -1,7 +1,11 @@
 #![no_std]
 #![no_main]
 
-use core::panic::PanicInfo;
+use core::{
+    fmt::Write as _,
+    panic::PanicInfo,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 mod arch;
 mod console;
@@ -9,7 +13,7 @@ mod hal;
 mod runtime;
 mod startup;
 
-use kernel::{boot, fdt::FdtError, mmu::PhysicalAddress};
+use kernel::{boot, mmu::PhysicalAddress};
 
 #[cfg(target_arch = "riscv64")]
 #[used]
@@ -33,9 +37,43 @@ impl BootHartClaim {
     }
 }
 
+/// Set once the kernel runs in the higher half.
+///
+/// Formatting a panic message reads the string tables behind `format_args!`
+/// and trait vtables. They hold link-time virtual addresses, which are
+/// unmapped before the higher-half jump. Until then the handler prints a
+/// fixed marker, and the physical boot phase prints fixed strings.
+static HIGHER_HALF: AtomicBool = AtomicBool::new(false);
+
+/// Set by the first panic. A second panic, for example from a fault while
+/// printing the first report, halts without touching the console again.
+static PANICKING: AtomicBool = AtomicBool::new(false);
+
 #[panic_handler]
-fn panic(_info: &PanicInfo<'_>) -> ! {
-    console::print_unsafe("\n[PANIC]\n");
+fn panic(info: &PanicInfo<'_>) -> ! {
+    // Keep the CPU on the panicking thread. A timer tick could otherwise
+    // resume other threads after a kernel invariant broke.
+    kernel::cpu::disable_interrupts();
+    if PANICKING.swap(true, Ordering::AcqRel) {
+        hal::cpu::halt();
+    }
+    if !HIGHER_HALF.load(Ordering::Acquire) {
+        console::print_unsafe("\n[PANIC]\n");
+        hal::cpu::halt();
+    }
+
+    let mut out = console::Console::new();
+    out.print("\n[PANIC]\n");
+    let _ = writeln!(out, "{}", info.message());
+    if let Some(location) = info.location() {
+        let _ = writeln!(
+            out,
+            "at {}:{}:{}",
+            location.file(),
+            location.line(),
+            location.column()
+        );
+    }
     hal::cpu::halt()
 }
 
@@ -50,19 +88,11 @@ unsafe extern "C" {
     static __kernel_end: u8;
 }
 
-/// Never returns. On failure it prints a message and halts. It avoids panicking
-/// because panic formatting may depend on subsystems that are not ready yet.
+/// Never returns. Runs in the higher half, so a boot failure can panic with
+/// its error value.
 pub fn kernel_main(info: BootInfo) -> ! {
-    let mut out = console::Console::new();
-    let hardware = match startup::init::virt_init(info.dtb) {
-        Ok(hardware) => hardware,
-        Err(error) => {
-            out.print("\n[PANIC]\nboot: ");
-            out.print(boot_error_message(error));
-            out.print("\n");
-            hal::cpu::halt();
-        }
-    };
+    HIGHER_HALF.store(true, Ordering::Release);
+    let hardware = startup::init::virt_init(info.dtb).expect("boot: virtual init failed");
 
     kernel::pmm::init(
         &hardware,
@@ -70,74 +100,33 @@ pub fn kernel_main(info: BootInfo) -> ! {
         kernel_physical_end(),
         hal::mmu::try_physical_to_virtual,
     )
-    .unwrap_or_else(|_| {
-        out.print("\n[PANIC]\npmm: initialization failed\n");
-        hal::cpu::halt();
-    });
+    .expect("pmm: initialization failed");
     startup::log::pmm();
     kernel::allocator::init(
         hal::mmu::try_physical_to_virtual,
         hal::mmu::try_virtual_to_physical,
     );
-    kernel::allocator::boot_probe().unwrap_or_else(|_| {
-        out.print("\n[PANIC]\nallocator: initialization failed\n");
-        hal::cpu::halt();
-    });
+    kernel::allocator::boot_probe().expect("allocator: boot probe failed");
     let idle_stack = kernel::task::KernelStack::create_mapped(
         hal::mmu::kernel_stack_region_base,
         hal::mmu::map_kernel_stack_page,
         hal::mmu::unmap_kernel_stack_page,
     )
-    .unwrap_or_else(|_| {
-        out.print("\n[PANIC]\ntask: idle stack allocation failed\n");
-        hal::cpu::halt();
-    });
-    kernel::task::init_with_idle_thread(idle_stack, idle_thread, 0).unwrap_or_else(|_| {
-        out.print("\n[PANIC]\ntask: scheduler initialization failed\n");
-        hal::cpu::halt();
-    });
+    .expect("task: idle stack allocation failed");
+    kernel::task::init_with_idle_thread(idle_stack, idle_thread, 0)
+        .expect("task: scheduler initialization failed");
     startup::log::trace();
-    hal::interrupt::init(&hardware).unwrap_or_else(|_| {
-        out.print("\n[PANIC]\ninterrupt: initialization failed\n");
-        hal::cpu::halt();
-    });
-    runtime::clock::init().unwrap_or_else(|_| {
-        out.print("\n[PANIC]\nclock: invalid timer frequency\n");
-        hal::cpu::halt();
-    });
-    hal::timer::enable().unwrap_or_else(|_| {
-        out.print("\n[PANIC]\nclock: timer enable failed\n");
-        hal::cpu::halt();
-    });
-    runtime::clock::wait_for_first_tick(100_000_000).unwrap_or_else(|_| {
-        out.print("\n[PANIC]\nclock: first timer interrupt did not arrive\n");
-        hal::cpu::halt();
-    });
+    hal::interrupt::init(&hardware).expect("interrupt: initialization failed");
+    runtime::clock::init().expect("clock: initialization failed");
+    hal::timer::enable().expect("clock: timer enable failed");
+    runtime::clock::wait_for_first_tick(100_000_000)
+        .expect("clock: first timer interrupt did not arrive");
     startup::log::clock();
     startup::log::task();
     startup::log::idle();
-    out.print("[BOOT:OK]\n");
+    console::Console::new().print("[BOOT:OK]\n");
 
-    enter_idle_thread(&mut out)
-}
-
-fn boot_error_message(error: startup::init::BootError) -> &'static str {
-    use startup::init::BootError;
-
-    match error {
-        BootError::MissingDeviceTree => "missing device tree",
-        BootError::DeviceTree(FdtError::MalformedBlob) => "malformed device tree blob",
-        BootError::DeviceTree(FdtError::MalformedProperty) => "malformed device tree property",
-        BootError::DeviceTree(FdtError::InvalidStandardData) => "invalid standard device tree data",
-        BootError::DeviceTree(FdtError::UnsupportedBusMapping) => {
-            "unsupported device tree bus mapping"
-        }
-        BootError::DeviceTreeTooLarge => "device tree is too large",
-        BootError::DeviceTreeMagic => "invalid device tree magic",
-        BootError::DeviceTreeMisaligned => "misaligned device tree address",
-        BootError::DeviceTreeAddressNotMapped => "device tree address is not mapped",
-        BootError::MemoryMap(_) => "memory map initialization failed",
-    }
+    enter_idle_thread()
 }
 
 fn kernel_physical_end() -> PhysicalAddress {
@@ -146,14 +135,9 @@ fn kernel_physical_end() -> PhysicalAddress {
         .expect("kernel end is covered by the physmap")
 }
 
-fn enter_idle_thread(out: &mut console::Console) -> ! {
-    kernel::task::enter_idle(switch_context).unwrap_or_else(|_| {
-        out.print("\n[PANIC]\ntask: idle context missing\n");
-        hal::cpu::halt();
-    });
-
-    out.print("\n[PANIC]\ntask: idle thread returned\n");
-    hal::cpu::halt()
+fn enter_idle_thread() -> ! {
+    kernel::task::enter_idle(switch_context).expect("task: idle context missing");
+    panic!("task: idle thread returned")
 }
 
 unsafe fn switch_context(old: &mut hal::context::Context, new: &hal::context::Context) {

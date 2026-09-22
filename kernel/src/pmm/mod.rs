@@ -18,6 +18,10 @@ use crate::{
 const INVALID_ARENA_INDEX: u8 = u8::MAX;
 const INVALID_PAGE_INDEX: u32 = u32::MAX;
 const KERNEL_RESERVE_PAD: usize = 2 * 1024 * 1024;
+// Reservations come from firmware regions, the kernel image, the DTB, and one
+// metadata range per arena. Firmware alone can fill MAX_RESERVED_REGIONS, so
+// the table leaves room for every kernel-added range.
+const MAX_RESERVED_RANGES: usize = MAX_RESERVED_REGIONS + 2 + MAX_MEMORY_ARENAS;
 const PAGE_ALIGNMENT_LOG2: u8 = PAGE_SIZE.trailing_zeros() as u8;
 const PAGE_POISON: u8 = 0xde;
 
@@ -247,7 +251,7 @@ fn no_mapping(_: PhysicalAddress) -> Option<VirtualAddress> {
 struct PhysicalMemoryManager {
     arenas: [Arena; MAX_MEMORY_ARENAS],
     arena_count: usize,
-    reserved_ranges: [ReservedRange; MAX_RESERVED_REGIONS],
+    reserved_ranges: [ReservedRange; MAX_RESERVED_RANGES],
     reserved_count: usize,
     free_head: PageHandle,
     free_tail: PageHandle,
@@ -262,7 +266,7 @@ impl PhysicalMemoryManager {
         Self {
             arenas: [Arena::EMPTY; MAX_MEMORY_ARENAS],
             arena_count: 0,
-            reserved_ranges: [ReservedRange::EMPTY; MAX_RESERVED_REGIONS],
+            reserved_ranges: [ReservedRange::EMPTY; MAX_RESERVED_RANGES],
             reserved_count: 0,
             free_head: PageHandle::NONE,
             free_tail: PageHandle::NONE,
@@ -1259,6 +1263,25 @@ mod tests {
         assert_eq!(
             validate_memory_regions(&regions),
             Err(InitError::OverlappingMemoryRegions)
+        );
+    }
+
+    #[test]
+    fn reserved_table_holds_firmware_kernel_dtb_and_arena_metadata() {
+        let mut pmm = PhysicalMemoryManager::empty();
+        for index in 0..MAX_RESERVED_RANGES {
+            let start = PhysicalAddress::new((index + 1) * 0x1_0000);
+            pmm.record_reserved(start, start.checked_add(PAGE_SIZE).unwrap())
+                .unwrap();
+        }
+
+        assert_eq!(pmm.reserved_count, MAX_RESERVED_RANGES);
+        assert_eq!(
+            pmm.record_reserved(
+                PhysicalAddress::new(0x100_0000),
+                PhysicalAddress::new(0x100_1000)
+            ),
+            Err(InitError::TooManyReservedRanges)
         );
     }
 

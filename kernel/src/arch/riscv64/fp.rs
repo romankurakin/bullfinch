@@ -16,15 +16,21 @@ use core::{
 
 use kernel::fp::{FpStatus, ThreadFpState, UserFpState};
 
+/// Records the `sstatus.FS` value of the current thread while the kernel runs.
+///
+/// A trap from U-mode sets the byte from the interrupted status. A thread
+/// switch or a first use stores the state of the new owner. Traps from S-mode
+/// and returns to S-mode leave the byte unchanged, so a nested trap cannot
+/// lose it. A return to U-mode consumes it.
 #[repr(C, align(16))]
 pub struct TrapFpScratch {
     return_status: UnsafeCell<u8>,
 }
 
 // SAFETY: RISC-V boot admits one hart into Rust and parks the rest, so current
-// trap handling is single-hart. Trap entry records the interrupted user FS
-// state and trap exit consumes it on the same hart. TODO(smp): replace this
-// with per-hart scratch storage before secondary harts can enter U-mode.
+// trap handling is single-hart. Every writer runs on that hart with interrupts
+// masked. TODO(smp): replace this with per-hart scratch storage before
+// secondary harts can enter U-mode.
 unsafe impl Sync for TrapFpScratch {}
 
 impl TrapFpScratch {
@@ -121,8 +127,9 @@ pub fn activate_user_state(thread: &ThreadFpState) {
 ///
 /// # Safety
 ///
-/// Trap entry must have recorded the outgoing user FS state and set hardware
-/// FS to Off. `old` and `new` must be the scheduler's actual switch pair.
+/// The scratch byte must describe the outgoing thread, and trap entry must
+/// have set hardware FS to Off. `old` and `new` must be the scheduler's actual
+/// switch pair.
 pub unsafe fn context_switch(old: &mut ThreadFpState, new: &ThreadFpState) {
     let old_status = return_status();
     debug_assert_eq!(

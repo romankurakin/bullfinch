@@ -47,12 +47,12 @@ pub fn handle_timer_irq() -> bool {
     let Some(interval) =
         TickInterval::try_from_ticks(Ticks::new(TICKS_PER_INTERVAL.load(Ordering::Relaxed)))
     else {
-        clock_fatal("clock: invalid timer state");
+        panic!("clock: invalid timer state");
     };
 
     let scheduled = Deadline::new(NEXT_TICK.load(Ordering::Relaxed));
     let Some(advance) = clock::advance_tick_state(hal::timer::now(), scheduled, interval) else {
-        clock_fatal("clock: timer deadline overflow");
+        panic!("clock: timer deadline overflow");
     };
 
     // TODO(smp): make the clock state per-CPU before secondary CPUs receive
@@ -61,20 +61,11 @@ pub fn handle_timer_irq() -> bool {
         .load(Ordering::Relaxed)
         .wrapping_add(advance.elapsed_ticks);
     TICK_COUNT.store(tick_count, Ordering::Relaxed);
-    let should_reschedule = kernel::task::tick(advance.elapsed_ticks)
-        .unwrap_or_else(|_| clock_fatal("clock: scheduler tick failed"));
+    let should_reschedule =
+        kernel::task::tick(advance.elapsed_ticks).expect("clock: scheduler tick failed");
     NEXT_TICK.store(advance.next_tick.get(), Ordering::Relaxed);
-    if hal::timer::set_deadline(advance.next_tick).is_err() {
-        clock_fatal("clock: timer deadline rejected");
-    }
+    hal::timer::set_deadline(advance.next_tick).expect("clock: timer deadline rejected");
     should_reschedule
-}
-
-fn clock_fatal(message: &str) -> ! {
-    crate::console::print_unsafe("\n[PANIC]\n");
-    crate::console::print_unsafe(message);
-    crate::console::print_unsafe("\n");
-    hal::cpu::halt()
 }
 
 pub fn wait_for_first_tick(max_spins: usize) -> Result<(), ClockError> {

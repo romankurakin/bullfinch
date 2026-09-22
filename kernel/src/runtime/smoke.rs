@@ -74,11 +74,7 @@ extern "C" fn worker(index: usize) -> ! {
 }
 
 fn fail(message: &str) -> ! {
-    // Stop this single-CPU test on failure so another worker cannot report
+    // The panic handler masks interrupts, so another worker cannot report
     // success after a failed check.
-    cpu::disable_interrupts();
-    console::print_unsafe("[SCHED:FAIL] ");
-    console::print_unsafe(message);
-    console::print_unsafe("\n");
-    hal::cpu::halt()
+    panic!("[SCHED:FAIL] {message}")
 }

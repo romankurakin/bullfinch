@@ -1,14 +1,19 @@
 //! RISC-V context-switch frame.
 //!
 //! This frame preserves the registers that survive a function call under the
-//! psABI. It also stores the return address, stack pointer, and interrupt state.
+//! psABI. It also stores the return address, stack pointer, and `sstatus.SIE`.
 //! A context switch saves the old frame and restores the new frame to resume
-//! execution on another stack. Exception entry uses separate
-//! [trap and IRQ frames](crate::trap::frame::riscv64).
+//! execution on another stack. The interrupt state is the value at the moment
+//! of the switch. A switch on a trap path therefore records masked interrupts,
+//! and the `sret` of that thread restores its real state later.
+//! Exception entry uses separate [trap and IRQ frames](crate::trap::frame::riscv64).
 
 #![allow(dead_code, reason = "assembly owns context frame fields")]
 
 use core::arch::global_asm;
+
+// sstatus.SIE. See RISC-V Privileged Specification, section 12.1.1.
+const SSTATUS_SIE: usize = 1 << 1;
 
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -49,6 +54,8 @@ impl Context {
     pub const STACK_POINTER_OFFSET: usize = core::mem::offset_of!(Context, stack_pointer);
     pub const IRQ_ENABLED_OFFSET: usize = core::mem::offset_of!(Context, irq_enabled);
 
+    /// Creates a context that enters `entry_pc` on `stack_top` with
+    /// interrupts enabled.
     pub const fn new(entry_pc: usize, stack_top: usize) -> Self {
         Self {
             return_address: entry_pc as u64,
@@ -93,11 +100,13 @@ impl Context {
 
 unsafe extern "C" {
     fn bullfinch_switch_context(old: *mut Context, new: *const Context);
-    fn bullfinch_switch_context_from_trap(old: *mut Context, new: *const Context);
     fn bullfinch_thread_trampoline() -> !;
 }
 
 /// Switches from one saved kernel context to another.
+///
+/// The switch records the current `sstatus.SIE` in `old` and installs the
+/// value recorded in `new` before it resumes that context.
 ///
 /// # Safety
 ///
@@ -109,20 +118,6 @@ pub unsafe fn switch_context(old: &mut Context, new: &Context) {
     // SAFETY: The caller proves that both contexts are valid for the assembly
     // ABI and that switching stacks is allowed at this point.
     unsafe { bullfinch_switch_context(old, new) };
-}
-
-/// Switches contexts while already returning through a trap or IRQ frame.
-///
-/// # Safety
-///
-/// `old` and `new` must satisfy the same requirements as [`switch_context`].
-/// The caller must be on a trap or IRQ path. The incoming context must either
-/// resume through a saved trap frame or start at the thread trampoline,
-/// which enables interrupts on first entry.
-pub unsafe fn switch_context_from_trap(old: &mut Context, new: &Context) {
-    // SAFETY: The caller proves the context ABI requirements and the trap-return
-    // boundary owns interrupt-state restoration.
-    unsafe { bullfinch_switch_context_from_trap(old, new) };
 }
 
 pub fn thread_trampoline_address() -> usize {
@@ -150,6 +145,10 @@ bullfinch_switch_context:
     sd s11, {s11_offset}(a0)
     sd ra, {return_address_offset}(a0)
     sd sp, {stack_pointer_offset}(a0)
+    csrr t0, sstatus
+    andi t0, t0, {sstatus_sie}
+    snez t0, t0
+    sd t0, {irq_enabled_offset}(a0)
 
     ld s0, {s0_offset}(a1)
     ld s1, {s1_offset}(a1)
@@ -168,57 +167,22 @@ bullfinch_switch_context:
 
     ld t0, {irq_enabled_offset}(a1)
     beqz t0, 1f
-    csrsi sstatus, 0x2
+    csrsi sstatus, {sstatus_sie}
     j 2f
 1:
-    csrci sstatus, 0x2
+    csrci sstatus, {sstatus_sie}
 2:
-    ret
-
-    .global bullfinch_switch_context_from_trap
-    .type bullfinch_switch_context_from_trap, @function
-bullfinch_switch_context_from_trap:
-    sd s0, {s0_offset}(a0)
-    sd s1, {s1_offset}(a0)
-    sd s2, {s2_offset}(a0)
-    sd s3, {s3_offset}(a0)
-    sd s4, {s4_offset}(a0)
-    sd s5, {s5_offset}(a0)
-    sd s6, {s6_offset}(a0)
-    sd s7, {s7_offset}(a0)
-    sd s8, {s8_offset}(a0)
-    sd s9, {s9_offset}(a0)
-    sd s10, {s10_offset}(a0)
-    sd s11, {s11_offset}(a0)
-    sd ra, {return_address_offset}(a0)
-    sd sp, {stack_pointer_offset}(a0)
-
-    ld s0, {s0_offset}(a1)
-    ld s1, {s1_offset}(a1)
-    ld s2, {s2_offset}(a1)
-    ld s3, {s3_offset}(a1)
-    ld s4, {s4_offset}(a1)
-    ld s5, {s5_offset}(a1)
-    ld s6, {s6_offset}(a1)
-    ld s7, {s7_offset}(a1)
-    ld s8, {s8_offset}(a1)
-    ld s9, {s9_offset}(a1)
-    ld s10, {s10_offset}(a1)
-    ld s11, {s11_offset}(a1)
-    ld ra, {return_address_offset}(a1)
-    ld sp, {stack_pointer_offset}(a1)
     ret
 
     .global bullfinch_thread_trampoline
     .type bullfinch_thread_trampoline, @function
 bullfinch_thread_trampoline:
-    # A fresh thread has no trap frame whose sret would restore SIE.
-    # The switch installed its stack and scheduler identity before reaching here.
-    csrsi sstatus, 0x2
+    # The switch already installed this thread's stack and interrupt state.
     mv a0, s2
     jr s1
 "#
     ,
+    sstatus_sie = const SSTATUS_SIE,
     s0_offset = const Context::S0_OFFSET,
     s1_offset = const Context::S1_OFFSET,
     s2_offset = const Context::S2_OFFSET,

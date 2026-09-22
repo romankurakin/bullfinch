@@ -1,14 +1,19 @@
 //! ARM64 context-switch frame.
 //!
 //! This frame preserves the registers that survive a function call under
-//! AAPCS64: x19-x28 and x29(fp). It also stores x30(lr), sp, and interrupt state.
+//! AAPCS64: x19-x28 and x29(fp). It also stores x30(lr), sp, and the IRQ mask.
 //! A context switch saves the old frame and restores the new frame to resume
-//! execution on another stack. Exception entry uses separate
-//! [trap and IRQ frames](crate::trap::frame::arm64).
+//! execution on another stack. The IRQ mask is the state at the moment of the
+//! switch. A switch on a trap path therefore records masked interrupts, and
+//! the exception return of that thread restores its real state later.
+//! Exception entry uses separate [trap and IRQ frames](crate::trap::frame::arm64).
 
 #![allow(dead_code, reason = "assembly owns context frame fields")]
 
 use core::arch::global_asm;
+
+// PSTATE.I as read through the DAIF register.
+const DAIF_IRQ_MASKED: u64 = 1 << 7;
 
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -41,6 +46,8 @@ impl Context {
     pub const STACK_POINTER_OFFSET: usize = core::mem::offset_of!(Context, stack_pointer);
     pub const IRQ_ENABLED_OFFSET: usize = core::mem::offset_of!(Context, irq_enabled);
 
+    /// Creates a context that enters `entry_pc` on `stack_top` with
+    /// interrupts enabled.
     pub const fn new(entry_pc: usize, stack_top: usize) -> Self {
         Self {
             link_register: entry_pc as u64,
@@ -84,11 +91,13 @@ impl Context {
 
 unsafe extern "C" {
     fn bullfinch_switch_context(old: *mut Context, new: *const Context);
-    fn bullfinch_switch_context_from_trap(old: *mut Context, new: *const Context);
     fn bullfinch_thread_trampoline() -> !;
 }
 
 /// Switches from one saved kernel context to another.
+///
+/// The switch records the current IRQ mask in `old` and installs the mask
+/// recorded in `new` before it resumes that context.
 ///
 /// # Safety
 ///
@@ -100,20 +109,6 @@ pub unsafe fn switch_context(old: &mut Context, new: &Context) {
     // SAFETY: The caller proves that both contexts are valid for the assembly
     // ABI and that switching stacks is allowed at this point.
     unsafe { bullfinch_switch_context(old, new) };
-}
-
-/// Switches contexts while already returning through an exception or IRQ frame.
-///
-/// # Safety
-///
-/// `old` and `new` must satisfy the same requirements as [`switch_context`].
-/// The caller must be on a trap or IRQ path. The incoming context must either
-/// resume through a saved exception frame or start at the thread trampoline,
-/// which enables interrupts on first entry.
-pub unsafe fn switch_context_from_trap(old: &mut Context, new: &Context) {
-    // SAFETY: The caller proves the context ABI requirements and the trap-return
-    // boundary owns interrupt-state restoration.
-    unsafe { bullfinch_switch_context_from_trap(old, new) };
 }
 
 pub fn thread_trampoline_address() -> usize {
@@ -135,6 +130,12 @@ bullfinch_switch_context:
     stp x29, x30, [x0, #{frame_pointer_offset}]
     mov x2, sp
     str x2, [x0, #{stack_pointer_offset}]
+    // Only the I bit is saved and restored, matching disable_interrupts and
+    // restore_interrupts.
+    mrs x2, daif
+    tst x2, #{daif_irq_masked}
+    cset x2, eq
+    str x2, [x0, #{irq_enabled_offset}]
 
     ldp x19, x20, [x1, #{x19_offset}]
     ldp x21, x22, [x1, #{x21_offset}]
@@ -147,45 +148,22 @@ bullfinch_switch_context:
 
     ldr x2, [x1, #{irq_enabled_offset}]
     cbz x2, 1f
-    msr daifclr, #3
+    msr daifclr, #2
     b 2f
 1:
-    msr daifset, #3
+    msr daifset, #2
 2:
-    ret
-
-    .global bullfinch_switch_context_from_trap
-    .type bullfinch_switch_context_from_trap, %function
-bullfinch_switch_context_from_trap:
-    stp x19, x20, [x0, #{x19_offset}]
-    stp x21, x22, [x0, #{x21_offset}]
-    stp x23, x24, [x0, #{x23_offset}]
-    stp x25, x26, [x0, #{x25_offset}]
-    stp x27, x28, [x0, #{x27_offset}]
-    stp x29, x30, [x0, #{frame_pointer_offset}]
-    mov x2, sp
-    str x2, [x0, #{stack_pointer_offset}]
-
-    ldp x19, x20, [x1, #{x19_offset}]
-    ldp x21, x22, [x1, #{x21_offset}]
-    ldp x23, x24, [x1, #{x23_offset}]
-    ldp x25, x26, [x1, #{x25_offset}]
-    ldp x27, x28, [x1, #{x27_offset}]
-    ldp x29, x30, [x1, #{frame_pointer_offset}]
-    ldr x2, [x1, #{stack_pointer_offset}]
-    mov sp, x2
     ret
 
     .global bullfinch_thread_trampoline
     .type bullfinch_thread_trampoline, %function
 bullfinch_thread_trampoline:
-    // A fresh thread has no exception frame whose eret would unmask IRQs.
-    // The switch installed its stack and scheduler identity before reaching here.
-    msr daifclr, #2
+    // The switch already installed this thread's stack and interrupt mask.
     mov x0, x20
     br x19
 "#
     ,
+    daif_irq_masked = const DAIF_IRQ_MASKED,
     x19_offset = const Context::X19_OFFSET,
     x21_offset = const Context::X21_OFFSET,
     x23_offset = const Context::X23_OFFSET,

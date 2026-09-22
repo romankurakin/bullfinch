@@ -12,6 +12,8 @@ use core::arch::naked_asm;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_arm64_phys_init(dtb_ptr: usize) {
+    // A formatted panic would fault before the higher-half jump. See
+    // `HIGHER_HALF` in `main.rs`.
     if crate::startup::init::phys_init(kernel::boot::DeviceTreeBlobPhysicalAddress::new(dtb_ptr))
         .is_err()
     {

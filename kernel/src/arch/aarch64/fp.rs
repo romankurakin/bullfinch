@@ -35,14 +35,20 @@ pub const CPACR_EL1_KERNEL: usize = CPACR_EL1_FPEN_ALL_TRAPPED;
 /// entry disables EL1 access before running Rust code.
 pub const CPACR_EL1_USER_FP_ENABLED: usize = CPACR_EL1_FPEN_ENABLED;
 
+/// Records whether the current thread owns the resident FP/SIMD register file
+/// while the kernel runs.
+///
+/// A trap from EL0 sets the byte from CPACR_EL1. A thread switch or a first
+/// use stores the state of the new owner. Traps from EL1 and returns to EL1
+/// leave the byte unchanged, so a nested trap cannot lose it. A return to EL0
+/// consumes it.
 #[repr(C, align(16))]
 pub struct TrapFpScratch {
     return_enabled: UnsafeCell<u8>,
 }
 
 // SAFETY: ARM64 boot parks secondary CPUs, so current trap handling is UP.
-// Trap entry records whether the interrupted user context owned the resident
-// register file, and trap exit consumes it on the same CPU. TODO(smp): replace
+// Every writer runs on that CPU with interrupts masked. TODO(smp): replace
 // this with per-CPU scratch storage before secondary CPUs can enter EL0.
 unsafe impl Sync for TrapFpScratch {}
 
@@ -159,8 +165,9 @@ pub fn activate_user_state(thread: &ThreadFpState) {
 ///
 /// # Safety
 ///
-/// Trap entry must have recorded the outgoing user access state and disabled
-/// FP/SIMD. `old` and `new` must be the scheduler's actual switch pair.
+/// The scratch byte must describe the outgoing thread, and trap entry must
+/// have disabled FP/SIMD. `old` and `new` must be the scheduler's actual
+/// switch pair.
 pub unsafe fn context_switch(old: &mut ThreadFpState, new: &ThreadFpState) {
     let old_is_resident = return_enabled();
     debug_assert_eq!(old_is_resident, old.user_enabled());

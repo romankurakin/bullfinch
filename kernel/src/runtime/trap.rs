@@ -22,27 +22,21 @@ pub fn handle_kernel_interrupt(frame: &mut impl TrapFrameSnapshot) {
     match crate::hal::interrupt::handle_timer_interrupt(Some(frame.cause())) {
         InterruptAction::Unhandled => panic_trap(TrapReport::from_frame(frame)),
         InterruptAction::Return => {}
-        InterruptAction::Reschedule => preempt_from_trap_or_halt(),
+        InterruptAction::Reschedule => preempt_from_trap(),
     }
 }
 
 pub fn handle_fast_interrupt() {
     match crate::hal::interrupt::handle_timer_interrupt(None) {
-        InterruptAction::Unhandled => {
-            let mut out = crate::console::Console::new();
-            out.print("\n[TRAP]\nunhandled interrupt\n");
-            crate::hal::cpu::halt();
-        }
+        InterruptAction::Unhandled => panic!("trap: unhandled interrupt"),
         InterruptAction::Return => {}
-        InterruptAction::Reschedule => preempt_from_trap_or_halt(),
+        InterruptAction::Reschedule => preempt_from_trap(),
     }
 }
 
-fn preempt_from_trap_or_halt() {
-    if kernel::task::preempt_from_trap::<ArchTrapContextSwitch>().is_err() {
-        crate::console::print_unsafe("\n[PANIC]\ntask: trap preemption failed\n");
-        crate::hal::cpu::halt();
-    }
+fn preempt_from_trap() {
+    kernel::task::preempt_from_trap::<ArchTrapContextSwitch>()
+        .expect("task: trap preemption failed");
 }
 
 struct ArchTrapContextSwitch;
@@ -59,10 +53,10 @@ impl kernel::task::TrapContextSwitch for ArchTrapContextSwitch {
         new: &crate::hal::context::Context,
     ) {
         // SAFETY: The task module owns scheduler contexts and only hands us pairs
-        // that can be switched at an exception-return boundary. Resumed threads
-        // restore IRQ state through `eret` or `sret`; fresh threads enable IRQs
-        // in their first-entry trampoline.
-        unsafe { crate::hal::context::switch_context_from_trap(old, new) };
+        // that can be switched at an exception-return boundary. The switch
+        // records the masked interrupts of this trap path for the outgoing
+        // thread and installs the mask recorded for the incoming one.
+        unsafe { crate::hal::context::switch_context(old, new) };
     }
 }
 

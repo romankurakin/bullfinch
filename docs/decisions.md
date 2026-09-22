@@ -62,7 +62,14 @@ geometry.
 
 **Higher-half kernel:** Set up identity and higher-half mappings together over
 setting them up in sequence. This needs one page table switch. Remove the
-identity mapping after the jump to the higher half.
+identity mapping after the jump to the higher half. Both views point at one
+set of kernel-image page tables, because they map the same physical bytes
+with the same attributes. Building the tables once saves 2 MiB of static
+memory per architecture.
+
+**Physmap start:** Map every GiB from the first one up to the physmap end over
+starting at the lowest GiB that boot needs. One descriptor per GiB is cheap,
+and the physmap end alone then tells whether a physical address is mapped.
 
 ---
 
@@ -141,6 +148,11 @@ if needed.
 scheduling. The timer already works, and preemption exposes concurrency bugs
 early.
 
+**Interrupt state:** Save the interrupt mask in the context record over managing
+it in the switch caller. One switch routine serves cooperative switches and
+switches from a trap. A thread switched out on a trap path records a masked
+state, so resuming it keeps interrupts masked until its exception return.
+
 **IPC field:** Add `blocked_on` now over waiting until Synchronous IPC. This
 supports Liedtke's direct process switch. It costs 8 bytes and avoids a later
 refactor.
@@ -160,7 +172,11 @@ Reverses the earlier "EL1 FP/SIMD allowed" choice.
 **User FP ownership:** CPU-resident state across traps with eager transfer at
 thread switches over per-trap save/restore or lazy cross-thread ownership.
 Avoids trap-time register transfers and a per-CPU owner/migration protocol.
-ARM64 tracks state in software; RISC-V also uses `sstatus.FS` to skip clean saves.
+A per-CPU byte records the resident owner. Only traps from user mode write it,
+so a nested kernel trap cannot lose it. ARM64 tracks state in software;
+RISC-V also uses `sstatus.FS` to skip clean saves. The RISC-V Privileged
+Specification lets hardware report Dirty always, which only removes that
+saving.
 
 **User FP activation and storage:** Trap on first use over enabling every thread,
 but store images inline over allocating in the trap. Non-FP threads avoid state

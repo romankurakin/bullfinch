@@ -15,6 +15,9 @@ pub mod context {
 
     /// Switches from one kernel context to another.
     ///
+    /// The switch records the current interrupt mask in `old` and installs
+    /// the mask recorded in `new`.
+    ///
     /// # Safety
     ///
     /// The scheduler must hold exclusive ownership of both contexts. The target
@@ -22,18 +25,6 @@ pub mod context {
     pub unsafe fn switch_context(old: &mut Context, new: &Context) {
         // SAFETY: This is the HAL boundary for the arch-specific switch ABI.
         unsafe { kernel::context::switch_context(old, new) };
-    }
-
-    /// Switches context from a trap or IRQ handler without changing live IRQ state.
-    ///
-    /// # Safety
-    ///
-    /// The caller must be on a trap path. The incoming context must resume
-    /// through an exception frame or start at the thread trampoline, which
-    /// enables interrupts on first entry.
-    pub unsafe fn switch_context_from_trap(old: &mut Context, new: &Context) {
-        // SAFETY: This is the HAL boundary for the arch-specific trap switch ABI.
-        unsafe { kernel::context::switch_context_from_trap(old, new) };
     }
 }
 

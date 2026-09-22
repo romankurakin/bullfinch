@@ -45,13 +45,13 @@ pub const KERNEL_STACK_REGION_OFFSET: usize = (ENTRIES_PER_PAGE_TABLE - 1) * GIG
 pub type PageTableAllocator = fn() -> Option<VirtualAddress>;
 
 static ROOT_TABLE: BootPageTable = BootPageTable::empty();
-static IDENTITY_L2_TABLE: BootPageTable = BootPageTable::empty();
+// The kernel GiB uses 4 KiB pages so text, rodata, and data get distinct
+// permissions. The root's entry 0 and its kernel entry point at this one L2
+// table: the identity view and the higher-half view map the same physical
+// bytes with the same attributes.
 static PHYSMAP_L2_TABLE: BootPageTable = BootPageTable::empty();
-static IDENTITY_KERNEL_L1_TABLE: BootPageTable = BootPageTable::empty();
-static PHYSMAP_KERNEL_L1_TABLE: BootPageTable = BootPageTable::empty();
-static IDENTITY_KERNEL_L0_TABLES: [BootPageTable; ENTRIES_PER_PAGE_TABLE] =
-    [const { BootPageTable::empty() }; ENTRIES_PER_PAGE_TABLE];
-static PHYSMAP_KERNEL_L0_TABLES: [BootPageTable; ENTRIES_PER_PAGE_TABLE] =
+static KERNEL_L1_TABLE: BootPageTable = BootPageTable::empty();
+static KERNEL_L0_TABLES: [BootPageTable; ENTRIES_PER_PAGE_TABLE] =
     [const { BootPageTable::empty() }; ENTRIES_PER_PAGE_TABLE];
 static PHYSMAP_END_GB: BootCounter = BootCounter::new(0);
 
@@ -180,6 +180,8 @@ fn physical_to_virtual(address: PhysicalAddress) -> VirtualAddress {
     VirtualAddress::new(address.get().wrapping_add(KERNEL_VIRTUAL_BASE))
 }
 
+/// Returns the physmap alias of `address`. Boot maps every GiB below
+/// `PHYSMAP_END_GB`, so the end alone decides coverage.
 pub(crate) fn try_physical_to_virtual(address: PhysicalAddress) -> Option<VirtualAddress> {
     let mapped_bytes = PHYSMAP_END_GB.get().checked_mul(GIGAPAGE)?;
     (address.get() < mapped_bytes).then(|| physical_to_virtual(address))
@@ -203,11 +205,6 @@ pub fn init(
     kernel_load: PhysicalAddress,
     dtb: DeviceTreeBlobPhysicalAddress,
 ) -> Result<(), MapError> {
-    let map_start = if dtb.get() == 0 {
-        kernel_load.get()
-    } else {
-        core::cmp::min(kernel_load.get(), dtb.get())
-    };
     let dtb_end = if dtb.get() == 0 {
         kernel_load.get()
     } else {
@@ -217,9 +214,11 @@ pub fn init(
         kernel_load.get().saturating_add(MINIMUM_PHYSMAP_SIZE),
         dtb_end,
     );
-    let start_gb = map_start / GIGAPAGE;
+    // Map from the first GiB, not from the lowest GiB boot needs, so that
+    // `try_physical_to_virtual` needs only the end. A descriptor per skipped
+    // GiB is cheap.
     let end_gb = map_end.div_ceil(GIGAPAGE);
-    validate_boot_range(start_gb, end_gb)?;
+    validate_boot_range(end_gb)?;
     let kernel_gb = kernel_load.get() / GIGAPAGE;
     let kernel_image = kernel_image_layout();
 
@@ -228,50 +227,26 @@ pub fn init(
     unsafe {
         let root =
             &mut *(static_physical_address(ROOT_TABLE.get().cast_const()).get() as *mut PageTable);
-        let identity = &mut *(static_physical_address(IDENTITY_L2_TABLE.get().cast_const()).get()
-            as *mut PageTable);
         let physmap = &mut *(static_physical_address(PHYSMAP_L2_TABLE.get().cast_const()).get()
             as *mut PageTable);
         root.entries.fill(PageTableEntry::INVALID);
-        identity.entries.fill(PageTableEntry::INVALID);
         physmap.entries.fill(PageTableEntry::INVALID);
 
-        identity.entries[0] =
-            kernel_leaf(PhysicalAddress::ZERO, MappingPermissions::KERNEL_READ_WRITE);
         physmap.entries[0] =
             kernel_leaf(PhysicalAddress::ZERO, MappingPermissions::KERNEL_READ_WRITE);
-        for gb in start_gb..end_gb {
-            if gb == 0 {
-                continue;
-            }
+        for gb in 1..end_gb {
             let address = PhysicalAddress::new(gb * GIGAPAGE);
-            if gb == kernel_gb {
-                map_kernel_gb_split(
-                    identity,
-                    gb,
-                    &IDENTITY_KERNEL_L1_TABLE,
-                    &IDENTITY_KERNEL_L0_TABLES,
-                    kernel_image,
-                )?;
-                map_kernel_gb_split(
-                    physmap,
-                    gb,
-                    &PHYSMAP_KERNEL_L1_TABLE,
-                    &PHYSMAP_KERNEL_L0_TABLES,
-                    kernel_image,
-                )?;
+            physmap.entries[gb] = if gb == kernel_gb {
+                build_kernel_gb_split(gb, &KERNEL_L1_TABLE, &KERNEL_L0_TABLES, kernel_image)?
             } else {
-                identity.entries[gb] = kernel_leaf(address, MappingPermissions::KERNEL_READ_WRITE);
-                physmap.entries[gb] = kernel_leaf(address, MappingPermissions::KERNEL_READ_WRITE);
-            }
+                kernel_leaf(address, MappingPermissions::KERNEL_READ_WRITE)
+            };
         }
-        root.entries[0] = PageTableEntry::branch(static_physical_address(
-            IDENTITY_L2_TABLE.get().cast_const(),
-        ))
-        .expect("identity table is page aligned");
-        root.entries[KERNEL_VPN3] =
+        let physmap_branch =
             PageTableEntry::branch(static_physical_address(PHYSMAP_L2_TABLE.get().cast_const()))
                 .expect("physmap table is page aligned");
+        root.entries[0] = physmap_branch;
+        root.entries[KERNEL_VPN3] = physmap_branch;
         PHYSMAP_END_GB.set(end_gb);
 
         cpu::fence_rw_rw();
@@ -303,6 +278,7 @@ pub fn expand_physmap(max_end: PhysicalAddress) {
     let new_end = core::cmp::min(max_end.get().div_ceil(GIGAPAGE), MAX_PHYSMAP_ENTRIES);
 
     let current = PHYSMAP_END_GB.get();
+    // The identity view shares this table until `remove_identity_mapping`.
     // SAFETY: Called during single-hart boot before SMP exists.
     // TODO(smp): once secondary harts come online, expand under a lock and
     // issue cross-hart sfence shootdown.
@@ -754,13 +730,19 @@ fn kernel_image_permissions(
     }
 }
 
-unsafe fn map_kernel_gb_split(
-    l2_table: &mut PageTable,
+/// Fills the static L1 and L0 tables for the kernel GiB and returns the L2
+/// branch descriptor that reaches them.
+///
+/// # Safety
+///
+/// The caller must run during single-hart early boot, before any branch
+/// descriptor reaches these tables.
+unsafe fn build_kernel_gb_split(
     gb: usize,
     l1_table: &BootPageTable,
     l0_tables: &[BootPageTable; ENTRIES_PER_PAGE_TABLE],
     layout: KernelImageLayout,
-) -> Result<(), MapError> {
+) -> Result<PageTableEntry, MapError> {
     // SAFETY: Early boot has exclusive ownership of the static split tables.
     let l1 = unsafe { &mut *l1_table.get() };
     l1.entries.fill(PageTableEntry::INVALID);
@@ -780,10 +762,8 @@ unsafe fn map_kernel_gb_split(
                 kernel_page(physical, kernel_image_permissions(physical, layout));
         }
     }
-    l2_table.entries[gb] =
-        PageTableEntry::branch(static_physical_address(l1_table.get().cast_const()))
-            .ok_or(MapError::NotAligned)?;
-    Ok(())
+    PageTableEntry::branch(static_physical_address(l1_table.get().cast_const()))
+        .ok_or(MapError::NotAligned)
 }
 
 fn kernel_leaf(address: PhysicalAddress, permissions: MappingPermissions) -> PageTableEntry {
@@ -830,8 +810,8 @@ fn physical_page_number(address: PhysicalAddress) -> Option<u64> {
     )
 }
 
-fn validate_boot_range(start_gb: usize, end_gb: usize) -> Result<(), MapError> {
-    if start_gb > end_gb || end_gb > MAX_BOOT_GIGAPAGES {
+fn validate_boot_range(end_gb: usize) -> Result<(), MapError> {
+    if end_gb > MAX_BOOT_GIGAPAGES {
         return Err(MapError::RangeExceeded);
     }
     Ok(())

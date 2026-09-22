@@ -50,14 +50,16 @@ __bullfinch_riscv64_trap_vector:
     .option pop
 
     .text
+    # Only a trap from U-mode writes the scratch byte. A trap from S-mode does
+    # not change the current thread, so writing here would lose the outer
+    # record. See `TrapFpScratch`.
     .macro record_user_fp_status status, scratch, tmp
-    la \scratch, {trap_fp_scratch}
-    sb zero, {scratch_return_status_offset}(\scratch)
     andi \tmp, \status, {sstatus_spp}
     bnez \tmp, 98f
     li \tmp, {sstatus_fs_mask}
     and \tmp, \status, \tmp
     srli \tmp, \tmp, {sstatus_fs_shift}
+    la \scratch, {trap_fp_scratch}
     sb \tmp, {scratch_return_status_offset}(\scratch)
 98:
     li \scratch, {sstatus_fs_mask}
@@ -66,10 +68,12 @@ __bullfinch_riscv64_trap_vector:
     and \status, \status, \scratch
     .endm
 
+    # A return to S-mode leaves the scratch byte for the outer trap. A return
+    # to U-mode consumes it.
     .macro restore_user_fp_status_for_return scratch, tmp, status, status_offset
     ld \status, \status_offset(sp)
     andi \scratch, \status, {sstatus_spp}
-    bnez \scratch, 98f
+    bnez \scratch, 99f
     la \scratch, {trap_fp_scratch}
     lbu \status, {scratch_return_status_offset}(\scratch)
     sb zero, {scratch_return_status_offset}(\scratch)
@@ -80,10 +84,6 @@ __bullfinch_riscv64_trap_vector:
     slli \status, \status, {sstatus_fs_shift}
     or \tmp, \tmp, \status
     csrw sstatus, \tmp
-    j 99f
-98:
-    la \scratch, {trap_fp_scratch}
-    sb zero, {scratch_return_status_offset}(\scratch)
 99:
     .endm
 
