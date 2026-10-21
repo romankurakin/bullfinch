@@ -36,7 +36,7 @@ const MEGAPAGE_MASK: usize = MEGAPAGE - 1;
 
 const LOWER_CANONICAL_LIMIT: usize = 1 << 47;
 
-// Sv48 VPN3 covers bits [47:39]. For KERNEL_VIRTUAL_BASE this is 0x1ff.
+// Sv48 VPN3 covers bits [47:39]. For KERNEL_VIRTUAL_BASE this is 0x100.
 const KERNEL_VPN3: usize = (KERNEL_VIRTUAL_BASE >> 39) & 0x1ff;
 const MAX_PHYSMAP_ENTRIES: usize = ENTRIES_PER_PAGE_TABLE - 1;
 pub const KERNEL_STACK_REGION_OFFSET: usize = (ENTRIES_PER_PAGE_TABLE - 1) * GIGAPAGE;
