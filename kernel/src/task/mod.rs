@@ -27,9 +27,15 @@ pub const SCHED_TIME_SLICE_NS: u64 = 1_000_000_000 / clock::TICK_RATE_HZ;
 const MAX_PROCESSES: usize = 8;
 const KERNEL_STACK_PAGES: usize = KERNEL_STACK_SIZE / PAGE_SIZE;
 const PAGE_ALIGNMENT_LOG2: u8 = 12;
-const KERNEL_STACK_GUARD_SIZE: usize = PAGE_SIZE;
-const KERNEL_STACK_SLOT_SIZE: usize = KERNEL_STACK_GUARD_SIZE + KERNEL_STACK_SIZE;
-const KERNEL_STACK_REGION_SIZE: usize = 1 << 30;
+pub const KERNEL_STACK_GUARD_SIZE: usize = PAGE_SIZE;
+// Unmapped upper padding keeps a valid stack top distinct from the next guard.
+pub const KERNEL_STACK_SLOT_SIZE: usize = PAGE_SIZE * 4;
+pub const KERNEL_STACK_REGION_SIZE: usize = 1 << 30;
+
+const _: () = assert!(KERNEL_STACK_REGION_SIZE.is_power_of_two());
+const _: () = assert!(KERNEL_STACK_SLOT_SIZE.is_power_of_two());
+const _: () = assert!(KERNEL_STACK_GUARD_SIZE + KERNEL_STACK_SIZE < KERNEL_STACK_SLOT_SIZE);
+
 const MAX_KERNEL_STACK_SLOTS: usize = KERNEL_STACK_REGION_SIZE / KERNEL_STACK_SLOT_SIZE;
 const STACK_SLOT_WORD_BITS: usize = usize::BITS as usize;
 const STACK_SLOT_WORDS: usize = MAX_KERNEL_STACK_SLOTS.div_ceil(STACK_SLOT_WORD_BITS);

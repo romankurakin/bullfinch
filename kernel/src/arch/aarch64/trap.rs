@@ -19,6 +19,14 @@ use kernel::trap::{
 
 global_asm!(
     r#"
+    // The boot CPU uses this stack only after an overflow.
+    // TODO(smp): give each CPU an overflow stack before starting secondary CPUs.
+    .section .bss.stack_overflow, "aw"
+    .balign 16
+__bullfinch_aarch64_overflow_stack:
+    .skip {overflow_stack_size}
+__bullfinch_aarch64_overflow_stack_top:
+
     .section .vectors, "ax"
     .balign 2048
     .global __bullfinch_aarch64_trap_vectors
@@ -59,7 +67,38 @@ __bullfinch_aarch64_trap_vectors:
     b rust_aarch64_kernel_trap_entry
     .balign 128
 
+    // After overflow, any further exception must halt without using a stack.
+    .balign 2048
+__bullfinch_aarch64_overflow_vectors:
+    .rept 16
+    b .Loverflow_halt
+    .balign 128
+    .endr
+
     .text
+    // TPIDR_EL1 and TPIDRRO_EL0 are reserved for entry scratch.
+    // Exceptions stay masked, and the check does not access memory.
+    .macro check_kernel_stack frame_size
+    msr tpidr_el1, x16
+    msr tpidrro_el0, x17
+
+    mov x16, sp
+    mov x17, #{stack_region_base}
+    sub x16, x16, x17
+    lsr x17, x16, #{stack_region_shift}
+    cbnz x17, 99f
+    and x16, x16, #{stack_slot_mask}
+    mov x17, #({stack_guard_size} + \frame_size)
+    cmp x16, x17
+    b.lo .Lstack_overflow
+    mov x17, #{stack_top_offset}
+    cmp x16, x17
+    b.hi .Lstack_overflow
+99:
+    mrs x16, tpidr_el1
+    mrs x17, tpidrro_el0
+    .endm
+
     // Only a trap from EL0 writes the scratch byte. A trap from EL1 does not
     // change the current thread, so writing here would lose the outer record.
     // See `TrapFpScratch`.
@@ -98,6 +137,7 @@ __bullfinch_aarch64_trap_vectors:
     .endm
 
     .macro save_trap_frame handler
+    check_kernel_stack {frame_size}
     sub sp, sp, #{frame_size}
     stp x0, x1, [sp, #0]
     stp x2, x3, [sp, #16]
@@ -153,6 +193,7 @@ __bullfinch_aarch64_trap_vectors:
     .endm
 
     .macro save_irq_frame handler
+    check_kernel_stack {irq_frame_size}
     sub sp, sp, #{irq_frame_size}
     stp x0, x1, [sp, #0]
     stp x2, x3, [sp, #16]
@@ -197,6 +238,27 @@ rust_aarch64_kernel_trap_entry:
     .global rust_aarch64_kernel_irq_entry
 rust_aarch64_kernel_irq_entry:
     save_irq_frame rust_aarch64_handle_kernel_irq
+
+.Lstack_overflow:
+    msr daifset, #0xf
+    adrp x16, __bullfinch_aarch64_overflow_vectors
+    add x16, x16, :lo12:__bullfinch_aarch64_overflow_vectors
+    msr vbar_el1, x16
+    isb
+    adrp x16, __bullfinch_aarch64_overflow_stack_top
+    add x16, x16, :lo12:__bullfinch_aarch64_overflow_stack_top
+    mov sp, x16
+    mov x16, #{kernel_cpacr}
+    msr cpacr_el1, x16
+    isb
+    b {stack_overflow}
+.Loverflow_halt:
+    msr daifset, #0xf
+98:
+    wfi
+    b 98b
+
+    .purgem check_kernel_stack
     .purgem record_user_fp_access
     .purgem restore_user_fp_access_for_return
     .purgem save_trap_frame
@@ -215,7 +277,25 @@ rust_aarch64_kernel_irq_entry:
     kernel_cpacr = const super::fp::CPACR_EL1_KERNEL,
     scratch_return_enabled_offset = const super::fp::TrapFpScratch::RETURN_ENABLED_OFFSET,
     trap_fp_scratch = sym super::fp::A64_TRAP_FP_SCRATCH,
+    overflow_stack_size = const crate::runtime::trap::OVERFLOW_STACK_SIZE,
+    stack_region_base = const super::mmu::kernel_stack_region_base().get(),
+    stack_region_shift = const kernel::task::KERNEL_STACK_REGION_SIZE.ilog2(),
+    stack_slot_mask = const kernel::task::KERNEL_STACK_SLOT_SIZE - 1,
+    stack_top_offset = const kernel::task::KERNEL_STACK_GUARD_SIZE + kernel::task::KERNEL_STACK_SIZE,
+    stack_guard_size = const kernel::task::KERNEL_STACK_GUARD_SIZE,
+    stack_overflow = sym crate::runtime::trap::stack_overflow,
 );
+
+/// # Safety
+/// The test must retain the target stack and its neighbor until the CPU halts.
+#[cfg(feature = "stack-overflow-test")]
+#[unsafe(naked)]
+pub unsafe extern "C" fn trigger_stack_overflow_test(_stack_pointer: usize) -> ! {
+    #[cfg(feature = "stack-overflow-irq-test")]
+    core::arch::naked_asm!("mov sp, x0", "msr daifclr, #2", "2:", "wfi", "b 2b");
+    #[cfg(not(feature = "stack-overflow-irq-test"))]
+    core::arch::naked_asm!("mov sp, x0", "str xzr, [sp]", "2:", "wfi", "b 2b");
+}
 
 unsafe extern "C" {
     fn __bullfinch_aarch64_trap_vectors();

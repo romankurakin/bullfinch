@@ -25,6 +25,14 @@ const IRQ_FRAME_SIZE_NEGATIVE: isize = -(IrqFrame::SIZE as isize);
 
 global_asm!(
     r#"
+    # The boot hart uses this stack only after an overflow.
+    # TODO(smp): give each hart an overflow stack before starting secondary harts.
+    .section .bss.stack_overflow, "aw"
+    .balign 16
+__bullfinch_riscv64_overflow_stack:
+    .skip {overflow_stack_size}
+__bullfinch_riscv64_overflow_stack_top:
+
     .section .trap, "ax"
     .balign 1024
     .global __bullfinch_riscv64_trap_vector
@@ -50,6 +58,29 @@ __bullfinch_riscv64_trap_vector:
     .option pop
 
     .text
+    # sscratch is reserved for trap entry. Interrupts stay masked,
+    # and the check does not access memory.
+    .macro check_kernel_stack frame_size
+    csrw sscratch, t0
+    li t0, {stack_region_base}
+    sub t0, sp, t0
+    srli t0, t0, {stack_region_shift}
+    bnez t0, 99f
+
+    slli t0, sp, {stack_slot_mask_shift}
+    srli t0, t0, {stack_slot_mask_shift}
+    addi t0, t0, -2048
+    addi t0, t0, -2048
+    addi t0, t0, -\frame_size
+    bltz t0, .Lstack_overflow
+    # Convert to SP-bottom-1 so the exact usable top is still accepted.
+    addi t0, t0, (\frame_size - 1)
+    srli t0, t0, {stack_size_shift}
+    bnez t0, .Lstack_overflow
+99:
+    csrr t0, sscratch
+    .endm
+
     # Only a trap from U-mode writes the scratch byte. A trap from S-mode does
     # not change the current thread, so writing here would lose the outer
     # record. See `TrapFpScratch`.
@@ -89,6 +120,7 @@ __bullfinch_riscv64_trap_vector:
 
     .global rust_riscv64_kernel_trap_entry
 rust_riscv64_kernel_trap_entry:
+    check_kernel_stack {frame_size}
     addi sp, sp, {frame_size_negative}
     sd x1, 0(sp)
     sd x2, 8(sp)
@@ -174,6 +206,7 @@ rust_riscv64_kernel_trap_entry:
 
     .global rust_riscv64_kernel_fast_irq_entry
 rust_riscv64_kernel_fast_irq_entry:
+    check_kernel_stack {irq_frame_size}
     addi sp, sp, {irq_frame_size_negative}
     sd ra, 0(sp)
     sd t0, 8(sp)
@@ -220,6 +253,24 @@ rust_riscv64_kernel_fast_irq_entry:
     ld t6, 120(sp)
     addi sp, sp, {irq_frame_size}
     sret
+
+.Lstack_overflow:
+    csrci sstatus, 2
+    # Direct mode sends every further trap to the stack-free halt path.
+    la t0, .Loverflow_halt
+    csrw stvec, t0
+    la sp, __bullfinch_riscv64_overflow_stack_top
+    li t0, {sstatus_fs_mask}
+    csrc sstatus, t0
+    tail {stack_overflow}
+    .balign 4
+.Loverflow_halt:
+    csrci sstatus, 2
+98:
+    wfi
+    j 98b
+
+    .purgem check_kernel_stack
     .purgem record_user_fp_status
     .purgem restore_user_fp_status_for_return
     "#,
@@ -240,7 +291,32 @@ rust_riscv64_kernel_fast_irq_entry:
     irq_status_offset = const IrqFrame::STATUS_OFFSET,
     scratch_return_status_offset = const super::fp::TrapFpScratch::RETURN_STATUS_OFFSET,
     trap_fp_scratch = sym super::fp::RV64_TRAP_FP_SCRATCH,
+    overflow_stack_size = const crate::runtime::trap::OVERFLOW_STACK_SIZE,
+    stack_region_base = const super::mmu::kernel_stack_region_base().get(),
+    stack_region_shift = const kernel::task::KERNEL_STACK_REGION_SIZE.ilog2(),
+    stack_slot_mask_shift = const usize::BITS - kernel::task::KERNEL_STACK_SLOT_SIZE.ilog2(),
+    stack_size_shift = const kernel::task::KERNEL_STACK_SIZE.ilog2(),
+    stack_overflow = sym crate::runtime::trap::stack_overflow,
 );
+
+const _: () = assert!(kernel::task::KERNEL_STACK_GUARD_SIZE == 4096);
+const _: () = assert!(kernel::task::KERNEL_STACK_SIZE.is_power_of_two());
+const _: () = assert!(
+    super::mmu::kernel_stack_region_base()
+        .get()
+        .is_multiple_of(kernel::task::KERNEL_STACK_SLOT_SIZE)
+);
+
+/// # Safety
+/// The test must retain the target stack and its neighbor until the CPU halts.
+#[cfg(feature = "stack-overflow-test")]
+#[unsafe(naked)]
+pub unsafe extern "C" fn trigger_stack_overflow_test(_stack_pointer: usize) -> ! {
+    #[cfg(feature = "stack-overflow-irq-test")]
+    core::arch::naked_asm!("mv sp, a0", "csrsi sstatus, 2", "2:", "wfi", "j 2b");
+    #[cfg(not(feature = "stack-overflow-irq-test"))]
+    core::arch::naked_asm!("mv sp, a0", "sd zero, 0(sp)", "2:", "wfi", "j 2b");
+}
 
 unsafe extern "C" {
     fn __bullfinch_riscv64_trap_vector();

@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 const BOOT_OK: &str = "[BOOT:OK]";
 const SCHED_OK: &str = "[SCHED:OK]";
+const STACK_OVERFLOW: &str = "[STACK:OVERFLOW]";
 const SMOKE_TIMEOUT: Duration = Duration::from_secs(15);
 const PEEK_TIMEOUT: Duration = Duration::from_secs(4);
 
@@ -44,6 +45,9 @@ struct SmokeArgs {
     peek: bool,
     #[arg(long)]
     verbose: bool,
+    /// Check full-trap and timer-IRQ entry with an exhausted stack.
+    #[arg(long, conflicts_with = "peek")]
+    stack_overflow: bool,
     arch: Option<Arch>,
     mode: Option<Mode>,
 }
@@ -66,12 +70,13 @@ fn main() {
 fn run() -> Result<(), String> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Build(args) => build_kernel(args.arch, args.mode, false).map(|_| ()),
+        Commands::Build(args) => build_kernel(args.arch, args.mode, None).map(|_| ()),
         Commands::Qemu(args) => qemu_command(args),
         Commands::Smoke(args) => smoke_command(args),
         Commands::Peek(args) => smoke_command(SmokeArgs {
             peek: true,
             verbose: args.verbose,
+            stack_overflow: false,
             arch: args.arch,
             mode: args.mode,
         }),
@@ -83,7 +88,7 @@ fn run() -> Result<(), String> {
 
 fn qemu_command(args: BuildArgs) -> Result<(), String> {
     ensure_smoke_support(args.arch)?;
-    let artifact = build_kernel(args.arch, args.mode, false)?;
+    let artifact = build_kernel(args.arch, args.mode, None)?;
     let board = board_for(args.arch);
     let mut command = qemu_command_for(board, &artifact)?;
     let status = command.status().map_err(|error| {
@@ -101,10 +106,17 @@ fn qemu_command(args: BuildArgs) -> Result<(), String> {
 
 fn smoke_command(args: SmokeArgs) -> Result<(), String> {
     let variants = smoke_variants(args.arch, args.mode, args.peek)?;
+    let tests: &[SmokeTest] = if args.stack_overflow {
+        &[SmokeTest::StackOverflow, SmokeTest::StackOverflowIrq]
+    } else {
+        &[SmokeTest::Scheduler]
+    };
     let mut failed = 0usize;
     for (arch, mode) in variants {
-        if !run_smoke_variant(arch, mode, args.peek, args.verbose)? {
-            failed += 1;
+        for &test in tests {
+            if !run_smoke_variant(arch, mode, args.peek, args.verbose, test)? {
+                failed += 1;
+            }
         }
     }
 
@@ -117,7 +129,7 @@ fn smoke_command(args: SmokeArgs) -> Result<(), String> {
 
 fn disasm_command(args: BuildArgs) -> Result<(), String> {
     ensure_tool(objdump_program(), "llvm-objdump")?;
-    let artifact = build_kernel(args.arch, args.mode, false)?;
+    let artifact = build_kernel(args.arch, args.mode, None)?;
     let mut command = Command::new(objdump_program());
     command.arg("-d");
     if args.arch == Arch::Riscv64 {
@@ -149,7 +161,7 @@ fn host_command() -> Result<(), String> {
     Ok(())
 }
 
-fn build_kernel(arch: Arch, mode: Mode, smoke_test: bool) -> Result<KernelArtifact, String> {
+fn build_kernel(arch: Arch, mode: Mode, test: Option<SmokeTest>) -> Result<KernelArtifact, String> {
     ensure_build_support(arch)?;
     let mut command = cargo_command();
     command.args([
@@ -165,8 +177,8 @@ fn build_kernel(arch: Arch, mode: Mode, smoke_test: bool) -> Result<KernelArtifa
     if mode == Mode::Release {
         command.arg("--release");
     }
-    if smoke_test {
-        command.args(["--features", "smoke-test"]);
+    if let Some(test) = test {
+        command.args(["--features", test.feature()]);
     }
     run_status(command, &format!("build {} {}", arch.name(), mode.name()))?;
 
@@ -181,7 +193,12 @@ fn build_kernel(arch: Arch, mode: Mode, smoke_test: bool) -> Result<KernelArtifa
     fs::create_dir_all(&out_dir)
         .map_err(|error| format!("failed to create {}: {error}", out_dir.display()))?;
 
-    let base = format!("{}-qemu_virt-{}", arch.name(), mode.name());
+    let base = format!(
+        "{}-qemu_virt-{}{}",
+        arch.name(),
+        mode.name(),
+        test.map_or("", SmokeTest::suffix)
+    );
     let elf = out_dir.join(format!("{base}.elf"));
     fs::copy(&source, &elf).map_err(|error| {
         format!(
@@ -206,11 +223,17 @@ fn build_kernel(arch: Arch, mode: Mode, smoke_test: bool) -> Result<KernelArtifa
     Ok(KernelArtifact { elf, bin })
 }
 
-fn run_smoke_variant(arch: Arch, mode: Mode, peek: bool, verbose: bool) -> Result<bool, String> {
+fn run_smoke_variant(
+    arch: Arch,
+    mode: Mode,
+    peek: bool,
+    verbose: bool,
+    test: SmokeTest,
+) -> Result<bool, String> {
     ensure_smoke_support(arch)?;
-    let artifact = build_kernel(arch, mode, true)?;
+    let artifact = build_kernel(arch, mode, Some(test))?;
     let board = board_for(arch);
-    let name = format!("{}-qemu_virt-{}", arch.name(), mode.name());
+    let name = format!("{}-qemu_virt-{}{}", arch.name(), mode.name(), test.suffix());
     let mut command = qemu_command_for(board, &artifact)?;
     if verbose {
         eprintln!("{name}: running {:?}", command);
@@ -234,7 +257,9 @@ fn run_smoke_variant(arch: Arch, mode: Mode, peek: bool, verbose: bool) -> Resul
         return Ok(true);
     }
 
-    if filtered.contains(BOOT_OK) && filtered.contains(SCHED_OK) {
+    let stack_ok = test == SmokeTest::Scheduler
+        || (filtered.contains(STACK_OVERFLOW) && !filtered.contains("[STACK:FAIL]"));
+    if filtered.contains(BOOT_OK) && filtered.contains(SCHED_OK) && stack_ok {
         println!("{name}: PASS");
         Ok(true)
     } else {
@@ -515,6 +540,31 @@ fn board_for(arch: Arch) -> Board {
             args: &["-smp", "2", "-m", "2G", "-bios", "default"],
             boot_image: BootImage::Elf,
         },
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum SmokeTest {
+    Scheduler,
+    StackOverflow,
+    StackOverflowIrq,
+}
+
+impl SmokeTest {
+    fn feature(self) -> &'static str {
+        match self {
+            Self::Scheduler => "smoke-test",
+            Self::StackOverflow => "stack-overflow-test",
+            Self::StackOverflowIrq => "stack-overflow-irq-test",
+        }
+    }
+
+    fn suffix(self) -> &'static str {
+        match self {
+            Self::Scheduler => "",
+            Self::StackOverflow => "-stack-overflow",
+            Self::StackOverflowIrq => "-stack-overflow-irq",
+        }
     }
 }
 
