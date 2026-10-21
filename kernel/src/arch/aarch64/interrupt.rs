@@ -9,8 +9,8 @@ use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use kernel::{
-    hwinfo::{HardwareInfo, InterruptControllerInfo},
-    mmu::{PhysicalAddress, VirtualAddress},
+    hwinfo::{HardwareInfo, InterruptControllerInfo, MemoryRegion},
+    mmu::VirtualAddress,
     trap::dispatch::InterruptAction,
 };
 
@@ -19,15 +19,10 @@ use super::{cpu, mmio, mmu};
 const TIMER_PPI: u32 = 30;
 const GIC_SPECIAL_INTERRUPT_START: u32 = 1020;
 const GIC_SPECIAL_INTERRUPT_END: u32 = 1023;
-const GIC_DISTRIBUTOR_REGION_SIZE: usize = 0x1_0000;
-const GIC_V2_CPU_INTERFACE_REGION_SIZE: usize = 0x1_0000;
-const GIC_REDISTRIBUTOR_REGION_SIZE: usize = 0x2_0000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InitError {
     MissingController,
-    MissingCpuInterface,
-    MissingRedistributor,
     DeviceRangeUnavailable,
 }
 
@@ -66,19 +61,13 @@ pub fn init(info: &HardwareInfo) -> Result<(), InitError> {
 
     let gic = match controller {
         InterruptControllerInfo::GicV2 {
-            distributor_base,
-            cpu_interface_base,
-        } => Gic::V2(GicV2::new(
-            distributor_base,
-            cpu_interface_base.ok_or(InitError::MissingCpuInterface)?,
-        )?),
+            distributor,
+            cpu_interface,
+        } => Gic::V2(GicV2::new(distributor, cpu_interface)?),
         InterruptControllerInfo::GicV3 {
-            distributor_base,
-            redistributor_base,
-        } => Gic::V3(GicV3::new(
-            distributor_base,
-            redistributor_base.ok_or(InitError::MissingRedistributor)?,
-        )?),
+            distributor,
+            redistributor,
+        } => Gic::V3(GicV3::new(distributor, redistributor)?),
     };
 
     // SAFETY: This is the only writer of `GIC_SLOT`. It runs during single-core
@@ -204,13 +193,16 @@ impl GicV2 {
     const GICD_INTERRUPT_SET_ENABLE: usize = 0x100;
     const GICD_INTERRUPT_PRIORITY: usize = 0x400;
 
-    fn new(
-        distributor: PhysicalAddress,
-        cpu_interface: PhysicalAddress,
-    ) -> Result<Self, InitError> {
+    fn new(distributor: MemoryRegion, cpu_interface: MemoryRegion) -> Result<Self, InitError> {
         Ok(Self {
-            distributor: map_device_region(distributor, GIC_DISTRIBUTOR_REGION_SIZE)?,
-            cpu_interface: map_device_region(cpu_interface, GIC_V2_CPU_INTERFACE_REGION_SIZE)?,
+            distributor: map_device_region(
+                distributor,
+                Self::GICD_INTERRUPT_PRIORITY + TIMER_PPI as usize + size_of::<u8>(),
+            )?,
+            cpu_interface: map_device_region(
+                cpu_interface,
+                Self::GICC_END_OF_INTERRUPT + size_of::<u32>(),
+            )?,
         })
     }
 
@@ -307,13 +299,16 @@ impl GicV3 {
     // fault instead of spinning forever during boot.
     const WAKE_RETRY_BUDGET: u32 = 1_000_000;
 
-    fn new(
-        distributor: PhysicalAddress,
-        redistributor: PhysicalAddress,
-    ) -> Result<Self, InitError> {
+    fn new(distributor: MemoryRegion, redistributor: MemoryRegion) -> Result<Self, InitError> {
         Ok(Self {
-            distributor: map_device_region(distributor, GIC_DISTRIBUTOR_REGION_SIZE)?,
-            redistributor: map_device_region(redistributor, GIC_REDISTRIBUTOR_REGION_SIZE)?,
+            distributor: map_device_region(distributor, Self::GICD_CONTROL + size_of::<u32>())?,
+            redistributor: map_device_region(
+                redistributor,
+                Self::GICR_SGI_BASE
+                    + Self::GICR_INTERRUPT_PRIORITY
+                    + TIMER_PPI as usize
+                    + size_of::<u8>(),
+            )?,
         })
     }
 
@@ -465,13 +460,19 @@ fn write_gic_system_register_enable(value: u64) {
     }
 }
 
-fn map_device_region(base: PhysicalAddress, size: usize) -> Result<VirtualAddress, InitError> {
-    let last = base
-        .checked_add(
-            size.checked_sub(1)
-                .ok_or(InitError::DeviceRangeUnavailable)?,
-        )
+fn map_device_region(
+    region: MemoryRegion,
+    required_size: usize,
+) -> Result<VirtualAddress, InitError> {
+    // A mapped base alone does not prove that the driver can access every
+    // register. Check the declared size and alignment before any MMIO.
+    if !region.covers_registers(required_size) {
+        return Err(InitError::DeviceRangeUnavailable);
+    }
+    let last = region
+        .base
+        .checked_add(region.size - 1)
         .ok_or(InitError::DeviceRangeUnavailable)?;
     mmu::try_device_physical_to_virtual(last).ok_or(InitError::DeviceRangeUnavailable)?;
-    mmu::try_device_physical_to_virtual(base).ok_or(InitError::DeviceRangeUnavailable)
+    mmu::try_device_physical_to_virtual(region.base).ok_or(InitError::DeviceRangeUnavailable)
 }

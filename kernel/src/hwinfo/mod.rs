@@ -38,6 +38,15 @@ impl MemoryRegion {
     pub fn end(self) -> Option<PhysicalAddress> {
         self.base.checked_add(self.size)
     }
+
+    /// Checks a region used for 32-bit MMIO. `required_size` includes the
+    /// last register that the driver accesses.
+    pub fn covers_registers(self, required_size: usize) -> bool {
+        required_size != 0
+            && self.size >= required_size
+            && self.base.get().is_multiple_of(core::mem::align_of::<u32>())
+            && self.end().is_some()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -49,12 +58,12 @@ pub struct Features {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InterruptControllerInfo {
     GicV2 {
-        distributor_base: PhysicalAddress,
-        cpu_interface_base: Option<PhysicalAddress>,
+        distributor: MemoryRegion,
+        cpu_interface: MemoryRegion,
     },
     GicV3 {
-        distributor_base: PhysicalAddress,
-        redistributor_base: Option<PhysicalAddress>,
+        distributor: MemoryRegion,
+        redistributor: MemoryRegion,
     },
 }
 
@@ -363,24 +372,26 @@ fn interrupt_controller_info(fdt: &Fdt<'_>) -> FdtResult<Option<InterruptControl
 }
 
 fn parse_gic_regs(node: Node<'_>, version: u8) -> FdtResult<Option<InterruptControllerInfo>> {
-    let Some(reg) = node.reg()? else {
-        return Ok(None);
-    };
-    let mut entries = reg.filter_map(region_from_reg);
-    let Some(distributor) = entries.next() else {
-        return Ok(None);
-    };
-    let second = entries.next();
-    let distributor_base = distributor.base;
+    let mut entries = node.reg()?.ok_or(FdtError::InvalidStandardData)?;
+    // The first two entries have fixed roles. Skipping a bad entry could use
+    // another register bank in its place.
+    let distributor = entries
+        .next()
+        .and_then(region_from_reg)
+        .ok_or(FdtError::InvalidStandardData)?;
+    let second = entries
+        .next()
+        .and_then(region_from_reg)
+        .ok_or(FdtError::InvalidStandardData)?;
 
     Ok(match version {
         2 => Some(InterruptControllerInfo::GicV2 {
-            distributor_base,
-            cpu_interface_base: second.map(|entry| entry.base),
+            distributor,
+            cpu_interface: second,
         }),
         3 => Some(InterruptControllerInfo::GicV3 {
-            distributor_base,
-            redistributor_base: second.map(|entry| entry.base),
+            distributor,
+            redistributor: second,
         }),
         _ => None,
     })
@@ -479,6 +490,101 @@ mod tests {
     }
 
     #[test]
+    fn register_regions_require_alignment_and_full_coverage() {
+        for (base, size, required, expected) in [
+            (0x0800_0000, 0, 4, false),
+            (0x0800_0000, 0x1000, 0, false),
+            (0x0800_0001, 0x1000, 4, false),
+            (0x0800_0002, 0x1000, 4, false),
+            (0x0800_0003, 0x1000, 4, false),
+            (0x0800_0004, 4, 4, true),
+            (0x0800_0000, 0x13, 0x14, false),
+            (0x0800_0000, 0x14, 0x14, true),
+            (0x0800_0000, 0x2000, 0x14, true),
+            (0x0800_0000, usize::MAX, 4, false),
+            (usize::MAX - 3, 4, 4, false),
+        ] {
+            let region = MemoryRegion {
+                base: PhysicalAddress::new(base),
+                size,
+            };
+            assert_eq!(region.covers_registers(required), expected, "{region:?}");
+        }
+    }
+
+    #[test]
+    fn retains_gic_v2_register_sizes() {
+        // The optional virtual interfaces follow the two physical interfaces.
+        let reg = [
+            0,
+            0x0800_0000,
+            0,
+            0x1000,
+            0,
+            0x0801_0000,
+            0,
+            0x2000,
+            0,
+            0x0803_0000,
+            0,
+            0x2000,
+            0,
+            0x0804_0000,
+            0,
+            0x2000,
+        ];
+        for compatible in ["arm,cortex-a15-gic", "arm,gic-400"] {
+            let blob = gic_dtb(compatible, Some(&reg));
+            let fdt = Fdt::new(&blob).unwrap();
+            let hw = HardwareInfo::from_fdt(DeviceTreeBlobPhysicalAddress::new(0), &fdt).unwrap();
+            assert_eq!(
+                hw.features.interrupt_controller,
+                Some(InterruptControllerInfo::GicV2 {
+                    distributor: MemoryRegion {
+                        base: PhysicalAddress::new(0x0800_0000),
+                        size: 0x1000,
+                    },
+                    cpu_interface: MemoryRegion {
+                        base: PhysicalAddress::new(0x0801_0000),
+                        size: 0x2000,
+                    },
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn requires_two_complete_gic_register_entries() {
+        let one = [0, 0x0800_0000, 0, 0x1_0000];
+        let partial = [0, 0x0800_0000, 0, 0x1_0000, 0, 0x080a_0000, 0];
+        for compatible in ["arm,cortex-a15-gic", "arm,gic-400", "arm,gic-v3"] {
+            for reg in [None, Some(&[][..]), Some(&one[..]), Some(&partial[..])] {
+                let blob = gic_dtb(compatible, reg);
+                let fdt = Fdt::new(&blob).unwrap();
+                assert!(
+                    HardwareInfo::from_fdt(DeviceTreeBlobPhysicalAddress::new(0), &fdt).is_err(),
+                    "{compatible}: {reg:?}",
+                );
+            }
+        }
+    }
+
+    fn gic_dtb(compatible: &str, reg: Option<&[u32]>) -> Vec<u8> {
+        let mut dtb = DtbBuilder::new();
+        dtb.begin_node("");
+        dtb.prop_u32("#address-cells", 2);
+        dtb.prop_u32("#size-cells", 2);
+        dtb.begin_node("interrupt-controller@8000000");
+        dtb.prop_str("compatible", compatible);
+        if let Some(reg) = reg {
+            dtb.prop_cells("reg", reg);
+        }
+        dtb.end_node();
+        dtb.end_node();
+        dtb.finish()
+    }
+
+    #[test]
     fn sorts_regions_by_size_descending() {
         let mut regions = [
             MemoryRegion {
@@ -557,8 +663,14 @@ mod tests {
         assert_eq!(
             hw.features.interrupt_controller,
             Some(InterruptControllerInfo::GicV3 {
-                distributor_base: PhysicalAddress::new(0x0800_0000),
-                redistributor_base: Some(PhysicalAddress::new(0x080a_0000)),
+                distributor: MemoryRegion {
+                    base: PhysicalAddress::new(0x0800_0000),
+                    size: 0x1_0000,
+                },
+                redistributor: MemoryRegion {
+                    base: PhysicalAddress::new(0x080a_0000),
+                    size: 0x00f6_0000,
+                },
             })
         );
     }
@@ -824,17 +936,23 @@ mod tests {
             let fdt = Fdt::new(&blob).unwrap();
             let hw = HardwareInfo::from_fdt(DeviceTreeBlobPhysicalAddress::new(0), &fdt).unwrap();
             if compatible.starts_with("arm,gic") {
-                let base = PhysicalAddress::new(0x0800_0000);
-                let second = Some(PhysicalAddress::new(0x080a_0000));
+                let distributor = MemoryRegion {
+                    base: PhysicalAddress::new(0x0800_0000),
+                    size: 0x1_0000,
+                };
+                let second = MemoryRegion {
+                    base: PhysicalAddress::new(0x080a_0000),
+                    size: 0x2_0000,
+                };
                 let expected = if compatible == "arm,gic-v3" {
                     InterruptControllerInfo::GicV3 {
-                        distributor_base: base,
-                        redistributor_base: second,
+                        distributor,
+                        redistributor: second,
                     }
                 } else {
                     InterruptControllerInfo::GicV2 {
-                        distributor_base: base,
-                        cpu_interface_base: second,
+                        distributor,
+                        cpu_interface: second,
                     }
                 };
                 assert_eq!(hw.features.interrupt_controller, Some(expected));
