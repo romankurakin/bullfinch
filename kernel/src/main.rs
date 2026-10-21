@@ -94,13 +94,19 @@ pub fn kernel_main(info: BootInfo) -> ! {
     HIGHER_HALF.store(true, Ordering::Release);
     let hardware = startup::init::virt_init(info.dtb).expect("boot: virtual init failed");
 
-    kernel::pmm::init(
-        &hardware,
-        hal::mmu::KERNEL_PHYSICAL_LOAD,
-        kernel_physical_end(),
-        hal::mmu::physmap_end(),
-        hal::mmu::try_physical_to_virtual,
-    )
+    // SAFETY: The QEMU boot contract gives the kernel all unreserved RAM.
+    // Firmware reservations, the DTB range, and linker bounds cover live boot
+    // memory. No heap or tasks exist yet. Virtual boot installed permanent
+    // writable mappings for the available RAM.
+    unsafe {
+        kernel::pmm::init(
+            &hardware,
+            hal::mmu::KERNEL_PHYSICAL_LOAD,
+            kernel_physical_end(),
+            hal::mmu::physmap_end(),
+            hal::mmu::try_physical_to_virtual,
+        )
+    }
     .expect("pmm: initialization failed");
     startup::log::pmm();
     kernel::allocator::init(

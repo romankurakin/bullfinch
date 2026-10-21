@@ -496,8 +496,9 @@ impl PhysicalMemoryManager {
             } else {
                 PageState::Free
             };
-            // SAFETY: The whole metadata span is mapped and reserved above.
-            // Each write initializes one owned entry before references exist.
+            // SAFETY: The caller supplies writable RAM owned by the PMM.
+            // The checks above reserve an aligned span for all entries.
+            // Each write initializes an entry before references to it exist.
             unsafe { storage.ptr.add(index).write(Page::new(arena_index, state)) };
         }
 
@@ -969,7 +970,19 @@ impl Drop for PageRun {
 static PMM: Locked<PhysicalMemoryManager> = Locked::new(PhysicalMemoryManager::empty());
 
 /// Initializes arenas within the continuous physmap `[0, physmap_end)`.
-pub fn init(
+///
+/// # Safety
+///
+/// Unreserved RAM described by `info` below `physmap_end` must be exclusively
+/// available to the PMM. The kernel range and `info` must cover every other
+/// live use of that RAM.
+///
+/// `physical_to_virtual` must return the correct linear mapping of every byte
+/// in that RAM. The mapping must be readable and writable throughout this call.
+/// After success, the PMM owns the pages. Keep their mappings readable and
+/// writable for the kernel lifetime.
+/// On failure, some metadata may already have been written.
+pub unsafe fn init(
     info: &HardwareInfo,
     kernel_start: PhysicalAddress,
     kernel_end: PhysicalAddress,
