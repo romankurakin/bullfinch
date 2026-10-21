@@ -75,6 +75,9 @@ jobs:
       - name: Smoke test
         run: just smoke-arm64
 
+      - name: Stack overflow smoke test
+        run: cargo run --quiet -p bullfinch-tools -- smoke --stack-overflow arm64
+
   smoke-riscv64:
     name: Smoke RISC-V
     runs-on: ubuntu-24.04-arm
@@ -94,3 +97,6 @@ jobs:
 
       - name: Smoke test
         run: just smoke-riscv64
+
+      - name: Stack overflow smoke test
+        run: cargo run --quiet -p bullfinch-tools -- smoke --stack-overflow riscv64
