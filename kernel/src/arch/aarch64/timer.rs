@@ -55,7 +55,14 @@ pub fn set_deadline(deadline: Deadline) -> Result<(), TimerError> {
     // SAFETY: Writing CNTP_CVAL_EL0 programs this CPU's physical timer compare
     // value. The caller provides an absolute counter deadline.
     unsafe {
-        asm!("msr cntp_cval_el0, {raw}", raw = in(reg) raw, options(nomem, nostack, preserves_flags));
+        // Synchronize the timer update before completing this IRQ at the GIC.
+        // Otherwise the old timer signal can make the interrupt pending again.
+        asm!(
+            "msr cntp_cval_el0, {raw}",
+            "isb",
+            raw = in(reg) raw,
+            options(nostack, preserves_flags)
+        );
     }
     Ok(())
 }
