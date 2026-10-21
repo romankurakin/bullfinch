@@ -25,8 +25,8 @@ pub fn ticks_per_interval(freq: Frequency) -> Option<TickInterval> {
 
 /// Advances the tick schedule after a timer interrupt.
 ///
-/// Counts the scheduled tick, then skips any further deadlines at or before
-/// `now`. Division counts missed intervals without a loop for each one.
+/// Counts the scheduled tick when it is due, then skips further deadlines
+/// at or before `now`. Division counts missed intervals without a loop.
 /// For a deadline of 1000, an interval of 100, and `now` at 1350, four ticks
 /// elapsed and the next deadline is 1400. Returns `None` on arithmetic overflow.
 pub fn advance_tick_state(
@@ -34,20 +34,22 @@ pub fn advance_tick_state(
     scheduled_tick: Deadline,
     interval: TickInterval,
 ) -> Option<TickAdvance> {
-    let mut elapsed_ticks = 1u64;
-    let now = now.get();
-    let mut deadline = scheduled_tick.checked_after(interval)?.get();
-    let interval = interval.get();
-
-    if deadline <= now {
-        let missed = ((now - deadline) / interval).checked_add(1)?;
-        elapsed_ticks = elapsed_ticks.checked_add(missed)?;
-        deadline = deadline.checked_add(missed.checked_mul(interval)?)?;
+    // A previous interrupt can remain pending after the timer is rearmed.
+    // Keep the same deadline until the counter reaches it.
+    if now.get() < scheduled_tick.get() {
+        return Some(TickAdvance {
+            elapsed_ticks: 0,
+            next_tick: scheduled_tick,
+        });
     }
+
+    let elapsed_ticks = ((now.get() - scheduled_tick.get()) / interval.get()).checked_add(1)?;
+    let advance = elapsed_ticks.checked_mul(interval.get())?;
+    let next_tick = scheduled_tick.get().checked_add(advance)?;
 
     Some(TickAdvance {
         elapsed_ticks,
-        next_tick: Deadline::new(deadline),
+        next_tick: Deadline::new(next_tick),
     })
 }
 
@@ -80,18 +82,39 @@ mod tests {
     }
 
     #[test]
-    fn advances_single_elapsed_tick() {
-        assert_eq!(
-            advance_tick_state(
-                Ticks::new(1_000),
-                Deadline::new(1_000),
-                interval(100).unwrap()
-            ),
-            Some(TickAdvance {
-                elapsed_ticks: 1,
-                next_tick: Deadline::new(1_100),
-            })
-        );
+    fn advances_to_first_future_deadline() {
+        for (now, scheduled, step, elapsed, next) in [
+            (1_000, 1_000, 100, 1, 1_100),
+            (1_099, 1_000, 100, 1, 1_100),
+            (1_100, 1_000, 100, 2, 1_200),
+            (u64::MAX - 1, u64::MAX - 1, 1, 1, u64::MAX),
+        ] {
+            assert_eq!(
+                advance_tick_state(
+                    Ticks::new(now),
+                    Deadline::new(scheduled),
+                    interval(step).unwrap()
+                ),
+                Some(TickAdvance {
+                    elapsed_ticks: elapsed,
+                    next_tick: Deadline::new(next),
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn keeps_deadline_when_interrupt_arrives_early() {
+        for (now, scheduled) in [(900, 1_000), (999, 1_000), (u64::MAX - 1, u64::MAX)] {
+            let scheduled = Deadline::new(scheduled);
+            assert_eq!(
+                advance_tick_state(Ticks::new(now), scheduled, interval(100).unwrap()),
+                Some(TickAdvance {
+                    elapsed_ticks: 0,
+                    next_tick: scheduled,
+                })
+            );
+        }
     }
 
     #[test]
@@ -115,6 +138,20 @@ mod tests {
             advance_tick_state(Ticks::new(u64::MAX), Deadline::new(0), interval(1).unwrap()),
             None
         );
+    }
+
+    #[test]
+    fn rejects_unrepresentable_next_deadline() {
+        for (now, scheduled, step) in [(u64::MAX, u64::MAX - 1, 1), (u64::MAX, 0, 2)] {
+            assert_eq!(
+                advance_tick_state(
+                    Ticks::new(now),
+                    Deadline::new(scheduled),
+                    interval(step).unwrap()
+                ),
+                None
+            );
+        }
     }
 
     #[test]
