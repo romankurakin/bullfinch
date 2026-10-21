@@ -14,10 +14,13 @@ use crate::{
     fp::ThreadFpState,
     limits::MAX_TASKS,
     mmu::{MapError, PAGE_SIZE, PhysicalAddress, UnmapError, VirtualAddress},
-    pmm::{self, PageRun},
+    pmm::{self, AllocatedPage},
     sync::Locked,
     trace::{Ring, TRACE_EVENTS, TraceEvent, TraceKind},
 };
+
+#[cfg(test)]
+mod stack_tests;
 
 pub const KERNEL_STACK_SIZE: usize = PAGE_SIZE * 2;
 pub const SCHED_BASE_WEIGHT: u32 = 1024;
@@ -26,7 +29,6 @@ pub const SCHED_TIME_SLICE_NS: u64 = 1_000_000_000 / clock::TICK_RATE_HZ;
 
 const MAX_PROCESSES: usize = 8;
 const KERNEL_STACK_PAGES: usize = KERNEL_STACK_SIZE / PAGE_SIZE;
-const PAGE_ALIGNMENT_LOG2: u8 = 12;
 pub const KERNEL_STACK_GUARD_SIZE: usize = PAGE_SIZE;
 // Unmapped upper padding keeps a valid stack top distinct from the next guard.
 pub const KERNEL_STACK_SLOT_SIZE: usize = PAGE_SIZE * 4;
@@ -101,7 +103,7 @@ pub enum StackError {
 /// downward overflow into that page faults. Drop removes the stack mappings
 /// before returning the physical pages and virtual slot for reuse.
 pub struct KernelStack {
-    pages: ManuallyDrop<PageRun>,
+    pages: ManuallyDrop<[Option<AllocatedPage>; KERNEL_STACK_PAGES]>,
     slot: ManuallyDrop<Option<KernelStackSlot>>,
     base: VirtualAddress,
     size: usize,
@@ -112,7 +114,7 @@ pub struct KernelStack {
 // prefix, so an early return unmaps only that prefix before freeing resources.
 // `finish` transfers ownership to KernelStack and disarms this rollback.
 struct KernelStackBuild {
-    pages: ManuallyDrop<PageRun>,
+    pages: ManuallyDrop<[Option<AllocatedPage>; KERNEL_STACK_PAGES]>,
     slot: ManuallyDrop<KernelStackSlot>,
     base: VirtualAddress,
     mapped_pages: usize,
@@ -177,14 +179,9 @@ impl Drop for KernelStackSlot {
 }
 
 impl KernelStackBuild {
-    fn new(
-        pages: PageRun,
-        slot: KernelStackSlot,
-        base: VirtualAddress,
-        unmap: UnmapKernelStackPage,
-    ) -> Self {
+    fn new(slot: KernelStackSlot, base: VirtualAddress, unmap: UnmapKernelStackPage) -> Self {
         Self {
-            pages: ManuallyDrop::new(pages),
+            pages: ManuallyDrop::new([const { None }; KERNEL_STACK_PAGES]),
             slot: ManuallyDrop::new(slot),
             base,
             mapped_pages: 0,
@@ -246,18 +243,19 @@ impl KernelStack {
                     .ok_or(StackError::RegionExhausted)?,
             )
             .ok_or(StackError::RegionExhausted)?;
-        let pages = pmm::alloc_contiguous(KERNEL_STACK_PAGES, PAGE_ALIGNMENT_LOG2)
-            .ok_or(StackError::OutOfMemory)?;
-        let mut build = KernelStackBuild::new(pages, slot, base, unmap_page);
+        let mut build = KernelStackBuild::new(slot, base, unmap_page);
 
         while build.mapped_pages < KERNEL_STACK_PAGES {
             let index = build.mapped_pages;
-            let Some(physical) = build.pages.physical_address(index) else {
-                return Err(StackError::AddressNotMapped);
-            };
+            // The virtual pages are adjacent. Their physical pages need not be.
+            let page = pmm::alloc_page().ok_or(StackError::OutOfMemory)?;
+            let physical = page
+                .physical_address()
+                .ok_or(StackError::AddressNotMapped)?;
             let virtual_address = base
                 .checked_add(index * PAGE_SIZE)
                 .ok_or(StackError::RegionExhausted)?;
+            build.pages[index] = Some(page);
             if let Err(error) = map_page(virtual_address, physical) {
                 return Err(StackError::Map(error));
             }
@@ -279,7 +277,7 @@ impl KernelStack {
     #[cfg(test)]
     fn new_for_test(base: VirtualAddress, size: usize) -> Self {
         Self {
-            pages: ManuallyDrop::new(PageRun::new_for_test()),
+            pages: ManuallyDrop::new([const { None }; KERNEL_STACK_PAGES]),
             slot: ManuallyDrop::new(None),
             base,
             size,
@@ -306,7 +304,7 @@ impl Drop for KernelStack {
             unmap_stack_mapping_strict(self.base, KERNEL_STACK_PAGES, unmap_page);
         }
         // SAFETY: `pages` is dropped exactly once here after the virtual stack
-        // aliases are gone. If strict unmapping panics, the run and stack slot
+        // aliases are gone. If strict unmapping panics, the pages and stack slot
         // stay leaked instead of being reused with stale mappings.
         unsafe { ManuallyDrop::drop(&mut self.pages) };
         // SAFETY: The slot is released exactly once, after stale aliases have

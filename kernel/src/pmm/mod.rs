@@ -921,19 +921,6 @@ pub struct PageRun {
 
 impl PageRun {
     #[cfg(test)]
-    pub(crate) const fn empty() -> Self {
-        Self {
-            head: PageHandle::NONE,
-            count: 0,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) const fn new_for_test() -> Self {
-        Self::empty()
-    }
-
-    #[cfg(test)]
     const fn head_for_test(&self) -> PageHandle {
         self.head
     }
