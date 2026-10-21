@@ -206,6 +206,14 @@ impl HardwareInfo {
         let Some(parent) = fdt.find_node("/reserved-memory") else {
             return Ok(());
         };
+        // Ignoring address translation could reserve the wrong physical pages
+        // and leave firmware-owned memory available to the allocator.
+        if parent
+            .property("ranges")
+            .is_some_and(|ranges| !ranges.value().is_empty())
+        {
+            return Err(FdtError::UnsupportedBusMapping);
+        }
 
         for child in parent.children() {
             if !node_is_available(child)? {
@@ -740,6 +748,55 @@ mod tests {
             }]
         );
         assert_eq!(hw.dropped_reserved_regions, 0);
+    }
+
+    #[test]
+    fn accepts_reserved_memory_with_empty_or_missing_ranges() {
+        for ranges in [None, Some(&[][..])] {
+            let blob = reserved_memory_dtb(ranges);
+            let fdt = Fdt::new(&blob).unwrap();
+            let hw = HardwareInfo::from_fdt(DeviceTreeBlobPhysicalAddress::new(0), &fdt).unwrap();
+            assert_eq!(
+                hw.reserved_regions(),
+                &[MemoryRegion {
+                    base: PhysicalAddress::new(0x8000_1000),
+                    size: 0x1000,
+                }]
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_reserved_memory_with_nonempty_ranges() {
+        let translated = [0, 0x8000_0000, 0, 0x9000_0000, 0, 0x0100_0000];
+        let identity = [0, 0x8000_0000, 0, 0x8000_0000, 0, 0x0100_0000];
+        for ranges in [translated, identity] {
+            let blob = reserved_memory_dtb(Some(&ranges));
+            let fdt = Fdt::new(&blob).unwrap();
+            assert_eq!(
+                HardwareInfo::from_fdt(DeviceTreeBlobPhysicalAddress::new(0), &fdt),
+                Err(FdtError::UnsupportedBusMapping)
+            );
+        }
+    }
+
+    fn reserved_memory_dtb(ranges: Option<&[u32]>) -> Vec<u8> {
+        let mut dtb = DtbBuilder::new();
+        dtb.begin_node("");
+        dtb.prop_u32("#address-cells", 2);
+        dtb.prop_u32("#size-cells", 2);
+        dtb.begin_node("reserved-memory");
+        dtb.prop_u32("#address-cells", 2);
+        dtb.prop_u32("#size-cells", 2);
+        if let Some(ranges) = ranges {
+            dtb.prop_cells("ranges", ranges);
+        }
+        dtb.begin_node("firmware@80001000");
+        dtb.prop_cells("reg", &[0, 0x8000_1000, 0, 0x1000]);
+        dtb.end_node();
+        dtb.end_node();
+        dtb.end_node();
+        dtb.finish()
     }
 
     #[test]
