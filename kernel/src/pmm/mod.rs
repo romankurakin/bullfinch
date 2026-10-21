@@ -5,6 +5,7 @@
 //! at the highest available addresses in each arena, outside firmware and
 //! kernel reservations. This leaves low addresses available for devices whose
 //! direct memory access (DMA) cannot reach all physical memory.
+//! Only RAM covered by the continuous kernel physmap enters an arena.
 
 use core::{mem::ManuallyDrop, ptr};
 
@@ -158,7 +159,6 @@ impl Arena {
 #[derive(Clone, Copy)]
 struct PageStorage {
     ptr: *mut Page,
-    len: usize,
     arena_index: u8,
 }
 
@@ -166,25 +166,14 @@ impl PageStorage {
     const fn empty() -> Self {
         Self {
             ptr: ptr::null_mut(),
-            len: 0,
             arena_index: INVALID_ARENA_INDEX,
         }
-    }
-
-    /// # Safety
-    ///
-    /// The caller must own the whole metadata range and ensure it is mapped.
-    /// The range must be initialized only once and have no other slice aliases.
-    unsafe fn as_mut_slice(&mut self) -> &mut [Page] {
-        // SAFETY: Arena initialization owns this metadata range inside the
-        // physmap. `len` is the number of `Page` entries reserved for it.
-        unsafe { core::slice::from_raw_parts_mut(self.ptr, self.len) }
     }
 }
 
 // SAFETY: Moving this private descriptor does not move or access the metadata
 // it points to. Safe metadata access is exposed only through a borrowed
-// `PhysicalMemoryManager`, and initialization through `as_mut_slice` is unsafe.
+// `PhysicalMemoryManager`, after arena initialization has written every entry.
 unsafe impl Send for PageStorage {}
 
 #[derive(Clone, Copy)]
@@ -248,6 +237,41 @@ fn no_mapping(_: PhysicalAddress) -> Option<VirtualAddress> {
     None
 }
 
+fn map_metadata_range(
+    physical: PhysicalAddress,
+    bytes: usize,
+    physmap_end: PhysicalAddress,
+    physical_to_virtual: PhysicalToVirtual,
+) -> Result<VirtualAddress, InitError> {
+    let end = physical
+        .checked_add(bytes)
+        .ok_or(InitError::ArithmeticOverflow)?;
+    if bytes == 0 || end > physmap_end {
+        return Err(InitError::AddressNotMapped);
+    }
+    let virtual_address = physical_to_virtual(physical).ok_or(InitError::AddressNotMapped)?;
+    if virtual_address == VirtualAddress::ZERO || !virtual_address.is_page_aligned() {
+        return Err(InitError::AddressNotMapped);
+    }
+    // Every metadata page must belong to the same linear mapping. Checking
+    // only the first byte could miss an unmapped page in the storage range.
+    for offset in (PAGE_SIZE..bytes)
+        .step_by(PAGE_SIZE)
+        .chain(core::iter::once(bytes - 1))
+    {
+        let address = physical
+            .checked_add(offset)
+            .ok_or(InitError::ArithmeticOverflow)?;
+        let expected = virtual_address
+            .checked_add(offset)
+            .ok_or(InitError::ArithmeticOverflow)?;
+        if physical_to_virtual(address) != Some(expected) {
+            return Err(InitError::AddressNotMapped);
+        }
+    }
+    Ok(virtual_address)
+}
+
 struct PhysicalMemoryManager {
     arenas: [Arena; MAX_MEMORY_ARENAS],
     arena_count: usize,
@@ -286,6 +310,7 @@ impl PhysicalMemoryManager {
         info: &HardwareInfo,
         kernel_start: PhysicalAddress,
         kernel_end: PhysicalAddress,
+        physmap_end: PhysicalAddress,
         physical_to_virtual: PhysicalToVirtual,
     ) -> Result<(), InitError> {
         // Live allocation guards refer to this manager's arena metadata.
@@ -307,9 +332,12 @@ impl PhysicalMemoryManager {
             if self.arena_count >= self.arenas.len() {
                 break;
             }
-            if let Some(arena) =
-                self.init_arena(*region, self.arena_count as u8, physical_to_virtual)?
-            {
+            if let Some(arena) = self.init_arena(
+                *region,
+                self.arena_count as u8,
+                physmap_end,
+                physical_to_virtual,
+            )? {
                 self.arenas[self.arena_count] = arena;
                 self.arena_count += 1;
             }
@@ -408,24 +436,25 @@ impl PhysicalMemoryManager {
         &mut self,
         region: MemoryRegion,
         arena_index: u8,
+        physmap_end: PhysicalAddress,
         physical_to_virtual: PhysicalToVirtual,
     ) -> Result<Option<Arena>, InitError> {
-        let Some(aligned_base) = region.base.align_up().map(|aligned| aligned.get()) else {
-            return Err(InitError::ArithmeticOverflow);
-        };
         let Some(region_end) = region.end() else {
             return Err(InitError::ArithmeticOverflow);
         };
-        if aligned_base >= region_end {
+        let region_end = core::cmp::min(region_end, physmap_end);
+        if region.base >= region_end {
             return Ok(None);
         }
-
+        let Some(aligned_base) = region.base.align_up().map(|aligned| aligned.get()) else {
+            return Err(InitError::ArithmeticOverflow);
+        };
         let aligned_end = region_end.align_down().get();
+        if aligned_base >= aligned_end {
+            return Ok(None);
+        }
         let aligned_size = aligned_end.get() - aligned_base.get();
         let total_pages = aligned_size / PAGE_SIZE;
-        if total_pages == 0 {
-            return Ok(None);
-        }
         if total_pages > u32::MAX as usize {
             return Err(InitError::PageIndexTooLarge);
         }
@@ -441,31 +470,37 @@ impl PhysicalMemoryManager {
         let metadata_physical = self
             .find_metadata_range(aligned_base, total_pages, metadata_pages)?
             .ok_or(InitError::MetadataAddressUnavailable)?;
-        let metadata_virtual =
-            physical_to_virtual(metadata_physical).ok_or(InitError::AddressNotMapped)?;
+        let metadata_span = metadata_pages
+            .checked_mul(PAGE_SIZE)
+            .ok_or(InitError::ArithmeticOverflow)?;
+        let metadata_virtual = map_metadata_range(
+            metadata_physical,
+            metadata_span,
+            physmap_end,
+            physical_to_virtual,
+        )?;
+        let metadata_end = metadata_physical
+            .checked_add(metadata_span)
+            .ok_or(InitError::ArithmeticOverflow)?;
+        self.record_reserved(metadata_physical, metadata_end)?;
 
-        let mut storage = PageStorage {
+        let storage = PageStorage {
             ptr: metadata_virtual.get() as *mut Page,
-            len: total_pages,
             arena_index,
         };
         let metadata_page_start = (metadata_physical.get() - aligned_base.get()) / PAGE_SIZE;
         let metadata_page_end = metadata_page_start + metadata_pages;
-        // SAFETY: The physmap covers the arena. `find_metadata_range` proved the
-        // metadata storage does not overlap firmware or kernel reservations.
-        for (index, page) in unsafe { storage.as_mut_slice() }.iter_mut().enumerate() {
+        for index in 0..total_pages {
             let state = if (metadata_page_start..metadata_page_end).contains(&index) {
                 PageState::Reserved
             } else {
                 PageState::Free
             };
-            *page = Page::new(arena_index, state);
+            // SAFETY: The whole metadata span is mapped and reserved above.
+            // Each write initializes one owned entry before references exist.
+            unsafe { storage.ptr.add(index).write(Page::new(arena_index, state)) };
         }
 
-        let metadata_end = metadata_physical
-            .checked_add(metadata_pages * PAGE_SIZE)
-            .ok_or(InitError::ArithmeticOverflow)?;
-        self.record_reserved(metadata_physical, metadata_end)?;
         self.total_pages = self
             .total_pages
             .checked_add(total_pages - metadata_pages)
@@ -933,14 +968,21 @@ impl Drop for PageRun {
 // Allocation guards own pages after this lock is released; they do not hold it.
 static PMM: Locked<PhysicalMemoryManager> = Locked::new(PhysicalMemoryManager::empty());
 
+/// Initializes arenas within the continuous physmap `[0, physmap_end)`.
 pub fn init(
     info: &HardwareInfo,
     kernel_start: PhysicalAddress,
     kernel_end: PhysicalAddress,
+    physmap_end: PhysicalAddress,
     physical_to_virtual: PhysicalToVirtual,
 ) -> Result<(), InitError> {
-    PMM.lock()
-        .init(info, kernel_start, kernel_end, physical_to_virtual)
+    PMM.lock().init(
+        info,
+        kernel_start,
+        kernel_end,
+        physmap_end,
+        physical_to_virtual,
+    )
 }
 
 pub fn alloc_page() -> Option<AllocatedPage> {
@@ -1008,6 +1050,155 @@ fn assert_initialized(pmm: &PhysicalMemoryManager) {
 mod tests {
     use super::*;
 
+    fn identity(address: PhysicalAddress) -> Option<VirtualAddress> {
+        Some(VirtualAddress::new(address.get()))
+    }
+
+    #[test]
+    fn arena_allocates_only_complete_pages_below_physmap_end() {
+        #[repr(align(4096))]
+        struct Backing([u8; PAGE_SIZE * 6]);
+
+        let mut backing = Backing([0xaa; PAGE_SIZE * 6]);
+        let base = PhysicalAddress::new(backing.0.as_mut_ptr() as usize);
+        let physmap_end = base.checked_add(PAGE_SIZE * 3 + PAGE_SIZE / 2).unwrap();
+        let mut pmm = PhysicalMemoryManager::empty();
+        let arena = pmm
+            .init_arena(
+                MemoryRegion {
+                    base,
+                    size: backing.0.len(),
+                },
+                0,
+                physmap_end,
+                identity,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(arena.page_count, 3);
+        assert_eq!(
+            pmm.reserved_ranges[0].start,
+            base.checked_add(PAGE_SIZE * 2).unwrap()
+        );
+        assert_eq!(
+            pmm.reserved_ranges[0].end,
+            base.checked_add(PAGE_SIZE * 3).unwrap()
+        );
+        pmm.arenas[0] = arena;
+        pmm.arena_count = 1;
+        pmm.build_free_list();
+
+        assert_eq!(pmm.free_pages, 2);
+        for index in 0..2 {
+            let page = pmm.alloc_page().unwrap();
+            assert_eq!(
+                arena.page_to_physical(page),
+                base.checked_add(index * PAGE_SIZE)
+            );
+        }
+        assert_eq!(pmm.alloc_page(), None);
+        assert!(backing.0[PAGE_SIZE * 3..].iter().all(|byte| *byte == 0xaa));
+    }
+
+    #[test]
+    fn arena_skips_memory_wholly_above_physmap_end() {
+        let mut pmm = PhysicalMemoryManager::empty();
+        let physmap_end = PhysicalAddress::new(511usize << 30);
+        assert!(
+            pmm.init_arena(
+                MemoryRegion {
+                    base: physmap_end,
+                    size: PAGE_SIZE * 4,
+                },
+                0,
+                physmap_end,
+                no_mapping,
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert_eq!(pmm.reserved_count, 0);
+        assert_eq!(pmm.total_pages, 0);
+    }
+
+    #[test]
+    fn arena_skips_regions_without_a_complete_page() {
+        for (base, size, limit) in [
+            (0x1000, PAGE_SIZE - 1, 0x3000),
+            (0x1800, PAGE_SIZE, 0x3000),
+            (0x1000, PAGE_SIZE * 2, 0x1800),
+            (usize::MAX - 1, 1, 0x3000),
+        ] {
+            let mut pmm = PhysicalMemoryManager::empty();
+            assert!(
+                pmm.init_arena(
+                    MemoryRegion {
+                        base: PhysicalAddress::new(base),
+                        size,
+                    },
+                    0,
+                    PhysicalAddress::new(limit),
+                    no_mapping,
+                )
+                .unwrap()
+                .is_none()
+            );
+            assert_eq!(pmm.reserved_count, 0);
+            assert_eq!(pmm.total_pages, 0);
+        }
+    }
+
+    #[test]
+    fn arena_rejects_partial_metadata_mapping_before_writing() {
+        #[repr(align(4096))]
+        struct Backing([u8; PAGE_SIZE * 2]);
+
+        fn page_starts_only(address: PhysicalAddress) -> Option<VirtualAddress> {
+            address
+                .is_page_aligned()
+                .then(|| VirtualAddress::new(address.get()))
+        }
+
+        let mut backing = Backing([0xaa; PAGE_SIZE * 2]);
+        let base = PhysicalAddress::new(backing.0.as_mut_ptr() as usize);
+        let mut pmm = PhysicalMemoryManager::empty();
+        assert!(matches!(
+            pmm.init_arena(
+                MemoryRegion {
+                    base,
+                    size: backing.0.len(),
+                },
+                0,
+                base.checked_add(backing.0.len()).unwrap(),
+                page_starts_only,
+            ),
+            Err(InitError::AddressNotMapped)
+        ));
+        assert_eq!(pmm.reserved_count, 0);
+        assert!(backing.0.iter().all(|byte| *byte == 0xaa));
+    }
+
+    #[test]
+    fn metadata_mapping_rejects_an_interior_hole() {
+        fn with_hole(address: PhysicalAddress) -> Option<VirtualAddress> {
+            if (0x2000..0x3000).contains(&address.get()) {
+                None
+            } else {
+                identity(address)
+            }
+        }
+
+        assert_eq!(
+            map_metadata_range(
+                PhysicalAddress::new(0x1000),
+                PAGE_SIZE * 3,
+                PhysicalAddress::new(0x4000),
+                with_hole,
+            ),
+            Err(InitError::AddressNotMapped)
+        );
+    }
+
     #[test]
     fn rejects_reinitialization_without_changing_live_allocations() {
         let mut pages = [Page::default(); 2];
@@ -1017,7 +1208,6 @@ mod tests {
             page_count: pages.len(),
             pages: PageStorage {
                 ptr: pages.as_mut_ptr(),
-                len: pages.len(),
                 arena_index: 0,
             },
         };
@@ -1030,6 +1220,7 @@ mod tests {
         assert_eq!(
             pmm.init(
                 &info,
+                PhysicalAddress::ZERO,
                 PhysicalAddress::ZERO,
                 PhysicalAddress::ZERO,
                 no_mapping
@@ -1058,6 +1249,7 @@ mod tests {
                     &info,
                     PhysicalAddress::ZERO,
                     PhysicalAddress::ZERO,
+                    PhysicalAddress::ZERO,
                     no_mapping
                 ),
                 Err(InitError::NoMemoryRegions)
@@ -1074,7 +1266,6 @@ mod tests {
             page_count: 4,
             pages: PageStorage {
                 ptr: pages.as_mut_ptr(),
-                len: pages.len(),
                 arena_index: 2,
             },
         };
@@ -1095,7 +1286,6 @@ mod tests {
         let mut pages = [Page::default(); 2];
         let storage = PageStorage {
             ptr: pages.as_mut_ptr(),
-            len: pages.len(),
             arena_index: 0,
         };
         let mut pmm = PhysicalMemoryManager::empty();
@@ -1121,7 +1311,6 @@ mod tests {
         let mut pages = [Page::default(); 8];
         let storage = PageStorage {
             ptr: pages.as_mut_ptr(),
-            len: pages.len(),
             arena_index: 0,
         };
         let mut pmm = PhysicalMemoryManager::empty();
@@ -1151,7 +1340,6 @@ mod tests {
         let mut pages = [Page::default(); 3];
         let storage = PageStorage {
             ptr: pages.as_mut_ptr(),
-            len: pages.len(),
             arena_index: 0,
         };
         let mut pmm = PhysicalMemoryManager::empty();
@@ -1187,10 +1375,6 @@ mod tests {
         #[repr(align(4096))]
         struct Backing([u8; PAGE_SIZE * 2]);
 
-        fn identity(address: PhysicalAddress) -> Option<VirtualAddress> {
-            Some(VirtualAddress::new(address.get()))
-        }
-
         let mut backing = Backing([0xaa; PAGE_SIZE * 2]);
         let base = backing.0.as_mut_ptr() as usize;
         let mut pages = [Page::default(); 2];
@@ -1201,7 +1385,6 @@ mod tests {
             page_count: 2,
             pages: PageStorage {
                 ptr: pages.as_mut_ptr(),
-                len: pages.len(),
                 arena_index: 0,
             },
         };

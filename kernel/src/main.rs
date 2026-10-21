@@ -98,6 +98,7 @@ pub fn kernel_main(info: BootInfo) -> ! {
         &hardware,
         hal::mmu::KERNEL_PHYSICAL_LOAD,
         kernel_physical_end(),
+        hal::mmu::physmap_end(),
         hal::mmu::try_physical_to_virtual,
     )
     .expect("pmm: initialization failed");

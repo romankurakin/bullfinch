@@ -77,6 +77,10 @@ pub mod mmu {
         crate::arch::mmu::try_physical_to_virtual(address)
     }
 
+    pub fn physmap_end() -> PhysicalAddress {
+        crate::arch::mmu::physmap_end()
+    }
+
     pub fn try_virtual_to_physical(address: VirtualAddress) -> Option<PhysicalAddress> {
         crate::arch::mmu::try_virtual_to_physical(address)
     }

@@ -206,6 +206,10 @@ pub(super) fn physical_to_virtual(address: PhysicalAddress) -> VirtualAddress {
     VirtualAddress::new(address.get().wrapping_add(KERNEL_VIRTUAL_BASE))
 }
 
+pub(crate) fn physmap_end() -> PhysicalAddress {
+    PhysicalAddress::new(PHYSMAP_END_GB.get() * BLOCK_1G)
+}
+
 /// Returns the physmap alias of `address`. Boot maps every GiB below
 /// `PHYSMAP_END_GB`, so the end alone decides coverage.
 pub(crate) fn try_physical_to_virtual(address: PhysicalAddress) -> Option<VirtualAddress> {
