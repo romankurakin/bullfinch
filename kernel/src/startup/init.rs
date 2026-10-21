@@ -11,7 +11,7 @@ use kernel::{
     fdt::{Fdt, FdtError},
     hwinfo::HardwareInfo,
     limits::DEVICE_TREE_BLOB_MAX_SIZE,
-    mmu::{MapError, PhysicalAddress},
+    mmu::{MapError, PhysicalAddress, overlaps_boot_device_window},
 };
 
 use crate::{hal, startup::log as boot_log};
@@ -24,6 +24,7 @@ pub enum BootError {
     DeviceTreeMagic,
     DeviceTreeMisaligned,
     DeviceTreeAddressNotMapped,
+    RamInDeviceWindow,
     MemoryMap(MapError),
 }
 
@@ -72,6 +73,15 @@ pub fn virt_init(dtb: DeviceTreeBlobPhysicalAddress) -> Result<HardwareInfo, Boo
     boot_log::mmu();
 
     let hardware = read_hardware_info(dtb)?;
+    // The physmap includes device addresses. Reject them as RAM before the
+    // PMM can write page metadata there.
+    if hardware
+        .memory_regions()
+        .iter()
+        .any(|region| overlaps_boot_device_window(region.base, region.size))
+    {
+        return Err(BootError::RamInDeviceWindow);
+    }
     hal::mmu::expand_physmap(&hardware);
     hal::mmu::remove_identity_mapping();
     boot_log::virt();
