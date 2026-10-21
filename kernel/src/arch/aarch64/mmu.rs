@@ -37,7 +37,6 @@ const BLOCK_1G_MASK: usize = BLOCK_1G - 1;
 const BLOCK_2M: usize = 1 << 21;
 const BLOCK_2M_MASK: usize = BLOCK_2M - 1;
 const MAX_PHYSMAP_ENTRIES: usize = ENTRIES_PER_PAGE_TABLE - 1;
-const MAX_BOOT_BLOCKS: usize = ENTRIES_PER_PAGE_TABLE;
 pub const KERNEL_STACK_REGION_OFFSET: usize = (ENTRIES_PER_PAGE_TABLE - 1) * BLOCK_1G;
 
 pub type PageTableAllocator = fn() -> Option<VirtualAddress>;
@@ -796,7 +795,8 @@ fn aligned_output_address(address: PhysicalAddress) -> Option<u64> {
 }
 
 fn validate_boot_range(end_gb: usize) -> Result<(), MapError> {
-    if end_gb > MAX_BOOT_BLOCKS {
+    // The last entry belongs to task stacks, even during early boot.
+    if end_gb > MAX_PHYSMAP_ENTRIES {
         return Err(MapError::RangeExceeded);
     }
     Ok(())

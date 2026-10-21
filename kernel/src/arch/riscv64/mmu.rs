@@ -39,7 +39,6 @@ const LOWER_CANONICAL_LIMIT: usize = 1 << 47;
 // Sv48 VPN3 covers bits [47:39]. For KERNEL_VIRTUAL_BASE this is 0x1ff.
 const KERNEL_VPN3: usize = (KERNEL_VIRTUAL_BASE >> 39) & 0x1ff;
 const MAX_PHYSMAP_ENTRIES: usize = ENTRIES_PER_PAGE_TABLE - 1;
-const MAX_BOOT_GIGAPAGES: usize = ENTRIES_PER_PAGE_TABLE;
 pub const KERNEL_STACK_REGION_OFFSET: usize = (ENTRIES_PER_PAGE_TABLE - 1) * GIGAPAGE;
 
 pub type PageTableAllocator = fn() -> Option<VirtualAddress>;
@@ -815,7 +814,8 @@ fn physical_page_number(address: PhysicalAddress) -> Option<u64> {
 }
 
 fn validate_boot_range(end_gb: usize) -> Result<(), MapError> {
-    if end_gb > MAX_BOOT_GIGAPAGES {
+    // The last entry belongs to task stacks, even during early boot.
+    if end_gb > MAX_PHYSMAP_ENTRIES {
         return Err(MapError::RangeExceeded);
     }
     Ok(())
