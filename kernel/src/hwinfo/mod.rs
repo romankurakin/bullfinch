@@ -136,6 +136,10 @@ impl HardwareInfo {
     }
 
     fn push_memory_region(&mut self, region: MemoryRegion) {
+        // Empty entries describe no RAM and must not use a region slot.
+        if region.size == 0 {
+            return;
+        }
         if self.memory_region_count >= self.memory_regions.len() {
             self.dropped_memory_regions = self.dropped_memory_regions.saturating_add(1);
             return;
@@ -582,6 +586,36 @@ mod tests {
                 size: 0x0400_0000,
             }
         );
+    }
+
+    #[test]
+    fn empty_memory_entries_leave_room_for_ram() {
+        let mut dtb = DtbBuilder::new();
+        dtb.begin_node("");
+        dtb.prop_u32("#address-cells", 2);
+        dtb.prop_u32("#size-cells", 2);
+        dtb.begin_node("memory@80000000");
+        dtb.prop_str("device_type", "memory");
+        let mut entries = Vec::from([0; MAX_MEMORY_ARENAS * 4]);
+        entries.extend_from_slice(&[0, 0x8000_0000, 0, 0x0800_0000]);
+        dtb.prop_cells("reg", &entries);
+        dtb.end_node();
+        dtb.end_node();
+
+        let blob = dtb.finish();
+        let fdt = Fdt::new(&blob).unwrap();
+        let hw =
+            HardwareInfo::from_fdt(DeviceTreeBlobPhysicalAddress::new(0x4800_0000), &fdt).unwrap();
+
+        assert_eq!(
+            hw.memory_regions(),
+            &[MemoryRegion {
+                base: PhysicalAddress::new(0x8000_0000),
+                size: 0x0800_0000,
+            }]
+        );
+        assert_eq!(hw.total_memory, 0x0800_0000);
+        assert_eq!(hw.dropped_memory_regions, 0);
     }
 
     #[test]
