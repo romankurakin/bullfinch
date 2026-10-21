@@ -804,15 +804,17 @@ fn validate_boot_range(end_gb: usize) -> Result<(), MapError> {
 
 // TCR_EL1: 39 bit VA, 4 KiB granule, 40-bit PA.
 fn default_tcr() -> u64 {
+    // The CPU writes page tables through Inner Shareable mappings.
+    // Table walks must use the same attributes when they read those tables.
     let mut tcr = 0u64;
     tcr |= 25; // T0SZ
     tcr |= 0b01 << 8; // IRGN0
     tcr |= 0b01 << 10; // ORGN0
-    tcr |= 0b10 << 12; // SH0
+    tcr |= 0b11 << 12; // SH0
     tcr |= 25 << 16; // T1SZ
     tcr |= 0b01 << 24; // IRGN1
     tcr |= 0b01 << 26; // ORGN1
-    tcr |= 0b10 << 28; // SH1
+    tcr |= 0b11 << 28; // SH1
     tcr |= 0b10 << 30; // TG1
     tcr |= 0b010 << 32; // IPS
     tcr
