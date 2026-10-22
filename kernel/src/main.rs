@@ -109,10 +109,16 @@ pub fn kernel_main(info: BootInfo) -> ! {
     }
     .expect("pmm: initialization failed");
     startup::log::pmm();
-    kernel::allocator::init(
-        hal::mmu::try_physical_to_virtual,
-        hal::mmu::try_virtual_to_physical,
-    );
+    // SAFETY: PMM is initialized above. The permanent higher-half physmap
+    // covers its pages with writable RAM mappings. These translations are
+    // inverses and preserve page alignment. PMM gives each allocated page
+    // exclusively to the object allocator until it is returned.
+    unsafe {
+        kernel::allocator::init(
+            hal::mmu::try_physical_to_virtual,
+            hal::mmu::try_virtual_to_physical,
+        );
+    }
     kernel::allocator::boot_probe().expect("allocator: boot probe failed");
     let idle_stack = kernel::task::KernelStack::create_mapped(
         hal::mmu::kernel_stack_region_base,

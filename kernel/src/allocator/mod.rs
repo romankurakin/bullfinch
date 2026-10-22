@@ -606,7 +606,18 @@ impl Drop for ObjectAllocation {
 static OBJECT_ALLOCATOR: Locked<ObjectAllocator> = Locked::new(ObjectAllocator::empty());
 static MAPPERS: Locked<Mappers> = Locked::new(Mappers::identity());
 
-pub fn init(physical_to_virtual: PhysicalToVirtual, virtual_to_physical: VirtualToPhysical) {
+/// Initializes the object pools with the kernel's physical mappings.
+///
+/// # Safety
+///
+/// PMM must be initialized. Each successful `physical_to_virtual` translation
+/// of a PMM page must map that entire page as readable and writable RAM at a
+/// nonzero, page-aligned address. `virtual_to_physical` must return the original
+/// page.
+/// These mappings and their inverses must stay valid until the allocator
+/// returns the page to PMM. During that time, the allocator must have exclusive
+/// access to the page, apart from accesses through its object allocations.
+pub unsafe fn init(physical_to_virtual: PhysicalToVirtual, virtual_to_physical: VirtualToPhysical) {
     OBJECT_ALLOCATOR
         .lock()
         .init(physical_to_virtual, virtual_to_physical);
