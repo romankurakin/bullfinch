@@ -159,6 +159,10 @@ impl HardwareInfo {
     }
 
     fn push_reserved_region(&mut self, region: MemoryRegion) {
+        // Empty entries reserve no memory and must not use a region slot.
+        if region.size == 0 {
+            return;
+        }
         if self.reserved_region_count >= self.reserved_regions.len() {
             self.dropped_reserved_regions = self.dropped_reserved_regions.saturating_add(1);
             return;
@@ -845,6 +849,67 @@ mod tests {
         let mut dtb = DtbBuilder::new();
         dtb.reserve(0x8100_0000, 0x20_0000);
         dtb.begin_node("");
+        dtb.end_node();
+
+        let blob = dtb.finish();
+        let fdt = Fdt::new(&blob).unwrap();
+        let hw =
+            HardwareInfo::from_fdt(DeviceTreeBlobPhysicalAddress::new(0x4800_0000), &fdt).unwrap();
+
+        assert_eq!(
+            hw.reserved_regions(),
+            &[MemoryRegion {
+                base: PhysicalAddress::new(0x8100_0000),
+                size: 0x20_0000,
+            }]
+        );
+        assert_eq!(hw.dropped_reserved_regions, 0);
+    }
+
+    #[test]
+    fn empty_header_reservations_leave_room_for_real_regions() {
+        let mut dtb = DtbBuilder::new();
+        for index in 0..MAX_RESERVED_REGIONS {
+            dtb.reserve(0x8000_0000 + (index as u64) * 0x1000, 0);
+        }
+        let mut expected = Vec::new();
+        for index in 0..MAX_RESERVED_REGIONS {
+            let base = 0x8100_0000 + index * 0x1000;
+            dtb.reserve(base as u64, 0x1000);
+            expected.push(MemoryRegion {
+                base: PhysicalAddress::new(base),
+                size: 0x1000,
+            });
+        }
+        dtb.reserve(0x8200_0000, 0);
+        dtb.begin_node("");
+        dtb.end_node();
+
+        let blob = dtb.finish();
+        let fdt = Fdt::new(&blob).unwrap();
+        let hw =
+            HardwareInfo::from_fdt(DeviceTreeBlobPhysicalAddress::new(0x4800_0000), &fdt).unwrap();
+
+        assert_eq!(hw.reserved_regions(), expected);
+        assert_eq!(hw.dropped_reserved_regions, 0);
+    }
+
+    #[test]
+    fn empty_reserved_memory_entries_leave_room_for_real_regions() {
+        let mut dtb = DtbBuilder::new();
+        dtb.begin_node("");
+        dtb.prop_u32("#address-cells", 2);
+        dtb.prop_u32("#size-cells", 2);
+        dtb.begin_node("reserved-memory");
+        dtb.prop_u32("#address-cells", 2);
+        dtb.prop_u32("#size-cells", 2);
+        dtb.prop_cells("ranges", &[]);
+        dtb.begin_node("firmware@81000000");
+        let mut entries = Vec::from([0; MAX_RESERVED_REGIONS * 4]);
+        entries.extend_from_slice(&[0, 0x8100_0000, 0, 0x20_0000]);
+        dtb.prop_cells("reg", &entries);
+        dtb.end_node();
+        dtb.end_node();
         dtb.end_node();
 
         let blob = dtb.finish();
