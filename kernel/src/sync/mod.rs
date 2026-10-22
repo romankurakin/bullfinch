@@ -7,11 +7,11 @@
 use core::{
     cell::UnsafeCell,
     ops::{Deref, DerefMut},
-    sync::atomic::{AtomicBool, AtomicU16, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
 
-#[cfg(test)]
 const TICKET_SHIFT: u32 = 16;
+const OWNER_MASK: u32 = u16::MAX as u32;
 
 /// A one-shot flag for boot-time initialization steps.
 ///
@@ -51,8 +51,9 @@ impl Default for Once {
 // The acquire/release pair below makes the previous holder's writes visible
 // to the next holder; ticket allocation alone does not publish those writes.
 struct TicketLock {
-    owner: AtomicU16,
-    next: AtomicU16,
+    // Keeping owner in the low half and next in the high half lets try_acquire
+    // check that the lock is free and claim its ticket in one atomic operation.
+    state: AtomicU32,
 }
 
 const _: () = assert!(core::mem::size_of::<TicketLock>() == core::mem::size_of::<u32>());
@@ -60,58 +61,68 @@ const _: () = assert!(core::mem::size_of::<TicketLock>() == core::mem::size_of::
 impl TicketLock {
     const fn new() -> Self {
         Self {
-            owner: AtomicU16::new(0),
-            next: AtomicU16::new(0),
+            state: AtomicU32::new(0),
         }
     }
 
     fn acquire(&self) {
         // Wrapping is valid while fewer than 2^16 tickets are outstanding. The
         // acquire load of `owner` pairs with the previous holder's release.
-        let ticket = self.next.fetch_add(1, Ordering::Relaxed);
-        while self.owner.load(Ordering::Acquire) != ticket {
+        let state = self.state.fetch_add(1 << TICKET_SHIFT, Ordering::Relaxed);
+        let ticket = (state >> TICKET_SHIFT) as u16;
+        while self.state.load(Ordering::Acquire) as u16 != ticket {
             crate::cpu::spin_wait();
         }
     }
 
     fn try_acquire(&self) -> bool {
-        let owner = self.owner.load(Ordering::Acquire);
-        let next = self.next.load(Ordering::Relaxed);
-        if owner != next {
+        self.try_acquire_snapshot(self.state.load(Ordering::Relaxed))
+    }
+
+    fn try_acquire_snapshot(&self, state: u32) -> bool {
+        if state as u16 != (state >> TICKET_SHIFT) as u16 {
             return false;
         }
-        // The Acquire load of `owner` observes the previous holder's writes.
-        // This compare-and-swap only claims the next ticket against competing
-        // callers, so it can use Relaxed ordering.
-        self.next
+        // Comparing both counters rejects a stale observation even if `next`
+        // wraps while another caller holds the lock. Acquire observes writes
+        // published by the previous holder's release.
+        self.state
             .compare_exchange(
-                next,
-                next.wrapping_add(1),
-                Ordering::Relaxed,
+                state,
+                state.wrapping_add(1 << TICKET_SHIFT),
+                Ordering::Acquire,
                 Ordering::Relaxed,
             )
             .is_ok()
     }
 
     fn release(&self) {
-        let owner = self.owner.load(Ordering::Relaxed);
-        #[cfg(debug_assertions)]
-        {
-            assert_ne!(
+        let mut state = self.state.load(Ordering::Relaxed);
+        loop {
+            let owner = state as u16;
+            debug_assert_ne!(
                 owner,
-                self.next.load(Ordering::Relaxed),
+                (state >> TICKET_SHIFT) as u16,
                 "ticket: release called when lock is not held"
             );
+            // Replace only `owner` so its wrap cannot carry into `next`.
+            // Retry if another caller takes a ticket during this update.
+            let released = (state & !OWNER_MASK) | u32::from(owner.wrapping_add(1));
+            match self.state.compare_exchange_weak(
+                state,
+                released,
+                Ordering::Release,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return,
+                Err(updated) => state = updated,
+            }
         }
-        // Only the current holder writes `owner`. Incrementing this separate
-        // 16-bit counter cannot carry into `next` when `owner` wraps.
-        self.owner.store(owner.wrapping_add(1), Ordering::Release);
     }
 
     #[cfg(test)]
     fn raw(&self) -> u32 {
-        (u32::from(self.next.load(Ordering::Relaxed)) << TICKET_SHIFT)
-            | u32::from(self.owner.load(Ordering::Relaxed))
+        self.state.load(Ordering::Relaxed)
     }
 }
 
@@ -301,13 +312,33 @@ mod tests {
     #[test]
     fn ticket_lock_wrap_does_not_advance_next_twice() {
         let lock = TicketLock::new();
-        lock.owner.store(u16::MAX, Ordering::Relaxed);
-        lock.next.store(u16::MAX, Ordering::Relaxed);
+        lock.state.store(u32::MAX, Ordering::Relaxed);
 
         lock.acquire();
         assert_eq!(lock.raw(), u32::from(u16::MAX));
         lock.release();
         assert_eq!(lock.raw(), 0);
+
+        assert!(lock.try_acquire());
+        lock.release();
+    }
+
+    #[test]
+    fn ticket_lock_rejects_stale_try_acquire_after_wrap() {
+        let lock = TicketLock::new();
+        let snapshot = lock.raw();
+
+        // Pause one try_acquire after its initial observation while another
+        // caller cycles the counter, then keeps the final ticket held.
+        for _ in 0..u16::MAX {
+            lock.acquire();
+            lock.release();
+        }
+        lock.acquire();
+        assert_eq!(lock.raw(), u32::from(u16::MAX));
+        assert!(!lock.try_acquire_snapshot(snapshot));
+        assert_eq!(lock.raw(), u32::from(u16::MAX));
+        lock.release();
 
         assert!(lock.try_acquire());
         lock.release();
@@ -337,5 +368,22 @@ mod tests {
             *guard += 1;
         }
         assert_eq!(*locked.lock(), 2);
+    }
+
+    #[test]
+    fn locked_serializes_mutation_across_threads() {
+        let locked = Locked::new(0usize);
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                let locked = &locked;
+                scope.spawn(move || {
+                    for _ in 0..20_000 {
+                        let mut guard = locked.try_lock().unwrap_or_else(|| locked.lock());
+                        *guard += 1;
+                    }
+                });
+            }
+        });
+        assert_eq!(*locked.lock(), 80_000);
     }
 }
