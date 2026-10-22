@@ -17,6 +17,8 @@ dtoolkit = { version = "0.3.0", default-features = false }
 smoke-test = []
 stack-overflow-test = ["smoke-test"]
 stack-overflow-irq-test = ["stack-overflow-test"]
+boot-stack-overflow-test = ["stack-overflow-test"]
+boot-stack-overflow-irq-test = ["boot-stack-overflow-test", "stack-overflow-irq-test"]
 
 [[bin]]
 name = "kernel"

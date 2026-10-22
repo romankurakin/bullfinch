@@ -48,7 +48,10 @@ SECTIONS {
         __bss_end = .;
     }
 
-    . = ALIGN(16);
+    /* Leave one page unmapped below the boot stack. */
+    . = ALIGN(4096);
+    __stack_guard = .;
+    . = . + 4096;
     __stack_bottom = .;
     . = . + STACK_SIZE;
     __stack_top = .;

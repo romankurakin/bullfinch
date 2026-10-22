@@ -45,7 +45,7 @@ struct SmokeArgs {
     peek: bool,
     #[arg(long)]
     verbose: bool,
-    /// Check full-trap and timer-IRQ entry with an exhausted stack.
+    /// Check full-trap and timer-IRQ entry with exhausted task and boot stacks.
     #[arg(long, conflicts_with = "peek")]
     stack_overflow: bool,
     arch: Option<Arch>,
@@ -107,7 +107,12 @@ fn qemu_command(args: BuildArgs) -> Result<(), String> {
 fn smoke_command(args: SmokeArgs) -> Result<(), String> {
     let variants = smoke_variants(args.arch, args.mode, args.peek)?;
     let tests: &[SmokeTest] = if args.stack_overflow {
-        &[SmokeTest::StackOverflow, SmokeTest::StackOverflowIrq]
+        &[
+            SmokeTest::StackOverflow,
+            SmokeTest::StackOverflowIrq,
+            SmokeTest::BootStackOverflow,
+            SmokeTest::BootStackOverflowIrq,
+        ]
     } else {
         &[SmokeTest::Scheduler]
     };
@@ -548,6 +553,8 @@ enum SmokeTest {
     Scheduler,
     StackOverflow,
     StackOverflowIrq,
+    BootStackOverflow,
+    BootStackOverflowIrq,
 }
 
 impl SmokeTest {
@@ -556,6 +563,8 @@ impl SmokeTest {
             Self::Scheduler => "smoke-test",
             Self::StackOverflow => "stack-overflow-test",
             Self::StackOverflowIrq => "stack-overflow-irq-test",
+            Self::BootStackOverflow => "boot-stack-overflow-test",
+            Self::BootStackOverflowIrq => "boot-stack-overflow-irq-test",
         }
     }
 
@@ -564,6 +573,8 @@ impl SmokeTest {
             Self::Scheduler => "",
             Self::StackOverflow => "-stack-overflow",
             Self::StackOverflowIrq => "-stack-overflow-irq",
+            Self::BootStackOverflow => "-boot-stack-overflow",
+            Self::BootStackOverflowIrq => "-boot-stack-overflow-irq",
         }
     }
 }

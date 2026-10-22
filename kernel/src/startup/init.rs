@@ -11,7 +11,7 @@ use kernel::{
     fdt::{Fdt, FdtError},
     hwinfo::HardwareInfo,
     limits::DEVICE_TREE_BLOB_MAX_SIZE,
-    mmu::{MapError, PhysicalAddress, overlaps_boot_device_window},
+    mmu::{MapError, PAGE_SIZE, PhysicalAddress, overlaps_boot_device_window},
 };
 
 use crate::{hal, startup::log as boot_log};
@@ -119,10 +119,9 @@ impl DeviceTreeBlob {
             .ok_or(BootError::DeviceTreeAddressNotMapped)?
             .get();
 
-        // SAFETY: `hal::mmu::init` already mapped DEVICE_TREE_BLOB_MAX_SIZE bytes
-        // from the bootloader-provided DTB address. This read covers only the
-        // first 8 bytes: magic and totalsize. The magic check rejects mapped
-        // memory without an FDT signature before we read a larger slice.
+        // SAFETY: The address is mapped and 8-byte aligned. This 8-byte header
+        // cannot cross a page boundary. It contains magic and totalsize; the
+        // remaining pages are checked before reading the full blob.
         let header = unsafe { core::slice::from_raw_parts(virtual_address as *const u8, 8) };
         let magic = u32::from_be_bytes([header[0], header[1], header[2], header[3]]);
         if magic != FDT_MAGIC {
@@ -133,9 +132,20 @@ impl DeviceTreeBlob {
             return Err(BootError::DeviceTreeTooLarge);
         }
 
-        // SAFETY: The header passed the magic check, and `total_size` is within
-        // the limit checked above. The early physmap covers that maximum size.
-        // The parser validates internal offsets before kernel code uses them.
+        // The boot stack guard leaves a hole in the physmap. A mapped header
+        // does not prove that every page of the blob is mapped.
+        let end = physical
+            .checked_add(total_size)
+            .ok_or(BootError::DeviceTreeAddressNotMapped)?;
+        for page in (physical.align_down().get().get()..end.get()).step_by(PAGE_SIZE) {
+            if hal::mmu::try_physical_to_virtual(PhysicalAddress::new(page)).is_none() {
+                return Err(BootError::DeviceTreeAddressNotMapped);
+            }
+        }
+
+        // SAFETY: The size is bounded, and every page of the blob is mapped
+        // through the linear physmap. The parser validates internal offsets
+        // before kernel code uses them.
         let data = unsafe { core::slice::from_raw_parts(virtual_address as *const u8, total_size) };
         Ok(Self { data })
     }

@@ -86,12 +86,33 @@ __bullfinch_aarch64_overflow_vectors:
     mov x17, #{stack_region_base}
     sub x16, x16, x17
     lsr x17, x16, #{stack_region_shift}
-    cbnz x17, 99f
+    cbnz x17, 98f
     and x16, x16, #{stack_slot_mask}
     mov x17, #({stack_guard_size} + \frame_size)
     cmp x16, x17
     b.lo .Lstack_overflow
     mov x17, #{stack_top_offset}
+    cmp x16, x17
+    b.hi .Lstack_overflow
+    b 99f
+98:
+    // Boot can still use physical vectors after SP enters the higher half.
+    // Accept only those two aliases before comparing their higher-half forms.
+    mov x16, sp
+    asr x17, x16, #{boot_alias_bits}
+    add x17, x17, #1
+    lsr x17, x17, #1
+    cbnz x17, .Lstack_overflow
+    orr x16, x16, #{boot_alias_base}
+    adrp x17, __stack_bottom
+    add x17, x17, :lo12:__stack_bottom
+    orr x17, x17, #{boot_alias_base}
+    add x17, x17, #\frame_size
+    cmp x16, x17
+    b.lo .Lstack_overflow
+    adrp x17, __stack_top
+    add x17, x17, :lo12:__stack_top
+    orr x17, x17, #{boot_alias_base}
     cmp x16, x17
     b.hi .Lstack_overflow
 99:
@@ -283,11 +304,15 @@ rust_aarch64_kernel_irq_entry:
     stack_slot_mask = const kernel::task::KERNEL_STACK_SLOT_SIZE - 1,
     stack_top_offset = const kernel::task::KERNEL_STACK_GUARD_SIZE + kernel::task::KERNEL_STACK_SIZE,
     stack_guard_size = const kernel::task::KERNEL_STACK_GUARD_SIZE,
+    boot_alias_base = const super::mmu::KERNEL_VIRTUAL_BASE,
+    boot_alias_bits = const super::mmu::KERNEL_VIRTUAL_BASE.trailing_zeros(),
     stack_overflow = sym crate::runtime::trap::stack_overflow,
 );
 
 /// # Safety
-/// The test must retain the target stack and its neighbor until the CPU halts.
+/// The target stack and canary region must stay reserved until the CPU halts.
+/// Trap handling and canary checking must be ready with interrupts masked.
+/// The IRQ variant also requires an armed timer with its interrupt source enabled.
 #[cfg(feature = "stack-overflow-test")]
 #[unsafe(naked)]
 pub unsafe extern "C" fn trigger_stack_overflow_test(_stack_pointer: usize) -> ! {

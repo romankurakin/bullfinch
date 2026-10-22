@@ -65,7 +65,7 @@ __bullfinch_riscv64_trap_vector:
     li t0, {stack_region_base}
     sub t0, sp, t0
     srli t0, t0, {stack_region_shift}
-    bnez t0, 99f
+    bnez t0, 98f
 
     slli t0, sp, {stack_slot_mask_shift}
     srli t0, t0, {stack_slot_mask_shift}
@@ -77,6 +77,25 @@ __bullfinch_riscv64_trap_vector:
     addi t0, t0, (\frame_size - 1)
     srli t0, t0, {stack_size_shift}
     bnez t0, .Lstack_overflow
+    j 99f
+98:
+    # Boot can still use physical vectors after SP enters the higher half.
+    # Accept only those two aliases before removing their offset differences.
+    srai t0, sp, {boot_alias_bits}
+    addi t0, t0, 1
+    srli t0, t0, 1
+    bnez t0, .Lstack_overflow
+    la t0, __stack_bottom
+    sub t0, sp, t0
+    slli t0, t0, {boot_alias_extend}
+    srai t0, t0, {boot_alias_extend}
+    addi t0, t0, -\frame_size
+    bltz t0, .Lstack_overflow
+    la t0, __stack_top
+    sub t0, sp, t0
+    slli t0, t0, {boot_alias_extend}
+    srai t0, t0, {boot_alias_extend}
+    bgtz t0, .Lstack_overflow
 99:
     csrr t0, sscratch
     .endm
@@ -296,6 +315,8 @@ rust_riscv64_kernel_fast_irq_entry:
     stack_region_shift = const kernel::task::KERNEL_STACK_REGION_SIZE.ilog2(),
     stack_slot_mask_shift = const usize::BITS - kernel::task::KERNEL_STACK_SLOT_SIZE.ilog2(),
     stack_size_shift = const kernel::task::KERNEL_STACK_SIZE.ilog2(),
+    boot_alias_bits = const super::mmu::KERNEL_VIRTUAL_BASE.trailing_zeros(),
+    boot_alias_extend = const usize::BITS - super::mmu::KERNEL_VIRTUAL_BASE.trailing_zeros(),
     stack_overflow = sym crate::runtime::trap::stack_overflow,
 );
 
@@ -308,7 +329,9 @@ const _: () = assert!(
 );
 
 /// # Safety
-/// The test must retain the target stack and its neighbor until the CPU halts.
+/// The target stack and canary region must stay reserved until the CPU halts.
+/// Trap handling and canary checking must be ready with interrupts masked.
+/// The IRQ variant also requires an armed timer with its interrupt source enabled.
 #[cfg(feature = "stack-overflow-test")]
 #[unsafe(naked)]
 pub unsafe extern "C" fn trigger_stack_overflow_test(_stack_pointer: usize) -> ! {

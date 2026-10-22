@@ -61,6 +61,8 @@ unsafe extern "C" {
     static __kernel_rodata_end: u8;
     static __kernel_data_start: u8;
     static __kernel_data_end: u8;
+    static __stack_guard: u8;
+    static __stack_bottom: u8;
 }
 
 #[repr(transparent)]
@@ -183,11 +185,11 @@ pub(crate) fn physmap_end() -> PhysicalAddress {
     PhysicalAddress::new(PHYSMAP_END_GB.get() * GIGAPAGE)
 }
 
-/// Returns the physmap alias of `address`. Boot maps every GiB below
-/// `PHYSMAP_END_GB`, so the end alone decides coverage.
+/// Returns the physmap alias of `address`, except in the boot stack guard.
 pub(crate) fn try_physical_to_virtual(address: PhysicalAddress) -> Option<VirtualAddress> {
     let mapped_bytes = PHYSMAP_END_GB.get().checked_mul(GIGAPAGE)?;
-    (address.get() < mapped_bytes).then(|| physical_to_virtual(address))
+    (address.get() < mapped_bytes && !boot_stack_guard().contains(address.get()))
+        .then(|| physical_to_virtual(address))
 }
 
 fn virtual_to_physical(address: VirtualAddress) -> PhysicalAddress {
@@ -197,7 +199,8 @@ fn virtual_to_physical(address: VirtualAddress) -> PhysicalAddress {
 pub(crate) fn try_virtual_to_physical(address: VirtualAddress) -> Option<PhysicalAddress> {
     let mapped_bytes = PHYSMAP_END_GB.get().checked_mul(GIGAPAGE)?;
     let offset = address.get().checked_sub(KERNEL_VIRTUAL_BASE)?;
-    (offset < mapped_bytes).then(|| PhysicalAddress::new(offset))
+    (offset < mapped_bytes && !boot_stack_guard().contains(offset))
+        .then(|| PhysicalAddress::new(offset))
 }
 
 pub const fn kernel_stack_region_base() -> VirtualAddress {
@@ -217,9 +220,8 @@ pub fn init(
         kernel_load.get().saturating_add(MINIMUM_PHYSMAP_SIZE),
         dtb_end,
     );
-    // Map from the first GiB, not from the lowest GiB boot needs, so that
-    // `try_physical_to_virtual` needs only the end. A descriptor per skipped
-    // GiB is cheap.
+    // Cover every GiB up to the physmap end, except the boot stack guard.
+    // A descriptor per GiB keeps the coverage check small.
     let end_gb = map_end.div_ceil(GIGAPAGE);
     validate_boot_range(end_gb)?;
     let kernel_gb = kernel_load.get() / GIGAPAGE;
@@ -681,6 +683,7 @@ struct KernelImageLayout {
     text: PhysicalRange,
     rodata: PhysicalRange,
     data: PhysicalRange,
+    stack_guard: PhysicalRange,
 }
 
 #[derive(Clone, Copy)]
@@ -703,7 +706,15 @@ fn kernel_image_layout() -> KernelImageLayout {
             core::ptr::addr_of!(__kernel_data_start),
             core::ptr::addr_of!(__kernel_data_end),
         ),
+        stack_guard: boot_stack_guard(),
     }
+}
+
+fn boot_stack_guard() -> PhysicalRange {
+    PhysicalRange::from_symbols(
+        core::ptr::addr_of!(__stack_guard),
+        core::ptr::addr_of!(__stack_bottom),
+    )
 }
 
 impl PhysicalRange {
@@ -761,8 +772,11 @@ unsafe fn build_kernel_gb_split(
         for l0_index in 0..ENTRIES_PER_PAGE_TABLE {
             let physical =
                 PhysicalAddress::new(gb * GIGAPAGE + l1_index * MEGAPAGE + l0_index * PAGE_SIZE);
-            l0.entries[l0_index] =
-                kernel_page(physical, kernel_image_permissions(physical, layout));
+            // Both boot aliases share this leaf. Keep the guard absent in both.
+            if !layout.stack_guard.contains(physical.get()) {
+                l0.entries[l0_index] =
+                    kernel_page(physical, kernel_image_permissions(physical, layout));
+            }
         }
     }
     PageTableEntry::branch(static_physical_address(l1_table.get().cast_const()))

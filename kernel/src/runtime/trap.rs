@@ -90,7 +90,7 @@ pub(crate) const OVERFLOW_STACK_SIZE: usize = 32 * 1024;
 #[cold]
 pub(crate) extern "C" fn stack_overflow() -> ! {
     #[cfg(feature = "stack-overflow-test")]
-    if !crate::runtime::smoke::overflow_neighbor_intact() {
+    if !crate::runtime::smoke::overflow_canary_intact() {
         crate::console::print_unsafe("\n[STACK:FAIL]\n");
         crate::hal::cpu::halt();
     }
